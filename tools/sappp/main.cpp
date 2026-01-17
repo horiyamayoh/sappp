@@ -14,10 +14,14 @@
 
 #include "sappp/version.hpp"
 #include "sappp/common.hpp"
+#include "sappp/build_capture.hpp"
+#include "sappp/canonical_json.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 
 namespace {
 
@@ -163,9 +167,29 @@ int cmd_capture(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "[capture] Not yet implemented\n";
-    std::cout << "  compile_commands: " << compile_commands << "\n";
-    std::cout << "  output: " << output << "\n";
+    try {
+        sappp::build_capture::BuildCapture capture(repo_root);
+        sappp::build_capture::BuildSnapshot snapshot = capture.capture(compile_commands);
+
+        std::filesystem::path output_dir(output);
+        std::filesystem::create_directories(output_dir);
+        std::filesystem::path output_file = output_dir / "build_snapshot.json";
+
+        std::ofstream out(output_file);
+        if (!out) {
+            std::cerr << "Error: failed to open output file: " << output_file << "\n";
+            return 1;
+        }
+        out << sappp::canonical::canonicalize(snapshot.json());
+        out << "\n";
+
+        std::cout << "[capture] Wrote build_snapshot.json\n";
+        std::cout << "  input: " << compile_commands << "\n";
+        std::cout << "  output: " << output_file.string() << "\n";
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: capture failed: " << ex.what() << "\n";
+        return 1;
+    }
     return 0;
 }
 

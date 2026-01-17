@@ -12,6 +12,9 @@ FetchContent_MakeAvailable(googletest)
 # Schema validation tests
 add_subdirectory(schemas)
 
+# Build capture tests
+add_subdirectory(build_capture)
+
 # Determinism tests
 add_subdirectory(determinism)
 
