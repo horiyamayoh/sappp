@@ -5,6 +5,8 @@ add_executable(test_determinism
     test_certstore.cpp
 )
 
+sappp_target_strict_warnings(test_determinism)
+
 target_link_libraries(test_determinism PRIVATE
     sappp_common
     sappp_canonical

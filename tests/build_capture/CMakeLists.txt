@@ -2,6 +2,8 @@ add_executable(test_build_capture
     test_build_capture.cpp
 )
 
+sappp_target_strict_warnings(test_build_capture)
+
 target_link_libraries(test_build_capture PRIVATE
     sappp_build_capture
     sappp_canonical

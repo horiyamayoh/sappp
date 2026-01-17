@@ -113,7 +113,7 @@ public:
 
         // Output (big-endian)
         std::array<uint8_t, 32> hash;
-        for (int i = 0; i < 8; ++i) {
+        for (size_t i = 0; i < 8; ++i) {
             hash[i * 4 + 0] = static_cast<uint8_t>(state_[i] >> 24);
             hash[i * 4 + 1] = static_cast<uint8_t>(state_[i] >> 16);
             hash[i * 4 + 2] = static_cast<uint8_t>(state_[i] >> 8);
@@ -127,13 +127,13 @@ private:
         std::array<uint32_t, 64> w;
 
         // Prepare message schedule
-        for (int i = 0; i < 16; ++i) {
+        for (size_t i = 0; i < 16; ++i) {
             w[i] = (static_cast<uint32_t>(buffer_[i * 4 + 0]) << 24) |
                    (static_cast<uint32_t>(buffer_[i * 4 + 1]) << 16) |
                    (static_cast<uint32_t>(buffer_[i * 4 + 2]) << 8) |
                    (static_cast<uint32_t>(buffer_[i * 4 + 3]));
         }
-        for (int i = 16; i < 64; ++i) {
+        for (size_t i = 16; i < 64; ++i) {
             w[i] = gamma1(w[i - 2]) + w[i - 7] + gamma0(w[i - 15]) + w[i - 16];
         }
 
@@ -142,7 +142,7 @@ private:
         uint32_t e = state_[4], f = state_[5], g = state_[6], h = state_[7];
 
         // Compression
-        for (int i = 0; i < 64; ++i) {
+        for (size_t i = 0; i < 64; ++i) {
             uint32_t t1 = h + sigma1(e) + ch(e, f, g) + K[i] + w[i];
             uint32_t t2 = sigma0(a) + maj(a, b, c);
             h = g; g = f; f = e; e = d + t1;

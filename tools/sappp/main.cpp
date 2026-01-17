@@ -204,7 +204,7 @@ int cmd_capture(int argc, char** argv) {
 int cmd_analyze(int argc, char** argv) {
     std::string snapshot;
     std::string output = "./out";
-    int jobs = 0;
+    [[maybe_unused]] int jobs = 0;
     std::string schema_dir = "schemas";
 
     for (int i = 0; i < argc; ++i) {

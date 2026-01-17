@@ -2,6 +2,8 @@ add_executable(test_schema_validate
     test_schema_validate.cpp
 )
 
+sappp_target_strict_warnings(test_schema_validate)
+
 target_link_libraries(test_schema_validate PRIVATE
     sappp_common
     GTest::gtest_main

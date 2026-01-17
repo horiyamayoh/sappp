@@ -42,21 +42,27 @@ Validator は **証拠（Certificate）+ IR参照 + スキーマ + ハッシュ*
 
 ## 1) 最優先コマンド（まずここだけは守る）
 
-### 1.1 ビルド（必須）
+### 1.1 ビルド（必須・警告ゼロ）
 **変更を加えたら、完了報告前に必ずビルドを通す。**
+
+⚠️ **警告ゼロポリシー**: ビルド時に **コンパイラ警告が1つでも残っていたら「未完了」**。  
+警告は潜在的なバグの兆候であり、放置すると品質が劣化する。自分が追加した警告だけでなく、**既存の警告も見つけたら修正**すること。
 
 ```bash
 # 推奨（out-of-source build）
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSAPPP_BUILD_TESTS=ON -DSAPPP_BUILD_CLANG_FRONTEND=OFF
+# -DSAPPP_WERROR=ON で警告をエラーとして扱う（CI同等の厳格チェック）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSAPPP_BUILD_TESTS=ON -DSAPPP_BUILD_CLANG_FRONTEND=OFF -DSAPPP_WERROR=ON
 cmake --build build --parallel
 ```
 
 > タスクが `frontend_clang` を触る/必要とする場合は、次で **ONでも確認**すること。
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSAPPP_BUILD_TESTS=ON -DSAPPP_BUILD_CLANG_FRONTEND=ON
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSAPPP_BUILD_TESTS=ON -DSAPPP_BUILD_CLANG_FRONTEND=ON -DSAPPP_WERROR=ON
 cmake --build build --parallel
 ```
+
+> `-DSAPPP_WERROR=ON` が未対応の場合でも、ビルドログを確認し **warning が0件であること**を目視確認すること。
 
 ### 1.2 テスト（必須）
 **ビルド成功後、完了報告前に必ず全テストを回す。**
@@ -271,17 +277,24 @@ diff -u /tmp/po_j1.txt /tmp/po_j8.txt
 - メンバ: `m_` prefix
 - 定数: UPPER_SNAKE_CASE
 
+**コミットメッセージ**
+- **日本語で記述**すること
+- 1行目: 変更の要約（50文字以内目安）
+- 2行目: 空行
+- 3行目以降: 詳細な説明（なぜ・何を・どう変えたか）
+
 ---
 
 ## 9) 禁止事項（やったら即「未完了」）
 
 1. ビルド/テスト未実行での完了宣言
-2. 既存テストの削除・スキップ・無効化
-3. 決定性破壊（不定順の出力、安定ソート無し、jobs差で結果が変わる）
-4. ハッシュ対象への浮動小数追加
-5. Validator内での Analyzer/Frontend 呼び出し
-6. スキーマ不適合なJSONを“とりあえず”出す
-7. 検証できないのに SAFE/BUG を確定させる（嘘SAFE/嘘BUG）
+2. **コンパイラ警告を残したままの完了宣言**（警告ゼロが必須）
+3. 既存テストの削除・スキップ・無効化
+4. 決定性破壊（不定順の出力、安定ソート無し、jobs差で結果が変わる）
+5. ハッシュ対象への浮動小数追加
+6. Validator内での Analyzer/Frontend 呼び出し
+7. スキーマ不適合なJSONを"とりあえず"出す
+8. 検証できないのに SAFE/BUG を確定させる（嘘SAFE/嘘BUG）
 
 ---
 

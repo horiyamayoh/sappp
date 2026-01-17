@@ -2,6 +2,8 @@ add_executable(sappp
     main.cpp
 )
 
+sappp_target_strict_warnings(sappp)
+
 target_link_libraries(sappp PRIVATE
     sappp_common
     sappp_canonical

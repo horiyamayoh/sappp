@@ -2,6 +2,8 @@ add_library(sappp_certstore
     certstore.cpp
 )
 
+sappp_target_strict_warnings(sappp_certstore)
+
 target_include_directories(sappp_certstore PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
