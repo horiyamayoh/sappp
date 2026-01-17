@@ -16,6 +16,7 @@
 #include "sappp/common.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
+#include "validator/validator.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
@@ -101,9 +102,10 @@ void print_validate_help() {
 Validate certificates and confirm SAFE/BUG results
 
 Options:
-  --input DIR               Input directory containing analysis outputs (required)
+  --input DIR, --in DIR     Input directory containing analysis outputs (required)
   --output FILE, -o         Output file (default: validated_results.json)
   --strict                  Fail on any validation error (no downgrade)
+  --schema-dir DIR          Path to schema directory (default: ./schemas)
   --help, -h                Show this help
 
 Output:
@@ -228,17 +230,20 @@ int cmd_validate(int argc, char** argv) {
     std::string input;
     std::string output = "validated_results.json";
     bool strict = false;
+    std::string schema_dir = "schemas";
 
     for (int i = 0; i < argc; ++i) {
         if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
             print_validate_help();
             return 0;
-        } else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
+        } else if ((std::strcmp(argv[i], "--input") == 0 || std::strcmp(argv[i], "--in") == 0) && i + 1 < argc) {
             input = argv[++i];
         } else if ((std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
             output = argv[++i];
         } else if (std::strcmp(argv[i], "--strict") == 0) {
             strict = true;
+        } else if (std::strcmp(argv[i], "--schema-dir") == 0 && i + 1 < argc) {
+            schema_dir = argv[++i];
         }
     }
 
@@ -248,10 +253,19 @@ int cmd_validate(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "[validate] Not yet implemented\n";
-    std::cout << "  input: " << input << "\n";
-    std::cout << "  output: " << output << "\n";
-    std::cout << "  strict: " << (strict ? "yes" : "no") << "\n";
+    try {
+        sappp::validator::Validator validator(input, schema_dir);
+        nlohmann::json results = validator.validate(strict);
+        validator.write_results(results, output);
+
+        std::cout << "[validate] Wrote validated_results.json\n";
+        std::cout << "  input: " << input << "\n";
+        std::cout << "  output: " << output << "\n";
+        std::cout << "  strict: " << (strict ? "yes" : "no") << "\n";
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: validate failed: " << ex.what() << "\n";
+        return 1;
+    }
     return 0;
 }
 
