@@ -6,6 +6,8 @@
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"
 #include <algorithm>
+#include <format>
+#include <ranges>
 #include <stdexcept>
 
 namespace sappp::canonical {
@@ -22,7 +24,7 @@ void validate_no_float(const nlohmann::json& j, const std::string& path) {
         }
     } else if (j.is_array()) {
         for (size_t i = 0; i < j.size(); ++i) {
-            validate_no_float(j[i], path + "[" + std::to_string(i) + "]");
+            validate_no_float(j[i], std::format("{}[{}]", path, i));
         }
     }
 }
@@ -35,7 +37,7 @@ nlohmann::json make_sorted_copy(const nlohmann::json& j) {
         for (auto& [key, _] : j.items()) {
             keys.push_back(key);
         }
-        std::sort(keys.begin(), keys.end());
+        std::ranges::sort(keys);
         
         // Create ordered object (nlohmann::ordered_json behavior)
         nlohmann::json result = nlohmann::json::object();
@@ -78,7 +80,7 @@ void sort_keys_recursive(nlohmann::json& j) {
         for (auto& [key, _] : j.items()) {
             keys.push_back(key);
         }
-        std::sort(keys.begin(), keys.end());
+        std::ranges::sort(keys);
         
         // Rebuild object in sorted order
         nlohmann::json sorted = nlohmann::json::object();

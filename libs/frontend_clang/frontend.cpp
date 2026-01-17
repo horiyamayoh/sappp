@@ -29,8 +29,10 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <iomanip>
 #include <optional>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -49,17 +51,8 @@ struct SourceMapEntryKey {
 };
 
 std::string current_time_utc() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_tm{};
-#if defined(_WIN32)
-    gmtime_s(&utc_tm, &now_time);
-#else
-    gmtime_r(&now_time, &utc_tm);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
+    const auto now = std::chrono::system_clock::now();
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
 bool is_source_file(const std::string& path) {
@@ -213,10 +206,10 @@ public:
                 }
             }
 
-            std::stable_sort(blocks.begin(), blocks.end(),
-                             [](const clang::CFGBlock* a, const clang::CFGBlock* b) {
-                                 return a->getBlockID() < b->getBlockID();
-                             });
+            std::ranges::stable_sort(blocks,
+                                      [](const clang::CFGBlock* a, const clang::CFGBlock* b) {
+                                          return a->getBlockID() < b->getBlockID();
+                                      });
 
             std::unordered_map<const clang::CFGBlock*, std::string> block_ids;
             block_ids.reserve(blocks.size());
@@ -312,21 +305,21 @@ public:
                 }
             }
 
-            std::stable_sort(nir_cfg.blocks.begin(), nir_cfg.blocks.end(),
-                             [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
-                                 return a.id < b.id;
-                             });
+            std::ranges::stable_sort(nir_cfg.blocks,
+                                      [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
+                                          return a.id < b.id;
+                                      });
 
-            std::stable_sort(edges.begin(), edges.end(),
-                             [](const ir::Edge& a, const ir::Edge& b) {
-                                 if (a.from != b.from) {
-                                     return a.from < b.from;
-                                 }
-                                 if (a.to != b.to) {
-                                     return a.to < b.to;
-                                 }
-                                 return a.kind < b.kind;
-                             });
+            std::ranges::stable_sort(edges,
+                                      [](const ir::Edge& a, const ir::Edge& b) {
+                                          if (a.from != b.from) {
+                                              return a.from < b.from;
+                                          }
+                                          if (a.to != b.to) {
+                                              return a.to < b.to;
+                                          }
+                                          return a.kind < b.kind;
+                                      });
             nir_cfg.edges = std::move(edges);
 
             ir::FunctionDef nir_func;
@@ -443,50 +436,50 @@ FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) cons
         throw std::runtime_error("No functions found to emit NIR");
     }
 
-    std::stable_sort(functions.begin(), functions.end(),
-                     [](const ir::FunctionDef& a, const ir::FunctionDef& b) {
-                         return a.function_uid < b.function_uid;
-                     });
+    std::ranges::stable_sort(functions,
+                              [](const ir::FunctionDef& a, const ir::FunctionDef& b) {
+                                  return a.function_uid < b.function_uid;
+                              });
 
     for (auto& func : functions) {
-        std::stable_sort(func.cfg.blocks.begin(), func.cfg.blocks.end(),
-                         [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
-                             return a.id < b.id;
-                         });
+        std::ranges::stable_sort(func.cfg.blocks,
+                                 [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
+                                     return a.id < b.id;
+                                 });
         for (auto& block : func.cfg.blocks) {
-            std::stable_sort(block.insts.begin(), block.insts.end(),
-                             [](const ir::Instruction& a, const ir::Instruction& b) {
-                                 return a.id < b.id;
-                             });
+            std::ranges::stable_sort(block.insts,
+                                     [](const ir::Instruction& a, const ir::Instruction& b) {
+                                         return a.id < b.id;
+                                     });
         }
-        std::stable_sort(func.cfg.edges.begin(), func.cfg.edges.end(),
-                         [](const ir::Edge& a, const ir::Edge& b) {
-                             if (a.from != b.from) {
-                                 return a.from < b.from;
-                             }
-                             if (a.to != b.to) {
-                                 return a.to < b.to;
-                             }
-                             return a.kind < b.kind;
-                         });
+        std::ranges::stable_sort(func.cfg.edges,
+                                  [](const ir::Edge& a, const ir::Edge& b) {
+                                      if (a.from != b.from) {
+                                          return a.from < b.from;
+                                      }
+                                      if (a.to != b.to) {
+                                          return a.to < b.to;
+                                      }
+                                      return a.kind < b.kind;
+                                  });
     }
 
-    std::stable_sort(source_entries.begin(), source_entries.end(),
-                     [](const SourceMapEntryKey& a, const SourceMapEntryKey& b) {
-                         if (a.function_uid != b.function_uid) {
-                             return a.function_uid < b.function_uid;
-                         }
-                         if (a.block_id != b.block_id) {
-                             return a.block_id < b.block_id;
-                         }
-                         return a.inst_id < b.inst_id;
-                     });
+    std::ranges::stable_sort(source_entries,
+                             [](const SourceMapEntryKey& a, const SourceMapEntryKey& b) {
+                                 if (a.function_uid != b.function_uid) {
+                                     return a.function_uid < b.function_uid;
+                                 }
+                                 if (a.block_id != b.block_id) {
+                                     return a.block_id < b.block_id;
+                                 }
+                                 return a.inst_id < b.inst_id;
+                             });
 
     std::string tu_id;
     if (tu_ids.size() == 1) {
         tu_id = tu_ids.front();
     } else {
-        std::stable_sort(tu_ids.begin(), tu_ids.end());
+        std::ranges::stable_sort(tu_ids);
         nlohmann::json tu_array = tu_ids;
         tu_id = sappp::canonical::hash_canonical(tu_array);
     }

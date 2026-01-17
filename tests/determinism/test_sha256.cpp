@@ -30,7 +30,7 @@ TEST(SHA256, Determinism) {
 
 TEST(SHA256, Prefixed) {
     std::string hash = sha256_prefixed("test");
-    EXPECT_TRUE(hash.rfind("sha256:", 0) == 0);
+    EXPECT_TRUE(hash.starts_with("sha256:"));
     EXPECT_EQ(hash.length(), 7 + 64); // "sha256:" + 64 hex chars
 }
 

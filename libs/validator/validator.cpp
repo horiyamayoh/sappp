@@ -13,9 +13,11 @@
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iomanip>
 #include <optional>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -33,38 +35,23 @@ struct ValidationError {
 };
 
 std::string current_time_rfc3339() {
-    using clock = std::chrono::system_clock;
-    auto now = clock::now();
-    std::time_t time = clock::to_time_t(now);
-    std::tm utc_tm{};
-#if defined(_WIN32)
-    gmtime_s(&utc_tm, &time);
-#else
-    gmtime_r(&time, &utc_tm);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
+    const auto now = std::chrono::system_clock::now();
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
 bool is_hex_lower(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
 }
 
-bool is_sha256_prefixed(const std::string& value) {
-    const std::string prefix = "sha256:";
-    if (value.rfind(prefix, 0) != 0) {
+bool is_sha256_prefixed(std::string_view value) {
+    constexpr std::string_view prefix = "sha256:";
+    if (!value.starts_with(prefix)) {
         return false;
     }
     if (value.size() != prefix.size() + 64) {
         return false;
     }
-    for (size_t i = prefix.size(); i < value.size(); ++i) {
-        if (!is_hex_lower(value[i])) {
-            return false;
-        }
-    }
-    return true;
+    return std::ranges::all_of(value.substr(prefix.size()), is_hex_lower);
 }
 
 std::string derive_po_id_from_path(const fs::path& path) {
@@ -88,11 +75,8 @@ std::string validated_results_schema_path(const std::string& schema_dir) {
 }
 
 std::string object_path_for_hash(const fs::path& base_dir, const std::string& hash) {
-    std::size_t digest_start = 0;
-    const std::string prefix = "sha256:";
-    if (hash.rfind(prefix, 0) == 0) {
-        digest_start = prefix.size();
-    }
+    constexpr std::string_view prefix = "sha256:";
+    std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0;
     if (hash.size() < digest_start + 2) {
         throw std::invalid_argument("Hash is too short: " + hash);
     }
@@ -232,7 +216,7 @@ nlohmann::json Validator::validate(bool strict) {
         }
     }
 
-    std::sort(index_files.begin(), index_files.end());
+    std::ranges::sort(index_files);
 
     std::vector<nlohmann::json> results;
     std::string tu_id;
@@ -416,10 +400,10 @@ nlohmann::json Validator::validate(bool strict) {
         throw std::runtime_error("No certificate index entries found");
     }
 
-    std::stable_sort(results.begin(), results.end(),
-                     [](const nlohmann::json& a, const nlohmann::json& b) {
-                         return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
-                     });
+    std::ranges::stable_sort(results,
+                              [](const nlohmann::json& a, const nlohmann::json& b) {
+                                  return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
+                              });
 
     if (tu_id.empty()) {
         throw std::runtime_error("Failed to determine tu_id from IR references");

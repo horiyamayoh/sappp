@@ -26,8 +26,8 @@ void normalize_schema_defs(nlohmann::json& schema) {
         for (auto& [key, value] : schema.items()) {
             if (key == "$ref" && value.is_string()) {
                 std::string ref = value.get<std::string>();
-                const std::string prefix = "#/$defs/";
-                if (ref.rfind(prefix, 0) == 0) {
+                constexpr std::string_view prefix = "#/$defs/";
+                if (ref.starts_with(prefix)) {
                     value = "#/definitions/" + ref.substr(prefix.size());
                 }
             } else {

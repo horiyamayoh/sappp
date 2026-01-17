@@ -18,7 +18,7 @@ SAP++は、生成AIが出力するコードの品質を**静的解析のみ**で
 
 ### 必要環境
 
-- C++17対応コンパイラ (GCC 9+ / Clang 10+)
+- C++23対応コンパイラ (GCC 13+ / Clang 17+)
 - CMake 3.16+
 - LLVM/Clang (libTooling)
 - nlohmann/json

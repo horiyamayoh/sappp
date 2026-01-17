@@ -15,8 +15,10 @@
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iomanip>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -37,17 +39,8 @@ std::string read_file(const std::string& path) {
 }
 
 std::string current_time_utc() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_tm{};
-#if defined(_WIN32)
-    gmtime_s(&utc_tm, &now_time);
-#else
-    gmtime_r(&now_time, &utc_tm);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
+    const auto now = std::chrono::system_clock::now();
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
 std::string detect_os() {
@@ -113,7 +106,7 @@ nlohmann::json default_frontend(const std::vector<std::string>& argv) {
         std::string lower = argv.front();
         std::transform(lower.begin(), lower.end(), lower.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (lower.find("clang-cl") != std::string::npos) {
+        if (lower.contains("clang-cl")) {
             kind = "clang-cl";
         }
     }
@@ -186,14 +179,14 @@ std::string detect_lang_from_file(const std::string& file_path) {
 std::string extract_std(const std::vector<std::string>& argv, const std::string& lang) {
     for (size_t i = 0; i < argv.size(); ++i) {
         const std::string& arg = argv[i];
-        if (arg.rfind("-std=", 0) == 0) {
+        if (arg.starts_with("-std=")) {
             return arg.substr(5);
         }
         if (arg == "-std" && i + 1 < argv.size()) {
             return argv[i + 1];
         }
     }
-    return lang == "c" ? "c11" : "c++17";
+    return lang == "c" ? "c23" : "c++23";
 }
 
 nlohmann::json build_hash_input(const nlohmann::json& compile_unit) {
@@ -292,10 +285,10 @@ BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
         units.push_back(std::move(unit));
     }
 
-    std::stable_sort(units.begin(), units.end(),
-                     [](const nlohmann::json& a, const nlohmann::json& b) {
-                         return a.at("tu_id").get<std::string>() < b.at("tu_id").get<std::string>();
-                     });
+    std::ranges::stable_sort(units,
+                              [](const nlohmann::json& a, const nlohmann::json& b) {
+                                  return a.at("tu_id").get<std::string>() < b.at("tu_id").get<std::string>();
+                              });
 
     nlohmann::json snapshot = {
         {"schema_version", "build_snapshot.v1"},

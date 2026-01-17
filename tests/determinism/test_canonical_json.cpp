@@ -73,7 +73,7 @@ TEST(CanonicalJSON, HashDeterminism) {
     std::string h2 = hash_canonical(j);
     
     EXPECT_EQ(h1, h2);
-    EXPECT_TRUE(h1.rfind("sha256:", 0) == 0);
+    EXPECT_TRUE(h1.starts_with("sha256:"));
 }
 
 TEST(CanonicalJSON, DifferentOrderSameHash) {

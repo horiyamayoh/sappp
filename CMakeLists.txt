@@ -5,8 +5,8 @@ project(sappp
     LANGUAGES C CXX
 )
 
-# C++17 required
-set(CMAKE_CXX_STANDARD 17)
+# C++23 required
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -60,6 +60,29 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wdisabled-optimization     # Warn when optimization is disabled due to code complexity
         -Winit-self                 # Warn on uninitialized self-assignment
         -Wstrict-overflow=2         # Warn on strict overflow (level 2)
+        # Maximum strictness warnings
+        -Wredundant-decls           # Warn on redundant declarations
+        -Wswitch-default            # Warn if switch has no default case
+        -Wuninitialized             # Warn on uninitialized variables
+        -Wmaybe-uninitialized       # Warn on possibly uninitialized (GCC, ignored by Clang)
+        -Wpacked                    # Warn if packed attribute causes problems
+        -Winline                    # Warn if inline function cannot be inlined
+        -Wstack-protector           # Warn when stack protector fails
+        -Wdate-time                 # Warn on __DATE__ __TIME__ (reproducible builds)
+        -Wvla                       # Warn on variable length arrays
+        -Walloca                    # Warn on alloca usage
+        -Wtype-limits               # Warn on type limits (comparison always true/false)
+        -Wshift-overflow=2          # Warn on shift overflow
+        -Wstringop-overflow=4       # Warn on string operation overflow (GCC)
+        -Warith-conversion          # Warn on arithmetic conversion issues
+        -Wdangling-else             # Warn on dangling else
+        -Wmissing-field-initializers # Warn on missing field initializers
+        -Wmissing-braces            # Warn on missing braces in initializers
+        -Wparentheses               # Warn on suspicious use of parentheses
+        -Wsequence-point            # Warn on undefined sequence point behavior
+        -Wreturn-type               # Warn on missing return type
+        -Wunused-result             # Warn when ignoring return value
+        -Wsizeof-pointer-memaccess  # Warn on sizeof(ptr) in memset/memcpy
     )
     # GCC-specific warnings
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
@@ -75,6 +98,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             -Warray-bounds=2            # Stricter array bounds checking
             -Wattribute-alias=2         # Warn on attribute alias issues
             -Wtrampolines               # Warn on trampoline generation (security)
+            -Wstringop-truncation       # Warn on string truncation
+            -Wformat-overflow=2         # Warn on format string overflow
+            -Wformat-truncation=2       # Warn on format string truncation
+            -Walloc-zero                # Warn on zero-size allocation
+            -Wnonnull                   # Warn on NULL passed to nonnull param
+            -Wnonnull-compare           # Warn on nonnull comparison
+            -Wclass-memaccess           # Warn on memset/memcpy on non-trivial class
+            -Wsuggest-final-types       # Suggest final on types
+            -Wsuggest-final-methods     # Suggest final on methods
+            -Wnoexcept                  # Warn on missing noexcept
+            -Wstrict-null-sentinel      # Warn on strict null sentinel
+            -Wctor-dtor-privacy         # Warn on useless ctor/dtor
+            -Wdelete-non-virtual-dtor   # Warn on delete non-virtual dtor
+            -Weffc++                    # Warn on Effective C++ violations
         )
     endif()
     # Clang-specific warnings
@@ -85,6 +122,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             -Wunreachable-code-aggressive # Aggressive unreachable code detection
             -Wno-c++98-compat           # Disable C++98 compatibility warnings
             -Wno-c++98-compat-pedantic  # Disable C++98 pedantic warnings
+            -Wloop-analysis             # Loop analysis warnings
+            -Wmove                      # Warn on suspicious move operations
+            -Wrange-loop-analysis       # Range loop analysis
+            -Wredundant-move            # Warn on redundant std::move
+            -Wself-move                 # Warn on self-move
+            -Wconsumed                  # Consumed analysis (uniqueness checking)
+            -Watomic-implicit-seq-cst   # Warn on implicit sequential consistency
+            -Wextra-semi-stmt           # Warn on extra semicolons in statements
+            -Wgnu                       # Warn on GNU extensions
+            -Wheader-hygiene            # Warn on header hygiene issues
+            -Widiomatic-parentheses     # Warn on non-idiomatic parentheses
+            -Wnewline-eof               # Warn on missing newline at end of file
+            -Wreturn-std-move           # Warn on missed return std::move
         )
     endif()
     if(SAPPP_WERROR)

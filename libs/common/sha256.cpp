@@ -6,15 +6,16 @@
 #include "sappp/common.hpp"
 #include <array>
 #include <cstring>
-#include <sstream>
+#include <format>
 #include <iomanip>
+#include <sstream>
 
 namespace sappp::common {
 
 namespace {
 
 // SHA-256 constants
-constexpr std::array<uint32_t, 64> K = {
+constexpr std::array<uint32_t, 64> K = {{
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
@@ -31,7 +32,7 @@ constexpr std::array<uint32_t, 64> K = {
     0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-};
+}};
 
 inline uint32_t rotr(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32 - n));
@@ -63,7 +64,7 @@ inline uint32_t gamma1(uint32_t x) {
 
 class SHA256 {
 public:
-    SHA256() { reset(); }
+    SHA256() : state_{}, buffer_{}, buffer_len_{0}, count_{0} { reset(); }
 
     void reset() {
         state_[0] = 0x6a09e667;
@@ -160,12 +161,12 @@ private:
 };
 
 std::string to_hex(const std::array<uint8_t, 32>& hash) {
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
+    std::string result;
+    result.reserve(64);
     for (uint8_t b : hash) {
-        oss << std::setw(2) << static_cast<int>(b);
+        result += std::format("{:02x}", b);
     }
-    return oss.str();
+    return result;
 }
 
 } // namespace

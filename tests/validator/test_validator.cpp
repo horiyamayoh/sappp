@@ -36,11 +36,8 @@ private:
 };
 
 std::string object_path_for_hash(const fs::path& base_dir, const std::string& hash) {
-    std::size_t digest_start = 0;
-    const std::string prefix = "sha256:";
-    if (hash.rfind(prefix, 0) == 0) {
-        digest_start = prefix.size();
-    }
+    constexpr std::string_view prefix = "sha256:";
+    std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0;
     std::string shard = hash.substr(digest_start, 2);
     fs::path object_path = base_dir / "certstore" / "objects" / shard / (hash + ".json");
     return object_path.string();

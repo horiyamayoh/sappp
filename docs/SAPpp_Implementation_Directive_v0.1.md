@@ -105,7 +105,7 @@ repo/
 
 ### 2.2 言語と依存
 
-- 第一候補: C++17（Frontend: Clang LibToolingとの親和性）
+- 第一候補: C++23（モダンC++機能の活用・型安全性・コード品質向上）
 - JSON: `nlohmann::json`（または同等）
   - **ordered_json** または独自canonical serializerでキー順固定
 - sha256: 依存追加を避けるなら単体実装を `libs/common/sha256.*` に同梱

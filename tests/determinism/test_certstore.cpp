@@ -62,8 +62,8 @@ TEST(CertStore, PutGetDeterminism) {
     // Verify file is stored at correct sharded path: objects/<first2_hex>/<hash>.json
     // hash_canonical returns "sha256:<hex>", so the shard should be the first two
     // characters of the hex digest (after the "sha256:" prefix).
-    const std::string prefix = "sha256:";
-    ASSERT_TRUE(hash1.rfind(prefix, 0) == 0) << "Expected sha256: prefix in hash";
+    constexpr std::string_view prefix = "sha256:";
+    ASSERT_TRUE(hash1.starts_with(prefix)) << "Expected sha256: prefix in hash";
     std::string digest = hash1.substr(prefix.size());
     std::string shard = digest.substr(0, 2);
     std::filesystem::path expected_object_path =

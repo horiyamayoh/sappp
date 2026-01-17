@@ -14,8 +14,10 @@
 #include <cctype>
 #include <ctime>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iomanip>
+#include <ranges>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -27,17 +29,8 @@ namespace sappp::po {
 namespace {
 
 std::string current_time_utc() {
-    auto now = std::chrono::system_clock::now();
-    std::time_t now_time = std::chrono::system_clock::to_time_t(now);
-    std::tm utc_tm{};
-#if defined(_WIN32)
-    gmtime_s(&utc_tm, &now_time);
-#else
-    gmtime_r(&now_time, &utc_tm);
-#endif
-    std::ostringstream oss;
-    oss << std::put_time(&utc_tm, "%Y-%m-%dT%H:%M:%SZ");
-    return oss.str();
+    const auto now = std::chrono::system_clock::now();
+    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
 std::string read_file_contents(const std::string& path) {
@@ -53,7 +46,7 @@ std::string read_file_contents(const std::string& path) {
 std::string normalize_kind_token(std::string token) {
     std::transform(token.begin(), token.end(), token.begin(),
                    [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    if (token.rfind("ub.", 0) == 0) {
+    if (token.starts_with("ub.")) {
         token = token.substr(3);
     }
     return token;
@@ -181,18 +174,17 @@ std::string pretty_arg(const nlohmann::json& arg) {
 
 std::string format_pretty(const std::string& op,
                           const nlohmann::json& args) {
-    std::ostringstream oss;
-    oss << op << "(";
+    std::string result = op + "(";
     if (args.is_array()) {
         for (size_t i = 0; i < args.size(); ++i) {
             if (i > 0) {
-                oss << ", ";
+                result += ", ";
             }
-            oss << pretty_arg(args.at(i));
+            result += pretty_arg(args.at(i));
         }
     }
-    oss << ")";
-    return oss.str();
+    result += ")";
+    return result;
 }
 
 nlohmann::json build_predicate(const std::string& op,
@@ -291,10 +283,10 @@ nlohmann::json PoGenerator::generate(const nlohmann::json& nir_json) const {
         throw std::runtime_error("No sink instructions found for PO generation");
     }
 
-    std::stable_sort(pos.begin(), pos.end(),
-                     [](const nlohmann::json& a, const nlohmann::json& b) {
-                         return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
-                     });
+    std::ranges::stable_sort(pos,
+                              [](const nlohmann::json& a, const nlohmann::json& b) {
+                                  return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
+                              });
 
     output["pos"] = std::move(pos);
     return output;

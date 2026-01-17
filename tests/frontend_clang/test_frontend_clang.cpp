@@ -23,11 +23,11 @@ nlohmann::json make_build_snapshot(const std::string& cwd, const std::string& so
     nlohmann::json compile_unit = {
         {"tu_id", sappp::common::sha256_prefixed("tu")},
         {"cwd", sappp::common::normalize_path(cwd)},
-        {"argv", nlohmann::json::array({SAPPP_CXX_COMPILER, "-std=c++17", "-c", source_path})},
+        {"argv", nlohmann::json::array({SAPPP_CXX_COMPILER, "-std=c++23", "-c", source_path})},
         {"env_delta", nlohmann::json::object()},
         {"response_files", nlohmann::json::array()},
         {"lang", "c++"},
-        {"std", "c++17"},
+        {"std", "c++23"},
         {"target", {
             {"triple", "x86_64-unknown-linux-gnu"},
             {"abi", "sysv"},
