@@ -8,7 +8,7 @@ include(FetchContent)
 FetchContent_Declare(
     valijson
     GIT_REPOSITORY https://github.com/tristanpenman/valijson.git
-    GIT_TAG v1.0.0
+    GIT_TAG v1.0.2
 )
 FetchContent_MakeAvailable(valijson)
 

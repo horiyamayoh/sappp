@@ -35,7 +35,7 @@ std::string format_validation_errors(valijson::ValidationResults& results) {
             oss << "\n";
         }
         first = false;
-        oss << context << ": " << error.message;
+        oss << context << ": " << error.description;
     }
 
     return oss.str();
