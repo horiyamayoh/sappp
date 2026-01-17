@@ -1,0 +1,164 @@
+# SAP++ C++23 Code Formatting
+#
+# このファイルは clang-format を使ってコードスタイルを統一するための設定です。
+# 使用方法: clang-format -i <source-file>
+# VS Code: "Format Document" (Shift+Alt+F)
+#
+# 注意: C++23 の新機能（std::print, std::expected, ranges など）は
+#       自動フォーマットされますが、機能の選択自体は AGENTS.md を参照すること。
+
+---
+Language: Cpp
+Standard: c++23
+
+# ベーススタイル
+BasedOnStyle: LLVM
+
+# インデント
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+IndentPPDirectives: BeforeHash
+IndentExternBlock: AfterExternBlock
+IndentRequiresClause: true
+RequiresClausePosition: OwnLine
+
+# 行の長さ
+ColumnLimit: 100
+
+# 括弧
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: false
+  AfterClass: true
+  AfterControlStatement: Never
+  AfterEnum: false
+  AfterFunction: true
+  AfterNamespace: false
+  AfterStruct: true
+  AfterUnion: true
+  AfterExternBlock: false
+  BeforeCatch: false
+  BeforeElse: false
+  BeforeLambdaBody: false
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: false
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: false
+
+# 空白・改行
+SpaceAfterCStyleCast: false
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceAroundPointerQualifiers: Default
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceBeforeSquareBrackets: false
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 2
+SpacesInAngles: Never
+SpacesInCStyleCastParentheses: false
+SpacesInConditionalStatement: false
+SpacesInContainerLiterals: false
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: -1
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# 整列
+AlignAfterOpenBracket: Align
+AlignArrayOfStructures: Right
+AlignConsecutiveAssignments: None
+AlignConsecutiveBitFields: None
+AlignConsecutiveDeclarations: None
+AlignConsecutiveMacros: None
+AlignEscapedNewlines: Right
+AlignOperands: Align
+AlignTrailingComments: true
+
+# 関数・引数
+AllowAllArgumentsOnNextLine: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortBlocksOnASingleLine: Empty
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: All
+AllowShortLoopsOnASingleLine: false
+AlwaysBreakAfterReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+AlwaysBreakTemplateDeclarations: Yes
+BinPackArguments: false
+BinPackParameters: false
+
+# コンストラクタ
+BreakConstructorInitializers: BeforeComma
+ConstructorInitializerIndentWidth: 4
+PackConstructorInitializers: BinPack
+
+# ポインタ・参照
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# インクルード
+IncludeBlocks: Regroup
+IncludeCategories:
+  # Project headers (sappp)
+  - Regex: '^<sappp/'
+    Priority: 2
+  # C++ standard library
+  - Regex: '^<[a-z_]+>'
+    Priority: 3
+  # Third-party
+  - Regex: '^<'
+    Priority: 4
+  # Local headers
+  - Regex: '^"'
+    Priority: 1
+SortIncludes: CaseSensitive
+SortUsingDeclarations: true
+
+# その他
+AccessModifierOffset: -4
+BitFieldColonSpacing: Both
+BreakBeforeBinaryOperators: NonAssignment
+BreakBeforeConceptDeclarations: Always
+BreakBeforeTernaryOperators: true
+BreakInheritanceList: BeforeComma
+BreakStringLiterals: true
+CompactNamespaces: false
+Cpp11BracedListStyle: true
+EmptyLineAfterAccessModifier: Never
+EmptyLineBeforeAccessModifier: LogicalBlock
+FixNamespaceComments: true
+InsertBraces: false
+InsertNewlineAtEOF: true
+InsertTrailingCommas: None
+KeepEmptyLinesAtTheStartOfBlocks: false
+LambdaBodyIndentation: Signature
+MaxEmptyLinesToKeep: 1
+NamespaceIndentation: None
+PPIndentWidth: -1
+QualifierAlignment: Left
+ReflowComments: true
+RemoveSemicolon: true
+SeparateDefinitionBlocks: Leave
+ShortNamespaceLines: 1
+
+# C++23 特有の設定
+RequiresExpressionIndentation: OuterScope
+IntegerLiteralSeparator:
+  Binary: 4
+  Decimal: 3
+  Hex: 2

@@ -18,18 +18,42 @@ SAP++は、生成AIが出力するコードの品質を**静的解析のみ**で
 
 ### 必要環境
 
-- C++23対応コンパイラ (GCC 13+ / Clang 17+)
+- **C++23対応コンパイラ**:
+  - GCC 14+ (推奨) - `<print>` ヘッダが必要
+  - Clang 18+
 - CMake 3.16+
-- LLVM/Clang (libTooling)
-- nlohmann/json
+- LLVM/Clang (libTooling) - `frontend_clang` ビルド時
+- nlohmann/json (自動取得)
 
 ### ビルド手順
 
 ```bash
-mkdir build && cd build
-cmake ..
-cmake --build . -j$(nproc)
+# Ubuntu 24.04 LTS では GCC 14 をインストール
+sudo apt install gcc-14 g++-14
+
+# ビルド (GCC 14 を明示)
+cmake -S . -B build \
+    -DCMAKE_CXX_COMPILER=g++-14 \
+    -DCMAKE_C_COMPILER=gcc-14 \
+    -DCMAKE_BUILD_TYPE=Debug \
+    -DSAPPP_BUILD_TESTS=ON \
+    -DSAPPP_WERROR=ON
+cmake --build build --parallel
+
+# テスト実行
+ctest --test-dir build --output-on-failure
 ```
+
+### コーディングスタイル
+
+本プロジェクトは **C++23 を全面採用** しています。
+詳細は [AGENTS.md](AGENTS.md) のセクション8「コーディング規約」を参照してください。
+
+主な C++23 機能:
+- `std::print` / `std::println` - コンソール出力（`std::cout` は禁止）
+- `std::expected` - エラーハンドリング
+- `std::views::enumerate` - インデックス付きループ
+- `std::rotr` / `std::byteswap` - ビット操作
 
 ## 使い方
 

@@ -1,0 +1,86 @@
+# SAP++ C++23 Style Enforcement
+# 
+# このファイルは clang-tidy を使って C++23 スタイルを強制するための設定です。
+# 使用方法: clang-tidy --config-file=.clang-tidy <source-file>
+# または: cmake -DCMAKE_CXX_CLANG_TIDY="clang-tidy" ...
+
+---
+Checks: >
+  -*,
+  modernize-*,
+  performance-*,
+  readability-*,
+  cppcoreguidelines-*,
+  bugprone-*,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-pro-bounds-pointer-arithmetic,
+  -cppcoreguidelines-pro-type-reinterpret-cast,
+  -cppcoreguidelines-avoid-non-const-global-variables
+
+WarningsAsErrors: ''
+
+HeaderFilterRegex: '.*/(include|libs)/sappp/.*'
+
+CheckOptions:
+  # Naming conventions (snake_case for functions, PascalCase for types)
+  - key: readability-identifier-naming.FunctionCase
+    value: lower_case
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.MemberPrefix
+    value: 'm_'
+  - key: readability-identifier-naming.ConstantCase
+    value: UPPER_CASE
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  
+  # Performance
+  - key: performance-unnecessary-value-param.AllowedTypes
+    value: 'std::string_view;std::span'
+  
+  # Modernize settings
+  - key: modernize-use-nullptr.NullMacros
+    value: 'NULL'
+  - key: modernize-loop-convert.MinConfidence
+    value: reasonable
+  - key: modernize-loop-convert.NamingStyle
+    value: CamelCase
+  - key: modernize-pass-by-value.IncludeStyle
+    value: google
+  - key: modernize-replace-random-shuffle.IncludeStyle
+    value: google
+  - key: modernize-use-auto.MinTypeNameLength
+    value: '5'
+  - key: modernize-use-default-member-init.UseAssignment
+    value: 'false'
+  - key: modernize-use-emplace.ContainersWithPushBack
+    value: '::std::vector;::std::deque;::std::list'
+  - key: modernize-use-nodiscard.ReplacementString
+    value: '[[nodiscard]]'
+  
+  # Readability
+  - key: readability-braces-around-statements.ShortStatementLines
+    value: '1'
+  - key: readability-function-size.LineThreshold
+    value: '100'
+  - key: readability-function-size.StatementThreshold
+    value: '50'
+  - key: readability-function-size.BranchThreshold
+    value: '10'
+  - key: readability-function-size.ParameterThreshold
+    value: '6'
+  - key: readability-function-size.NestingThreshold
+    value: '4'
+  - key: readability-simplify-boolean-expr.ChainedConditionalReturn
+    value: 'true'
+  - key: readability-simplify-boolean-expr.ChainedConditionalAssignment
+    value: 'true'
