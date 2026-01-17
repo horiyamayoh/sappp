@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(sappp
     VERSION 0.1.0
     DESCRIPTION "Sound, Static Absence-Proving Analyzer for C++"
-    LANGUAGES CXX
+    LANGUAGES C CXX
 )
 
 # C++17 required

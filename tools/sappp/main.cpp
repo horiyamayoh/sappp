@@ -17,6 +17,9 @@
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
 #include "sappp/validator.hpp"
+#if defined(SAPPP_HAS_CLANG_FRONTEND)
+#include "frontend_clang/frontend.hpp"
+#endif
 #include <iostream>
 #include <string>
 #include <vector>
@@ -88,10 +91,10 @@ Options:
   --help, -h                Show this help
 
 Output:
-  <output>/nir.json
-  <output>/source_map.json
-  <output>/po_list.json
-  <output>/unknown_ledger.json
+  <output>/frontend/nir.json
+  <output>/frontend/source_map.json
+  <output>/po/po_list.json
+  <output>/analyzer/unknown_ledger.json
   <output>/certstore/
 )";
 }
@@ -219,11 +222,55 @@ int cmd_analyze(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "[analyze] Not yet implemented\n";
-    std::cout << "  snapshot: " << snapshot << "\n";
-    std::cout << "  output: " << output << "\n";
-    std::cout << "  jobs: " << (jobs == 0 ? "auto" : std::to_string(jobs)) << "\n";
+#if !defined(SAPPP_HAS_CLANG_FRONTEND)
+    std::cerr << "Error: frontend_clang is not built. Reconfigure with -DSAPPP_BUILD_CLANG_FRONTEND=ON\n";
+    return 1;
+#else
+    (void)jobs;
+    try {
+        std::ifstream in(snapshot);
+        if (!in) {
+            std::cerr << "Error: failed to open snapshot file: " << snapshot << "\n";
+            return 1;
+        }
+        nlohmann::json snapshot_json;
+        in >> snapshot_json;
+
+        sappp::frontend_clang::FrontendClang frontend;
+        sappp::frontend_clang::FrontendResult result = frontend.analyze(snapshot_json);
+
+        std::filesystem::path output_dir(output);
+        std::filesystem::path frontend_dir = output_dir / "frontend";
+        std::filesystem::create_directories(frontend_dir);
+
+        std::filesystem::path nir_path = frontend_dir / "nir.json";
+        std::filesystem::path source_map_path = frontend_dir / "source_map.json";
+
+        std::ofstream nir_out(nir_path);
+        if (!nir_out) {
+            std::cerr << "Error: failed to write NIR output: " << nir_path << "\n";
+            return 1;
+        }
+        nir_out << sappp::canonical::canonicalize(result.nir) << "\n";
+
+        std::ofstream source_out(source_map_path);
+        if (!source_out) {
+            std::cerr << "Error: failed to write source map output: " << source_map_path << "\n";
+            return 1;
+        }
+        source_out << sappp::canonical::canonicalize(result.source_map) << "\n";
+
+        std::cout << "[analyze] Wrote frontend outputs\n";
+        std::cout << "  snapshot: " << snapshot << "\n";
+        std::cout << "  output: " << output_dir.string() << "\n";
+        std::cout << "  nir: " << nir_path.string() << "\n";
+        std::cout << "  source_map: " << source_map_path.string() << "\n";
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: analyze failed: " << ex.what() << "\n";
+        return 1;
+    }
     return 0;
+#endif
 }
 
 int cmd_validate(int argc, char** argv) {

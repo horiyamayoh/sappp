@@ -10,4 +10,9 @@ target_link_libraries(sappp PRIVATE
     nlohmann_json::nlohmann_json
 )
 
+if(SAPPP_BUILD_CLANG_FRONTEND)
+    target_link_libraries(sappp PRIVATE sappp_frontend_clang)
+    target_compile_definitions(sappp PRIVATE SAPPP_HAS_CLANG_FRONTEND=1)
+endif()
+
 install(TARGETS sappp RUNTIME DESTINATION bin)
