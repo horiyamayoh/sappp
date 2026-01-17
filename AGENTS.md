@@ -1,0 +1,312 @@
+# AGENTS.md — SAP++ (sappp) Coding Agent Instructions
+
+このファイルは、SAP++ リポジトリで作業する **AIコーディングエージェント向けの“必須”運用手順**です。  
+**この指示に違反した変更は「未完了」扱い**です（たとえコードが動いて見えても）。
+
+> ⚠️ 重要: 本リポジトリのワークフローは **PR作成を前提にしない**。  
+> エージェントがPRを作れない環境でも、ここにある品質ゲート（ビルド/テスト/決定性/スキーマ）を満たしたうえで、  
+> **差分・再現手順・実行ログを“完了報告”として提示**すること。
+
+---
+
+## 0) まず守るべき最上位原則（破ったら失格）
+
+### 0.1 嘘SAFE/嘘BUGを絶対に作らない（最重要）
+- **SAFE/BUG は Validator が検証して初めて確定**。
+- 検証できない／検証に失敗したら **必ず UNKNOWN に降格**。
+- Analyzer が自信満々でも、Validator が通らないなら確定してはいけない。
+
+### 0.2 TCB境界を侵食しない（Validatorは“証拠だけ”）
+Validator は **証拠（Certificate）+ IR参照 + スキーマ + ハッシュ**だけで検証する。
+
+**Validator内で禁止**（= TCB侵食）:
+- Frontend（Clang）再実行／再解析
+- Analyzer 呼び出し
+- ソースコード再解釈（証拠以外の追加情報に依存する検証）
+
+### 0.3 決定性（並列でも同じ結果）を壊さない
+- 同一入力・同一設定・同一バージョンで、出力（少なくともカテゴリとID）が一致すること。
+- 並列処理は「並列計算 → 単一スレッドで安定マージ」。
+- 出力配列は **仕様で定めたキーで安定ソート（stable sort）**。
+- `unordered_map/set` の反復順など **不定順**に依存しない。
+
+### 0.4 カノニカルJSONとハッシュの約束を破らない
+- ハッシュ対象のJSONは **カノニカル化（canonical JSON）**で完全一致させる。
+- v1では **浮動小数点（NaN/Inf含む）禁止**。必要なら整数や文字列で表現する。
+
+### 0.5 スキーマ準拠は必須
+- 生成するJSON（build_snapshot / nir / source_map / po / unknown / cert / validated_results / pack_manifest / diff 等）は、
+  **保存前・読み込み後に必ずスキーマ検証**する。
+
+---
+
+## 1) 最優先コマンド（まずここだけは守る）
+
+### 1.1 ビルド（必須）
+**変更を加えたら、完了報告前に必ずビルドを通す。**
+
+```bash
+# 推奨（out-of-source build）
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSAPPP_BUILD_TESTS=ON -DSAPPP_BUILD_CLANG_FRONTEND=OFF
+cmake --build build --parallel
+```
+
+> タスクが `frontend_clang` を触る/必要とする場合は、次で **ONでも確認**すること。
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DSAPPP_BUILD_TESTS=ON -DSAPPP_BUILD_CLANG_FRONTEND=ON
+cmake --build build --parallel
+```
+
+### 1.2 テスト（必須）
+**ビルド成功後、完了報告前に必ず全テストを回す。**
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
+### 1.3 決定性（必須ゲート）
+Determinism系テストが存在するなら必ず実行する。
+
+```bash
+ctest --test-dir build -R determinism --output-on-failure
+```
+
+---
+
+## 2) Milestone A（器の完成）: Definition of Done（E2E）
+
+Milestone A は「器の完成」。Analyzer の精度は二の次でよい（UNKNOWNが多くても良い）が、
+**I/F・証拠・検証・再現性が成立**していることが合格条件。
+
+最低限成立させるE2E（ローカルで再現可能 & 決定的）:
+
+1. `sappp capture` が `build_snapshot.v1` を生成できる
+2. `sappp analyze` が以下を生成できる（全て Schema 適合）
+   - `nir.v1`（最低限: CFG + ub.check）
+   - `po.v1`（少なくとも div0 / null / oob のいずれかをPO化）
+   - `unknown.v1`（UNKNOWN必須要素を満たす）
+   - `cert.v1`（BUGまたはSAFEの証拠候補を最低1件以上）
+3. `sappp validate` が以下を達成
+   - BUG証拠: BugTrace を再生し PO違反を確認
+   - SAFE証拠: 検証できないなら UNKNOWN 降格（嘘SAFE禁止）
+4. `sappp pack` が `tar.gz + manifest.json(pack_manifest.v1)` を生成できる
+5. `sappp diff` が before/after の `validated_results.v1` を PO ID キーで比較し `diff.v1` を出せる
+6. `--jobs` を変えても **カテゴリとID**（po_id / unknown_stable_id / cert hashes）が一致する
+
+---
+
+## 3) CLI（出力I/F）の固定仕様（v0.1）
+
+### 3.1 グローバル
+- `--jobs <N>` : 並列度（デフォルト: ホストCPU）
+- `--schema-dir <dir>` : JSON Schema dir（デフォルト: 同梱schemas/）
+- バージョン三つ組（必ず成果物へ埋め込む）:
+  - `--semantics`（例: `sem.v1`）
+  - `--proof`（例: `proof.v1`）
+  - `--profile`（例: `safety.core.v1`）
+
+### 3.2 analyze 出力ディレクトリ（固定）
+`--out out/` の場合、少なくとも以下のパスに出力すること:
+
+- `out/frontend/nir.json`（`nir.v1`）
+- `out/frontend/source_map.json`（`source_map.v1`）
+- `out/po/po_list.json`（`po.v1`）
+- `out/analyzer/unknown_ledger.json`（`unknown.v1`）
+- `out/certstore/objects/...`（`cert.v1` objects）
+- `out/certstore/index/...`（`cert_index.v1`）
+- `out/config/analysis_config.json`（`analysis_config.v1`）
+
+> analyze 時点の SAFE/BUG は「候補」。確定は validate のみ。
+
+---
+
+## 4) 出力・ID・ハッシュ規約（v1運用ルール）
+
+### 4.1 安定ソート規約（v1）
+少なくとも以下は **保存直前に stable sort** を適用すること:
+
+- `po.v1` の `items[]` は `po_id` 昇順
+- `unknown.v1` の `items[]` は `unknown_stable_id` 昇順
+- `validated_results.v1` の `results[]` は `po_id` 昇順
+- `cert_index.v1` の `entries[]` は `po_id` 昇順
+- `nir.v1` の `functions[]` は `function_uid` 昇順
+  - `blocks[]` は `block_id` 昇順
+  - `insts[]` は `inst_id` 昇順
+
+### 4.2 po_id / unknown_stable_id の設計原則
+- `po_id` は **diff のキー**。生成要素（最低限）:
+  - 解析対象同一性（path + content hash）
+  - 関数同定（clang USR 等）
+  - IRアンカー（block_id + inst_id）
+  - po_kind
+  - semantics/profile/proof の version triple
+- `unknown_stable_id` は UNKNOWN台帳の追跡キー。po_id と紐付け、
+  不足理由（unknown_code）や不足補題（missing_lemma）が変化しても追跡できるようにする。
+
+### 4.3 パス正規化（v1）
+- 区切りは `/`
+- repo-root 相対パスを優先（`--repo-root` が与えられたら必ず相対化）
+- repo外パスは `external/<hash>/...` 等に写像
+- OS依存（Windowsドライブ/UNC/大小文字）は **normalize_path だけ**で吸収する
+
+### 4.4 カノニカルJSON（ハッシュ一致の根幹）
+- UTF-8
+- オブジェクトキーは辞書順
+- 配列は「仕様で順序が意味を持つ」場合のみ順序維持
+  - それ以外は **ソートしてから出力**（またはID順）
+- 数値は整数のみ（浮動小数禁止）
+- 改行/空白/インデントはハッシュ対象外（canonical serializerは最小表現が望ましい）
+
+**NG例（決定性が壊れる）**
+```cpp
+std::sort(items.begin(), items.end()); // 不安定ソートや比較が曖昧だと危険
+out << j.dump(2); // pretty をハッシュ対象に混ぜるのは危険
+```
+
+**OK例（決定性が成立しやすい）**
+```cpp
+std::stable_sort(items.begin(), items.end(),
+  [](const Item& a, const Item& b){ return a.id < b.id; });
+
+out << sappp::canonical::canonicalize(j); // canonical bytes を出力
+```
+
+---
+
+## 5) UNKNOWN は“台帳”である（開拓可能性が価値）
+
+UNKNOWN は「失敗ログ」ではない。**改善バックログ**として機能させる。
+
+unknown.v1 の1件ごとに、少なくとも以下を必須にする:
+- `unknown_code`（分類。例外/並行性などは保守的にUNKNOWNへ倒す）
+- `missing_lemma`（機械可読 + pretty）
+- `refinement_plan`（推奨精密化：パラメータ付き actions）
+- `unknown_stable_id`（差分追跡）
+
+Validator 側の基本姿勢:
+- 不一致/不足/未対応 → **UNKNOWNへ降格**して継続（`--strict` のときのみ即エラー）
+
+---
+
+## 6) テスト方針（“AI実装の自作自演”を潰す）
+
+### 6.1 追加・変更に対する最低要件
+- 新しい機能/クラス/分岐を追加したら **対応するテストも追加**。
+- 既存テストを削除・スキップして通すのは禁止（直せ）。
+
+### 6.2 最低限そろえるテストの型
+- Unit/Golden:
+  - canonical JSON（最重要）
+  - sha256
+  - path normalization
+  - schema validation（valid/invalid）
+- Validator:
+  - BUG（div0/null/oob の最小3ケース）
+  - 改ざん（HashMismatch → UNKNOWN降格 または strictでエラー）
+  - 欠落（MissingDependency → UNKNOWN降格）
+- Determinism:
+  - `--jobs=1` と `--jobs=8` で
+    - po_id集合一致
+    - unknown_stable_id集合一致
+    - validated_results一致
+    - pack manifest の digest 一致
+- E2E:
+  - `capture → analyze → validate → pack → diff` を自動化
+
+### 6.3 決定性の手動チェック（テストが未整備な場合の最低限）
+E2Eを2回回して、ID集合が一致することを確認する（例）:
+
+```bash
+# 例: out_j1 / out_j8 に出して比較（jq があるなら簡単）
+rm -rf out_j1 out_j8
+sappp analyze --build build_snapshot.json --out out_j1 --jobs 1
+sappp analyze --build build_snapshot.json --out out_j8 --jobs 8
+
+# validate も同様に
+sappp validate --in out_j1
+sappp validate --in out_j8
+
+# po_id / unknown_stable_id / results の集合一致を確認（jq想定）
+jq -r '.items[].po_id' out_j1/po/po_list.json | sort > /tmp/po_j1.txt
+jq -r '.items[].po_id' out_j8/po/po_list.json | sort > /tmp/po_j8.txt
+
+diff -u /tmp/po_j1.txt /tmp/po_j8.txt
+```
+
+> jq が無い場合は、同等の抽出を C++ テスト or 最小スクリプトで用意すること。
+
+---
+
+## 7) 触ってよい範囲 / 触ってはいけない範囲（境界）
+
+### 7.1 触ってよい（通常）
+- `libs/**`（common/canonical/build_capture/frontend_clang/ir/po/analyzer/specdb/certstore/validator/report/...）
+- `tools/sappp/**`（CLI）
+- `tests/**`
+- `schemas/**`（ただし破壊的変更は原則禁止、やるならバージョン更新）
+
+### 7.2 原則触らない（変更が必要なら理由と影響を明記）
+- CI設定（`.github/workflows/**` 等）
+- third_party の大規模差し替え
+- 既存スキーマの破壊的変更
+
+### 7.3 依存追加（要注意）
+- 新規ライブラリ追加は慎重に。
+  「決定性」「ビルド再現性」「TCB最小化」に悪影響がないことを説明できる場合のみ。
+
+---
+
+## 8) コーディング規約（C++）
+
+- C++17
+- 例外/エラー処理は“境界”でまとめ、深部で握り潰さない
+- 名前空間: `sappp::<module>`
+- 可能なら `const` / 参照 / move を適切に使い、巨大コピーを避ける
+- ログは決定性に影響させない（ログが出力JSONに混ざらないよう分離）
+
+**命名**
+- namespace / 関数: snake_case
+- 型: PascalCase
+- メンバ: `m_` prefix
+- 定数: UPPER_SNAKE_CASE
+
+---
+
+## 9) 禁止事項（やったら即「未完了」）
+
+1. ビルド/テスト未実行での完了宣言
+2. 既存テストの削除・スキップ・無効化
+3. 決定性破壊（不定順の出力、安定ソート無し、jobs差で結果が変わる）
+4. ハッシュ対象への浮動小数追加
+5. Validator内での Analyzer/Frontend 呼び出し
+6. スキーマ不適合なJSONを“とりあえず”出す
+7. 検証できないのに SAFE/BUG を確定させる（嘘SAFE/嘘BUG）
+
+---
+
+## 10) 完了報告フォーマット（PR不要でも品質を担保する）
+
+完了時は、次を **必ず** 提示すること（“やったつもり”防止）:
+
+1. 変更概要（何を、なぜ、どう変えた）
+2. 変更ファイル一覧
+3. 実行したコマンドと結果（ログを貼る）
+   - `cmake -S ... -B ...`
+   - `cmake --build ...`
+   - `ctest ...`
+4. 仕様への対応箇所（SRS/Directive/CLI Spec/ADR の該当章）
+5. 決定性への配慮点（どこで順序固定/ハッシュ固定をしたか）
+6. 既知の未対応（あれば）と、その場合に **UNKNOWNへ倒す理由**（unknown_code / missing_lemma / refinement_plan）
+7. 可能なら `git diff`（またはパッチ）を提示
+
+---
+
+## 付録: 仕様の一次ソース（必読）
+- `docs/SAPpp_Implementation_Directive_v0.1.md`
+- `docs/SAPpp_SRS_v1.1.md`
+- `docs/SAPpp_Detailed_Design_v0.1.md`
+- `docs/SAPpp_Architecture_Design_v0.1.md`
+- `docs/ADR/`（特に determinism / po_id / unknown / canonical json）
+- `docs/CLI_Spec_v0.1.md`
+- `schemas/*.schema.json`
