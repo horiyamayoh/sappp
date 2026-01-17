@@ -59,11 +59,25 @@ TEST(BuildCaptureTest, GeneratesSnapshotFromCompileCommands) {
     ASSERT_EQ(json.at("compile_units").size(), 2U);
 
     const auto& units = json.at("compile_units");
-    EXPECT_EQ(units.at(0).at("cwd"), "build");
-    EXPECT_EQ(units.at(0).at("lang"), "c");
-    EXPECT_EQ(units.at(0).at("std"), "c11");
-    EXPECT_EQ(units.at(1).at("lang"), "c++");
-    EXPECT_EQ(units.at(1).at("std"), "c++20");
+
+    // Units are sorted by tu_id (hash), not input order.
+    // Find each unit by language to verify properties.
+    const nlohmann::json* c_unit = nullptr;
+    const nlohmann::json* cpp_unit = nullptr;
+    for (const auto& unit : units) {
+        if (unit.at("lang") == "c") {
+            c_unit = &unit;
+        } else if (unit.at("lang") == "c++") {
+            cpp_unit = &unit;
+        }
+    }
+    ASSERT_NE(c_unit, nullptr) << "C unit not found";
+    ASSERT_NE(cpp_unit, nullptr) << "C++ unit not found";
+
+    EXPECT_EQ(c_unit->at("cwd"), "build");
+    EXPECT_EQ(c_unit->at("std"), "c11");
+    EXPECT_EQ(cpp_unit->at("cwd"), "build");
+    EXPECT_EQ(cpp_unit->at("std"), "c++20");
 
     for (const auto& unit : units) {
         nlohmann::json hash_input = {
