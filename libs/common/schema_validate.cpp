@@ -17,6 +17,30 @@ namespace sappp::common {
 
 namespace {
 
+void normalize_schema_defs(nlohmann::json& schema) {
+    if (schema.is_object()) {
+        if (schema.contains("$defs") && !schema.contains("definitions")) {
+            schema["definitions"] = schema["$defs"];
+        }
+
+        for (auto& [key, value] : schema.items()) {
+            if (key == "$ref" && value.is_string()) {
+                std::string ref = value.get<std::string>();
+                const std::string prefix = "#/$defs/";
+                if (ref.rfind(prefix, 0) == 0) {
+                    value = "#/definitions/" + ref.substr(prefix.size());
+                }
+            } else {
+                normalize_schema_defs(value);
+            }
+        }
+    } else if (schema.is_array()) {
+        for (auto& value : schema) {
+            normalize_schema_defs(value);
+        }
+    }
+}
+
 std::string format_validation_errors(valijson::ValidationResults& results) {
     std::ostringstream oss;
     valijson::ValidationResults::Error error;
@@ -59,6 +83,8 @@ bool validate_json(const nlohmann::json& j, const std::string& schema_path, std:
         error_out = std::string("Failed to parse schema JSON: ") + ex.what();
         return false;
     }
+
+    normalize_schema_defs(schema_json);
 
     valijson::Schema schema;
     valijson::SchemaParser parser;

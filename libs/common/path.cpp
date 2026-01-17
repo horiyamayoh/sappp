@@ -70,7 +70,7 @@ bool is_absolute_path(std::string_view path) {
 }
 
 std::string normalize_path(std::string_view input, std::string_view repo_root) {
-    if (input.empty()) return "";
+    if (input.empty()) return ".";
     
     std::string path_str(input);
     
@@ -111,8 +111,14 @@ std::string normalize_path(std::string_view input, std::string_view repo_root) {
     
     std::string normalized = join_path(resolved);
     
-    // Add leading slash for absolute paths (Unix style)
-    if (is_absolute_path(input) && prefix.empty()) {
+    // Add leading prefix for absolute paths
+    if (!prefix.empty()) {
+        if (normalized.empty()) {
+            normalized = prefix + "/";
+        } else {
+            normalized = prefix + "/" + normalized;
+        }
+    } else if (is_absolute_path(input)) {
         normalized = "/" + normalized;
     }
     

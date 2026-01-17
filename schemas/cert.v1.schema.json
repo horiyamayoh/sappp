@@ -793,7 +793,6 @@
   },
   "$id": "sappp:schema/cert.v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
   "oneOf": [
     {
       "$ref": "#/$defs/PoDef"
