@@ -41,3 +41,7 @@ coverage/
 *.gcov
 *.gcda
 *.gcno
+
+# Allow source certstore library
+!libs/certstore/
+!libs/certstore/**
