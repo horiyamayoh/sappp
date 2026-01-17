@@ -15,5 +15,4 @@ target_compile_definitions(test_validator PRIVATE
     SAPPP_SCHEMA_DIR="${CMAKE_SOURCE_DIR}/schemas"
 )
 
-include(GoogleTest)
-gtest_discover_tests(test_validator)
+sappp_register_gtest(test_validator validator)

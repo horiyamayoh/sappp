@@ -76,6 +76,7 @@ add_subdirectory(tools/sappp)
 
 # Tests
 if(SAPPP_BUILD_TESTS)
+    include(CTest)
     enable_testing()
     add_subdirectory(tests)
 endif()

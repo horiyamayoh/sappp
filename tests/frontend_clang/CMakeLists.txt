@@ -14,5 +14,4 @@ target_compile_definitions(test_frontend_clang PRIVATE
     SAPPP_CXX_COMPILER="${CMAKE_CXX_COMPILER}"
 )
 
-include(GoogleTest)
-gtest_discover_tests(test_frontend_clang)
+sappp_register_gtest(test_frontend_clang frontend_clang)

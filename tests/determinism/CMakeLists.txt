@@ -16,5 +16,4 @@ target_compile_definitions(test_determinism PRIVATE
     SAPPP_SCHEMA_DIR=\"${CMAKE_SOURCE_DIR}/schemas\"
 )
 
-include(GoogleTest)
-gtest_discover_tests(test_determinism)
+sappp_register_gtest(test_determinism determinism)
