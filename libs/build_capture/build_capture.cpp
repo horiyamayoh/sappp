@@ -207,14 +207,6 @@ nlohmann::json build_hash_input(const nlohmann::json& compile_unit) {
 BuildSnapshot::BuildSnapshot(nlohmann::json json)
     : m_json(std::move(json)) {}
 
-const nlohmann::json& BuildSnapshot::json() const {
-    return m_json;
-}
-
-nlohmann::json& BuildSnapshot::json() {
-    return m_json;
-}
-
 BuildCapture::BuildCapture(std::string repo_root, std::string schema_dir)
     : m_repo_root(std::move(repo_root)),
       m_schema_dir(std::move(schema_dir)) {}

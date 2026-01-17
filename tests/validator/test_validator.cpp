@@ -118,9 +118,17 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
         }}
     };
 
-    std::string po_hash = store.put(po_cert);
-    std::string ir_hash = store.put(ir_cert);
-    std::string bug_hash = store.put(bug_trace);
+    auto po_result = store.put(po_cert);
+    EXPECT_TRUE(po_result.has_value()) << "put(po_cert) failed: " << po_result.error().message;
+    std::string po_hash = *po_result;
+
+    auto ir_result = store.put(ir_cert);
+    EXPECT_TRUE(ir_result.has_value()) << "put(ir_cert) failed: " << ir_result.error().message;
+    std::string ir_hash = *ir_result;
+
+    auto bug_result = store.put(bug_trace);
+    EXPECT_TRUE(bug_result.has_value()) << "put(bug_trace) failed: " << bug_result.error().message;
+    std::string bug_hash = *bug_result;
 
     nlohmann::json proof_root = {
         {"schema_version", "cert.v1"},
@@ -137,8 +145,12 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
         {"hash_scope", "hash_scope.v1"}
     };
 
-    std::string root_hash = store.put(proof_root);
-    store.bind_po(po_id, root_hash);
+    auto root_result = store.put(proof_root);
+    EXPECT_TRUE(root_result.has_value()) << "put(proof_root) failed: " << root_result.error().message;
+    std::string root_hash = *root_result;
+
+    auto bind_result = store.bind_po(po_id, root_hash);
+    EXPECT_TRUE(bind_result.has_value()) << "bind_po() failed: " << bind_result.error().message;
 
     return {po_id, tu_id, root_hash, bug_hash};
 }

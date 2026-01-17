@@ -1,6 +1,10 @@
 /**
  * @file main.cpp
  * @brief SAP++ CLI entry point
+ *
+ * C++23 modernization:
+ * - Using std::print/std::println (C++23)
+ * - Using std::string_view where appropriate
  * 
  * Commands:
  *   capture   - Capture build conditions from compile_commands.json
@@ -22,24 +26,25 @@
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
 #include "frontend_clang/frontend.hpp"
 #endif
-#include <iostream>
-#include <string>
-#include <vector>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <print>
+#include <string>
+#include <string_view>
+#include <vector>
 
 namespace {
 
 void print_version() {
-    std::cout << "sappp " << sappp::VERSION << " (" << sappp::BUILD_ID << ")\n"
-              << "  semantics:    " << sappp::SEMANTICS_VERSION << "\n"
-              << "  proof_system: " << sappp::PROOF_SYSTEM_VERSION << "\n"
-              << "  profile:      " << sappp::PROFILE_VERSION << "\n";
+    std::println("sappp {} ({})", sappp::VERSION, sappp::BUILD_ID);
+    std::println("  semantics:    {}", sappp::SEMANTICS_VERSION);
+    std::println("  proof_system: {}", sappp::PROOF_SYSTEM_VERSION);
+    std::println("  profile:      {}", sappp::PROFILE_VERSION);
 }
 
 void print_help() {
-    std::cout << R"(SAP++ - Sound, Static Absence-Proving Analyzer for C++
+    std::print(R"(SAP++ - Sound, Static Absence-Proving Analyzer for C++
 
 Usage: sappp <command> [options]
 
@@ -60,11 +65,11 @@ Global Options:
   --output DIR, -o    Output directory
 
 Run 'sappp <command> --help' for command-specific options.
-)";
+)");
 }
 
 void print_capture_help() {
-    std::cout << R"(Usage: sappp capture [options]
+    std::print(R"(Usage: sappp capture [options]
 
 Capture build conditions from compile_commands.json
 
@@ -76,11 +81,11 @@ Options:
 
 Output:
   <output>/build_snapshot.json
-)";
+)");
 }
 
 void print_analyze_help() {
-    std::cout << R"(Usage: sappp analyze [options]
+    std::print(R"(Usage: sappp analyze [options]
 
 Run static analysis on captured build
 
@@ -99,11 +104,11 @@ Output:
   <output>/po/po_list.json
   <output>/analyzer/unknown_ledger.json
   <output>/certstore/
-)";
+)");
 }
 
 void print_validate_help() {
-    std::cout << R"(Usage: sappp validate [options]
+    std::print(R"(Usage: sappp validate [options]
 
 Validate certificates and confirm SAFE/BUG results
 
@@ -116,11 +121,11 @@ Options:
 
 Output:
   validated_results.json
-)";
+)");
 }
 
 void print_pack_help() {
-    std::cout << R"(Usage: sappp pack [options]
+    std::print(R"(Usage: sappp pack [options]
 
 Create reproducibility pack
 
@@ -132,11 +137,11 @@ Options:
 Output:
   <output>.tar.gz
   <output>.manifest.json
-)";
+)");
 }
 
 void print_diff_help() {
-    std::cout << R"(Usage: sappp diff [options]
+    std::print(R"(Usage: sappp diff [options]
 
 Compare before/after analysis results
 
@@ -148,7 +153,7 @@ Options:
 
 Output:
   diff.json
-)";
+)");
 }
 
 int cmd_capture(int argc, char** argv) {
@@ -170,7 +175,7 @@ int cmd_capture(int argc, char** argv) {
     }
 
     if (compile_commands.empty()) {
-        std::cerr << "Error: --compile-commands is required\n";
+        std::println(stderr, "Error: --compile-commands is required");
         print_capture_help();
         return 1;
     }
@@ -185,17 +190,17 @@ int cmd_capture(int argc, char** argv) {
 
         std::ofstream out(output_file);
         if (!out) {
-            std::cerr << "Error: failed to open output file: " << output_file << "\n";
+            std::println(stderr, "Error: failed to open output file: {}", output_file.string());
             return 1;
         }
         out << sappp::canonical::canonicalize(snapshot.json());
         out << "\n";
 
-        std::cout << "[capture] Wrote build_snapshot.json\n";
-        std::cout << "  input: " << compile_commands << "\n";
-        std::cout << "  output: " << output_file.string() << "\n";
+        std::println("[capture] Wrote build_snapshot.json");
+        std::println("  input: {}", compile_commands);
+        std::println("  output: {}", output_file.string());
     } catch (const std::exception& ex) {
-        std::cerr << "Error: capture failed: " << ex.what() << "\n";
+        std::println(stderr, "Error: capture failed: {}", ex.what());
         return 1;
     }
     return 0;
@@ -223,20 +228,20 @@ int cmd_analyze(int argc, char** argv) {
     }
 
     if (snapshot.empty()) {
-        std::cerr << "Error: --snapshot is required\n";
+        std::println(stderr, "Error: --snapshot is required");
         print_analyze_help();
         return 1;
     }
 
 #if !defined(SAPPP_HAS_CLANG_FRONTEND)
-    std::cerr << "Error: frontend_clang is not built. Reconfigure with -DSAPPP_BUILD_CLANG_FRONTEND=ON\n";
+    std::println(stderr, "Error: frontend_clang is not built. Reconfigure with -DSAPPP_BUILD_CLANG_FRONTEND=ON");
     return 1;
 #else
     (void)jobs;
     try {
         std::ifstream in(snapshot);
         if (!in) {
-            std::cerr << "Error: failed to open snapshot file: " << snapshot << "\n";
+            std::println(stderr, "Error: failed to open snapshot file: {}", snapshot);
             return 1;
         }
         nlohmann::json snapshot_json;
@@ -256,14 +261,14 @@ int cmd_analyze(int argc, char** argv) {
 
         std::ofstream nir_out(nir_path);
         if (!nir_out) {
-            std::cerr << "Error: failed to write NIR output: " << nir_path << "\n";
+            std::println(stderr, "Error: failed to write NIR output: {}", nir_path.string());
             return 1;
         }
         nir_out << sappp::canonical::canonicalize(result.nir) << "\n";
 
         std::ofstream source_out(source_map_path);
         if (!source_out) {
-            std::cerr << "Error: failed to write source map output: " << source_map_path << "\n";
+            std::println(stderr, "Error: failed to write source map output: {}", source_map_path.string());
             return 1;
         }
         source_out << sappp::canonical::canonicalize(result.source_map) << "\n";
@@ -281,19 +286,19 @@ int cmd_analyze(int argc, char** argv) {
         std::filesystem::path po_path = po_dir / "po_list.json";
         std::ofstream po_out(po_path);
         if (!po_out) {
-            std::cerr << "Error: failed to write PO output: " << po_path << "\n";
+            std::println(stderr, "Error: failed to write PO output: {}", po_path.string());
             return 1;
         }
         po_out << sappp::canonical::canonicalize(po_list) << "\n";
 
-        std::cout << "[analyze] Wrote frontend outputs\n";
-        std::cout << "  snapshot: " << snapshot << "\n";
-        std::cout << "  output: " << output_dir.string() << "\n";
-        std::cout << "  nir: " << nir_path.string() << "\n";
-        std::cout << "  source_map: " << source_map_path.string() << "\n";
-        std::cout << "  po: " << po_path.string() << "\n";
+        std::println("[analyze] Wrote frontend outputs");
+        std::println("  snapshot: {}", snapshot);
+        std::println("  output: {}", output_dir.string());
+        std::println("  nir: {}", nir_path.string());
+        std::println("  source_map: {}", source_map_path.string());
+        std::println("  po: {}", po_path.string());
     } catch (const std::exception& ex) {
-        std::cerr << "Error: analyze failed: " << ex.what() << "\n";
+        std::println(stderr, "Error: analyze failed: {}", ex.what());
         return 1;
     }
     return 0;
@@ -322,7 +327,7 @@ int cmd_validate(int argc, char** argv) {
     }
 
     if (input.empty()) {
-        std::cerr << "Error: --input is required\n";
+        std::println(stderr, "Error: --input is required");
         print_validate_help();
         return 1;
     }
@@ -332,12 +337,12 @@ int cmd_validate(int argc, char** argv) {
         nlohmann::json results = validator.validate(strict);
         validator.write_results(results, output);
 
-        std::cout << "[validate] Wrote validated_results.json\n";
-        std::cout << "  input: " << input << "\n";
-        std::cout << "  output: " << output << "\n";
-        std::cout << "  strict: " << (strict ? "yes" : "no") << "\n";
+        std::println("[validate] Wrote validated_results.json");
+        std::println("  input: {}", input);
+        std::println("  output: {}", output);
+        std::println("  strict: {}", strict ? "yes" : "no");
     } catch (const std::exception& ex) {
-        std::cerr << "Error: validate failed: " << ex.what() << "\n";
+        std::println(stderr, "Error: validate failed: {}", ex.what());
         return 1;
     }
     return 0;
@@ -359,14 +364,14 @@ int cmd_pack(int argc, char** argv) {
     }
 
     if (input.empty()) {
-        std::cerr << "Error: --input is required\n";
+        std::println(stderr, "Error: --input is required");
         print_pack_help();
         return 1;
     }
 
-    std::cout << "[pack] Not yet implemented\n";
-    std::cout << "  input: " << input << "\n";
-    std::cout << "  output: " << output << "\n";
+    std::println("[pack] Not yet implemented");
+    std::println("  input: {}", input);
+    std::println("  output: {}", output);
     return 0;
 }
 
@@ -389,20 +394,20 @@ int cmd_diff(int argc, char** argv) {
     }
 
     if (before.empty() || after.empty()) {
-        std::cerr << "Error: --before and --after are required\n";
+        std::println(stderr, "Error: --before and --after are required");
         print_diff_help();
         return 1;
     }
 
-    std::cout << "[diff] Not yet implemented\n";
-    std::cout << "  before: " << before << "\n";
-    std::cout << "  after: " << after << "\n";
-    std::cout << "  output: " << output << "\n";
+    std::println("[diff] Not yet implemented");
+    std::println("  before: {}", before);
+    std::println("  after: {}", after);
+    std::println("  output: {}", output);
     return 0;
 }
 
 int cmd_explain(int argc, char** argv) {
-    std::cout << "[explain] Not yet implemented\n";
+    std::println("[explain] Not yet implemented");
     (void)argc;
     (void)argv;
     return 0;
@@ -416,7 +421,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::string cmd = argv[1];
+    std::string_view cmd = argv[1];
 
     if (cmd == "--help" || cmd == "-h") {
         print_help();
@@ -444,7 +449,7 @@ int main(int argc, char** argv) {
     } else if (cmd == "explain") {
         return cmd_explain(sub_argc, sub_argv);
     } else {
-        std::cerr << "Unknown command: " << cmd << "\n";
+        std::println(stderr, "Unknown command: {}", cmd);
         print_help();
         return 1;
     }

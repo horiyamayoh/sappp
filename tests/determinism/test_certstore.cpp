@@ -1,6 +1,9 @@
 /**
  * @file test_certstore.cpp
  * @brief CertStore determinism tests
+ *
+ * C++23 modernization:
+ * - Using std::expected API for CertStore
  */
 
 #include "sappp/certstore.hpp"
@@ -40,7 +43,7 @@ public:
     TempDir(const TempDir&) = delete;
     TempDir& operator=(const TempDir&) = delete;
 
-    const std::filesystem::path& path() const { return m_path; }
+    [[nodiscard]] const std::filesystem::path& path() const { return m_path; }
 
 private:
     std::filesystem::path m_path;
@@ -54,8 +57,13 @@ TEST(CertStore, PutGetDeterminism) {
     CertStore store(temp_dir.path().string(), SAPPP_SCHEMA_DIR);
     json cert = make_ir_ref_cert();
 
-    std::string hash1 = store.put(cert);
-    std::string hash2 = store.put(cert);
+    auto result1 = store.put(cert);
+    ASSERT_TRUE(result1.has_value()) << "put() failed: " << result1.error().message;
+    std::string hash1 = *result1;
+
+    auto result2 = store.put(cert);
+    ASSERT_TRUE(result2.has_value()) << "put() failed: " << result2.error().message;
+    std::string hash2 = *result2;
 
     EXPECT_EQ(hash1, hash2);
 
@@ -72,11 +80,12 @@ TEST(CertStore, PutGetDeterminism) {
         << "Certificate not stored at expected path: " << expected_object_path;
 
     auto fetched = store.get(hash1);
-    ASSERT_TRUE(fetched.has_value());
+    ASSERT_TRUE(fetched.has_value()) << "get() failed: " << fetched.error().message;
     EXPECT_EQ(*fetched, cert);
 
     std::string po_id = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    store.bind_po(po_id, hash1);
+    auto bind_result = store.bind_po(po_id, hash1);
+    ASSERT_TRUE(bind_result.has_value()) << "bind_po() failed: " << bind_result.error().message;
 
     std::filesystem::path index_path = temp_dir.path() / "index" / (po_id + ".json");
     ASSERT_TRUE(std::filesystem::exists(index_path));

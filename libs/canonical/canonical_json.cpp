@@ -1,6 +1,12 @@
 /**
  * @file canonical_json.cpp
  * @brief Canonical JSON serialization (ADR-0101)
+ *
+ * C++23 modernization:
+ * - Using std::ranges algorithms and views
+ * - Using std::views::enumerate for indexed iteration
+ * - Using size_t literal suffix (uz)
+ * - Using [[nodiscard]] for pure functions
  */
 
 #include "sappp/canonical_json.hpp"
@@ -19,27 +25,31 @@ void validate_no_float(const nlohmann::json& j, const std::string& path) {
         throw std::runtime_error("Floating point numbers not allowed in canonical JSON at: " + path);
     }
     if (j.is_object()) {
-        for (auto& [key, val] : j.items()) {
+        for (const auto& [key, val] : j.items()) {
             validate_no_float(val, path + "." + key);
         }
     } else if (j.is_array()) {
-        for (size_t i = 0; i < j.size(); ++i) {
-            validate_no_float(j[i], std::format("{}[{}]", path, i));
+        // Use views::enumerate for cleaner indexed iteration
+        for (auto [i, elem] : std::views::enumerate(j)) {
+            validate_no_float(elem, std::format("{}[{}]", path, i));
         }
     }
 }
 
-// Recursively create a sorted copy of JSON
-nlohmann::json make_sorted_copy(const nlohmann::json& j) {
+/**
+ * @brief Recursively create a sorted copy of JSON (keys in lexicographic order)
+ */
+[[nodiscard]] nlohmann::json make_sorted_copy(const nlohmann::json& j) {
     if (j.is_object()) {
-        // Get keys and sort them
+        // Get keys and sort them using ranges
         std::vector<std::string> keys;
-        for (auto& [key, _] : j.items()) {
+        keys.reserve(j.size());
+        for (const auto& [key, _] : j.items()) {
             keys.push_back(key);
         }
         std::ranges::sort(keys);
         
-        // Create ordered object (nlohmann::ordered_json behavior)
+        // Create ordered object
         nlohmann::json result = nlohmann::json::object();
         for (const auto& key : keys) {
             result[key] = make_sorted_copy(j[key]);
@@ -47,6 +57,7 @@ nlohmann::json make_sorted_copy(const nlohmann::json& j) {
         return result;
     } else if (j.is_array()) {
         nlohmann::json result = nlohmann::json::array();
+        result.get_ref<nlohmann::json::array_t&>().reserve(j.size());
         for (const auto& elem : j) {
             result.push_back(make_sorted_copy(elem));
         }

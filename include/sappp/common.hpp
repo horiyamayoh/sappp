@@ -9,6 +9,35 @@
 #include <string_view>
 #include <vector>
 #include <cstdint>
+#include <expected>
+
+namespace sappp {
+
+/**
+ * @brief Error information for Result types
+ */
+struct Error {
+    std::string code;     ///< Machine-readable error code
+    std::string message;  ///< Human-readable error message
+
+    [[nodiscard]] static Error make(std::string code, std::string message) {
+        return Error{std::move(code), std::move(message)};
+    }
+};
+
+/**
+ * @brief Result type using std::expected (C++23)
+ * @tparam T Success value type
+ */
+template<typename T>
+using Result = std::expected<T, Error>;
+
+/**
+ * @brief Result type for void success using std::expected (C++23)
+ */
+using VoidResult = std::expected<void, Error>;
+
+} // namespace sappp
 
 namespace sappp::common {
 

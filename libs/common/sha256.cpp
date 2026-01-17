@@ -1,20 +1,28 @@
 /**
  * @file sha256.cpp
  * @brief SHA-256 implementation (standalone, no external dependency)
+ *
+ * C++23 modernization:
+ * - All helper functions are constexpr
+ * - Using std::rotl/rotr from <bit>
+ * - Using std::byteswap for endian conversion
+ * - Using std::views::enumerate for indexed iteration
+ * - Using size_t literal suffix (uz)
  */
 
 #include "sappp/common.hpp"
 #include <array>
+#include <bit>
+#include <cstddef>
 #include <cstring>
 #include <format>
-#include <iomanip>
-#include <sstream>
+#include <ranges>
 
 namespace sappp::common {
 
 namespace {
 
-// SHA-256 constants
+// SHA-256 constants (constexpr)
 constexpr std::array<uint32_t, 64> K = {{
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -34,32 +42,29 @@ constexpr std::array<uint32_t, 64> K = {{
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 }};
 
-inline uint32_t rotr(uint32_t x, uint32_t n) {
-    return (x >> n) | (x << (32 - n));
-}
-
-inline uint32_t ch(uint32_t x, uint32_t y, uint32_t z) {
+// SHA-256 helper functions (all constexpr, using C++23 std::rotr)
+[[nodiscard]] constexpr uint32_t ch(uint32_t x, uint32_t y, uint32_t z) noexcept {
     return (x & y) ^ (~x & z);
 }
 
-inline uint32_t maj(uint32_t x, uint32_t y, uint32_t z) {
+[[nodiscard]] constexpr uint32_t maj(uint32_t x, uint32_t y, uint32_t z) noexcept {
     return (x & y) ^ (x & z) ^ (y & z);
 }
 
-inline uint32_t sigma0(uint32_t x) {
-    return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22);
+[[nodiscard]] constexpr uint32_t sigma0(uint32_t x) noexcept {
+    return std::rotr(x, 2U) ^ std::rotr(x, 13U) ^ std::rotr(x, 22U);
 }
 
-inline uint32_t sigma1(uint32_t x) {
-    return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25);
+[[nodiscard]] constexpr uint32_t sigma1(uint32_t x) noexcept {
+    return std::rotr(x, 6U) ^ std::rotr(x, 11U) ^ std::rotr(x, 25U);
 }
 
-inline uint32_t gamma0(uint32_t x) {
-    return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
+[[nodiscard]] constexpr uint32_t gamma0(uint32_t x) noexcept {
+    return std::rotr(x, 7U) ^ std::rotr(x, 18U) ^ (x >> 3U);
 }
 
-inline uint32_t gamma1(uint32_t x) {
-    return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
+[[nodiscard]] constexpr uint32_t gamma1(uint32_t x) noexcept {
+    return std::rotr(x, 17U) ^ std::rotr(x, 19U) ^ (x >> 10U);
 }
 
 class SHA256 {
@@ -112,13 +117,14 @@ public:
         }
         transform();
 
-        // Output (big-endian)
+        // Output (big-endian) using views::enumerate
         std::array<uint8_t, 32> hash;
-        for (size_t i = 0; i < 8; ++i) {
-            hash[i * 4 + 0] = static_cast<uint8_t>(state_[i] >> 24);
-            hash[i * 4 + 1] = static_cast<uint8_t>(state_[i] >> 16);
-            hash[i * 4 + 2] = static_cast<uint8_t>(state_[i] >> 8);
-            hash[i * 4 + 3] = static_cast<uint8_t>(state_[i]);
+        for (auto [i, state] : std::views::enumerate(state_)) {
+            const auto idx = static_cast<std::size_t>(i) * 4uz;
+            hash[idx + 0uz] = static_cast<uint8_t>(state >> 24);
+            hash[idx + 1uz] = static_cast<uint8_t>(state >> 16);
+            hash[idx + 2uz] = static_cast<uint8_t>(state >> 8);
+            hash[idx + 3uz] = static_cast<uint8_t>(state);
         }
         return hash;
     }
@@ -127,14 +133,18 @@ private:
     void transform() {
         std::array<uint32_t, 64> w;
 
-        // Prepare message schedule
-        for (size_t i = 0; i < 16; ++i) {
-            w[i] = (static_cast<uint32_t>(buffer_[i * 4 + 0]) << 24) |
-                   (static_cast<uint32_t>(buffer_[i * 4 + 1]) << 16) |
-                   (static_cast<uint32_t>(buffer_[i * 4 + 2]) << 8) |
-                   (static_cast<uint32_t>(buffer_[i * 4 + 3]));
+        // Prepare message schedule using std::byteswap for big-endian conversion
+        for (std::size_t i = 0uz; i < 16uz; ++i) {
+            uint32_t val{};
+            std::memcpy(&val, &buffer_[i * 4uz], sizeof(val));
+            // Convert from big-endian to native
+            if constexpr (std::endian::native == std::endian::little) {
+                w[i] = std::byteswap(val);
+            } else {
+                w[i] = val;
+            }
         }
-        for (size_t i = 16; i < 64; ++i) {
+        for (std::size_t i = 16uz; i < 64uz; ++i) {
             w[i] = gamma1(w[i - 2]) + w[i - 7] + gamma0(w[i - 15]) + w[i - 16];
         }
 

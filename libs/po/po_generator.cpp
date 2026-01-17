@@ -1,6 +1,10 @@
 /**
  * @file po_generator.cpp
  * @brief Proof Obligation (PO) generator from NIR
+ *
+ * C++23 modernization:
+ * - Using std::views::enumerate and std::views::drop
+ * - Using std::ranges algorithms
  */
 
 #include "po_generator.hpp"
@@ -138,8 +142,9 @@ nlohmann::json build_predicate_args(const nlohmann::json& inst,
         const auto& inst_args = inst.at("args");
         if (!inst_args.empty() && inst_args.at(0).is_string()) {
             args.push_back(po_kind);
-            for (size_t i = 1; i < inst_args.size(); ++i) {
-                args.push_back(inst_args.at(i));
+            // Use views::drop to skip the first element
+            for (const auto& arg : inst_args | std::views::drop(1)) {
+                args.push_back(arg);
             }
         } else {
             args.push_back(po_kind);
@@ -176,11 +181,12 @@ std::string format_pretty(const std::string& op,
                           const nlohmann::json& args) {
     std::string result = op + "(";
     if (args.is_array()) {
-        for (size_t i = 0; i < args.size(); ++i) {
+        // Use views::enumerate to track index
+        for (auto [i, arg] : std::views::enumerate(args)) {
             if (i > 0) {
                 result += ", ";
             }
-            result += pretty_arg(args.at(i));
+            result += pretty_arg(arg);
         }
     }
     result += ")";

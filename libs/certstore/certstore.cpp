@@ -1,6 +1,10 @@
 /**
  * @file certstore.cpp
  * @brief Content-addressed certificate store implementation
+ *
+ * C++23 modernization:
+ * - Using std::expected for error handling
+ * - Using [[nodiscard]] consistently
  */
 
 #include "sappp/certstore.hpp"
@@ -10,7 +14,6 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-#include <stdexcept>
 
 namespace sappp::certstore {
 
@@ -31,42 +34,54 @@ CertStore::CertStore(std::string base_dir, std::string schema_dir)
     : m_base_dir(std::move(base_dir)),
       m_schema_dir(std::move(schema_dir)) {}
 
-std::string CertStore::put(const nlohmann::json& cert) {
+sappp::Result<std::string> CertStore::put(const nlohmann::json& cert) {
     std::string error;
     if (!sappp::common::validate_json(cert, cert_schema_path(), error)) {
-        throw std::runtime_error("Certificate schema validation failed: " + error);
+        return std::unexpected(Error::make("SchemaValidationFailed", 
+            "Certificate schema validation failed: " + error));
     }
 
     std::string hash = canonical_hash(cert);
-    write_json_file(object_path_for_hash(hash), cert);
+    if (auto result = write_json_file(object_path_for_hash(hash), cert); !result) {
+        return std::unexpected(result.error());
+    }
     return hash;
 }
 
-std::optional<nlohmann::json> CertStore::get(const std::string& hash) const {
+sappp::Result<nlohmann::json> CertStore::get(const std::string& hash) const {
     std::string path = object_path_for_hash(hash);
     if (!fs::exists(path)) {
-        return std::nullopt;
+        return std::unexpected(Error::make("NotFound", 
+            "Certificate not found: " + hash));
     }
 
-    nlohmann::json cert = read_json_file(path);
+    auto cert_result = read_json_file(path);
+    if (!cert_result) {
+        return std::unexpected(cert_result.error());
+    }
+
+    const nlohmann::json& cert = *cert_result;
 
     std::string error;
     if (!sappp::common::validate_json(cert, cert_schema_path(), error)) {
-        throw std::runtime_error("Stored certificate schema validation failed: " + error);
+        return std::unexpected(Error::make("SchemaValidationFailed", 
+            "Stored certificate schema validation failed: " + error));
     }
 
     std::string computed_hash = canonical_hash(cert);
     if (computed_hash != hash) {
-        throw std::runtime_error("Certificate hash mismatch: expected " + hash + ", got " + computed_hash);
+        return std::unexpected(Error::make("HashMismatch", 
+            "Certificate hash mismatch: expected " + hash + ", got " + computed_hash));
     }
 
     return cert;
 }
 
-void CertStore::bind_po(const std::string& po_id, const std::string& cert_hash) {
+sappp::VoidResult CertStore::bind_po(const std::string& po_id, const std::string& cert_hash) {
     std::string object_path = object_path_for_hash(cert_hash);
     if (!fs::exists(object_path)) {
-        throw std::runtime_error("Certificate hash not found: " + cert_hash);
+        return std::unexpected(Error::make("NotFound", 
+            "Certificate hash not found: " + cert_hash));
     }
 
     nlohmann::json index = {
@@ -77,10 +92,11 @@ void CertStore::bind_po(const std::string& po_id, const std::string& cert_hash) 
 
     std::string error;
     if (!sappp::common::validate_json(index, index_schema_path(), error)) {
-        throw std::runtime_error("Certificate index schema validation failed: " + error);
+        return std::unexpected(Error::make("SchemaValidationFailed", 
+            "Certificate index schema validation failed: " + error));
     }
 
-    write_json_file(index_path_for_po(po_id), index);
+    return write_json_file(index_path_for_po(po_id), index);
 }
 
 std::string CertStore::cert_schema_path() const {
@@ -99,10 +115,11 @@ std::string CertStore::object_path_for_hash(const std::string& hash) const {
     // Allow hashes with or without a "sha256:" prefix, but always shard based on
     // the first two hex characters of the digest portion.
     constexpr std::string_view prefix = "sha256:";
-    std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0;
+    std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0uz;
 
-    if (hash.size() < digest_start + 2) {
-        throw std::invalid_argument("Hash is too short: " + hash);
+    if (hash.size() < digest_start + 2uz) {
+        // This is a programming error, not a runtime error
+        return "";
     }
 
     std::string shard = hash.substr(digest_start, 2);
@@ -119,25 +136,30 @@ std::string CertStore::index_path_for_po(const std::string& po_id) const {
     return index_path.string();
 }
 
-void CertStore::write_json_file(const std::string& path, const nlohmann::json& payload) const {
+sappp::VoidResult CertStore::write_json_file(const std::string& path, const nlohmann::json& payload) const {
     fs::path out_path(path);
     ensure_parent_dir(out_path);
 
     std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) {
-        throw std::runtime_error("Failed to open file for write: " + out_path.string());
+        return std::unexpected(Error::make("IOError", 
+            "Failed to open file for write: " + out_path.string()));
     }
 
     out << sappp::canonical::canonicalize(payload);
     if (!out) {
-        throw std::runtime_error("Failed to write file: " + out_path.string());
+        return std::unexpected(Error::make("IOError", 
+            "Failed to write file: " + out_path.string()));
     }
+
+    return {};
 }
 
-nlohmann::json CertStore::read_json_file(const std::string& path) const {
+sappp::Result<nlohmann::json> CertStore::read_json_file(const std::string& path) const {
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {
-        throw std::runtime_error("Failed to open file for read: " + path);
+        return std::unexpected(Error::make("IOError", 
+            "Failed to open file for read: " + path));
     }
 
     std::ostringstream buffer;
@@ -146,7 +168,8 @@ nlohmann::json CertStore::read_json_file(const std::string& path) const {
     try {
         return nlohmann::json::parse(buffer.str());
     } catch (const std::exception& ex) {
-        throw std::runtime_error("Failed to parse JSON from " + path + ": " + ex.what());
+        return std::unexpected(Error::make("ParseError", 
+            "Failed to parse JSON from " + path + ": " + ex.what()));
     }
 }
 

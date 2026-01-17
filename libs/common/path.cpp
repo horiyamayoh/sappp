@@ -1,48 +1,67 @@
 /**
  * @file path.cpp
  * @brief Path normalization for deterministic output
+ *
+ * C++23 modernization:
+ * - Using std::ranges::views and algorithms
+ * - Using size_t literal suffix (uz)
  */
 
 #include "sappp/common.hpp"
 #include <algorithm>
-#include <sstream>
+#include <ranges>
+#include <string>
 #include <vector>
 
 namespace sappp::common {
 
 namespace {
 
-std::vector<std::string> split_path(std::string_view path) {
+/**
+ * @brief Split a path string into parts using ranges
+ */
+[[nodiscard]] std::vector<std::string> split_path(std::string_view path) {
     std::vector<std::string> parts;
-    std::string current;
     
-    for (char c : path) {
-        if (c == '/' || c == '\\') {
-            if (!current.empty()) {
-                parts.push_back(std::move(current));
-                current.clear();
+    // Use ranges to split by path separators
+    for (auto part : path | std::views::split('/')) {
+        std::string_view sv(part.begin(), part.end());
+        // Handle backslash as well by splitting each part
+        for (auto sub : sv | std::views::split('\\')) {
+            std::string_view sub_sv(sub.begin(), sub.end());
+            if (!sub_sv.empty()) {
+                parts.emplace_back(sub_sv);
             }
-        } else {
-            current += c;
         }
-    }
-    if (!current.empty()) {
-        parts.push_back(std::move(current));
     }
     return parts;
 }
 
-std::string join_path(const std::vector<std::string>& parts) {
-    if (parts.empty()) return "";
+/**
+ * @brief Join path parts with '/' separator using ranges
+ */
+[[nodiscard]] std::string join_path(const std::vector<std::string>& parts) {
+    if (parts.empty()) {
+        return "";
+    }
     
-    std::ostringstream oss;
+    std::string result;
+    // Pre-calculate size for efficiency
+    size_t total_size = parts.size() - 1uz; // separators
+    for (const auto& p : parts) {
+        total_size += p.size();
+    }
+    result.reserve(total_size);
+    
     bool first = true;
     for (const auto& p : parts) {
-        if (!first) oss << '/';
+        if (!first) {
+            result += '/';
+        }
         first = false;
-        oss << p;
+        result += p;
     }
-    return oss.str();
+    return result;
 }
 
 } // namespace
