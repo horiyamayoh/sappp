@@ -20,3 +20,6 @@ add_subdirectory(determinism)
 
 # End-to-end tests
 add_subdirectory(end_to_end)
+
+# Validator tests
+add_subdirectory(validator)

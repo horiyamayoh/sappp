@@ -43,3 +43,6 @@ coverage/
 *.gcov
 *.gcda
 *.gcno
+
+# CTest temporary files
+Testing/Temporary/
