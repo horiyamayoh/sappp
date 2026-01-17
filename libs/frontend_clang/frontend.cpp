@@ -240,6 +240,7 @@ public:
                     ir::Instruction ub_check;
                     ub_check.id = "I" + std::to_string(inst_index++);
                     ub_check.op = "ub.check";
+                    ub_check.args = {nlohmann::json("UB.DivZero"), nlohmann::json(true)};
                     ub_check.src = make_location(source_manager, func_decl->getBeginLoc());
                     nir_block.insts.push_back(std::move(ub_check));
                 }
