@@ -16,7 +16,9 @@
 #include "sappp/common.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
+#include "sappp/schema_validate.hpp"
 #include "sappp/validator.hpp"
+#include "po_generator.hpp"
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
 #include "frontend_clang/frontend.hpp"
 #endif
@@ -86,6 +88,7 @@ Options:
   --snapshot FILE           Path to build_snapshot.json (required)
   --output DIR, -o          Output directory (default: ./out)
   --jobs N, -j N            Number of parallel jobs
+  --schema-dir DIR          Path to schema directory (default: ./schemas)
   --config FILE             Analysis configuration file
   --specdb DIR              Path to Spec DB directory
   --help, -h                Show this help
@@ -202,6 +205,7 @@ int cmd_analyze(int argc, char** argv) {
     std::string snapshot;
     std::string output = "./out";
     int jobs = 0;
+    std::string schema_dir = "schemas";
 
     for (int i = 0; i < argc; ++i) {
         if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
@@ -213,6 +217,8 @@ int cmd_analyze(int argc, char** argv) {
             output = argv[++i];
         } else if ((std::strcmp(argv[i], "--jobs") == 0 || std::strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
             jobs = std::stoi(argv[++i]);
+        } else if (std::strcmp(argv[i], "--schema-dir") == 0 && i + 1 < argc) {
+            schema_dir = argv[++i];
         }
     }
 
@@ -241,7 +247,9 @@ int cmd_analyze(int argc, char** argv) {
 
         std::filesystem::path output_dir(output);
         std::filesystem::path frontend_dir = output_dir / "frontend";
+        std::filesystem::path po_dir = output_dir / "po";
         std::filesystem::create_directories(frontend_dir);
+        std::filesystem::create_directories(po_dir);
 
         std::filesystem::path nir_path = frontend_dir / "nir.json";
         std::filesystem::path source_map_path = frontend_dir / "source_map.json";
@@ -260,11 +268,30 @@ int cmd_analyze(int argc, char** argv) {
         }
         source_out << sappp::canonical::canonicalize(result.source_map) << "\n";
 
+        sappp::po::PoGenerator po_generator;
+        nlohmann::json po_list = po_generator.generate(result.nir);
+
+        std::string schema_error;
+        const std::filesystem::path po_schema_path =
+            std::filesystem::path(schema_dir) / "po.v1.schema.json";
+        if (!sappp::common::validate_json(po_list, po_schema_path.string(), schema_error)) {
+            throw std::runtime_error("po schema validation failed: " + schema_error);
+        }
+
+        std::filesystem::path po_path = po_dir / "po_list.json";
+        std::ofstream po_out(po_path);
+        if (!po_out) {
+            std::cerr << "Error: failed to write PO output: " << po_path << "\n";
+            return 1;
+        }
+        po_out << sappp::canonical::canonicalize(po_list) << "\n";
+
         std::cout << "[analyze] Wrote frontend outputs\n";
         std::cout << "  snapshot: " << snapshot << "\n";
         std::cout << "  output: " << output_dir.string() << "\n";
         std::cout << "  nir: " << nir_path.string() << "\n";
         std::cout << "  source_map: " << source_map_path.string() << "\n";
+        std::cout << "  po: " << po_path.string() << "\n";
     } catch (const std::exception& ex) {
         std::cerr << "Error: analyze failed: " << ex.what() << "\n";
         return 1;
