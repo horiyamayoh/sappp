@@ -3,7 +3,7 @@
  * @brief Certificate validator implementation
  */
 
-#include "validator/validator.hpp"
+#include "sappp/validator.hpp"
 
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"

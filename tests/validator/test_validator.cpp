@@ -1,8 +1,8 @@
 #include "sappp/certstore.hpp"
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"
+#include "sappp/validator.hpp"
 #include "sappp/version.hpp"
-#include "validator/validator.hpp"
 
 #include <gtest/gtest.h>
 
@@ -14,12 +14,26 @@ namespace {
 
 namespace fs = std::filesystem;
 
-fs::path create_temp_dir(const std::string& name) {
-    fs::path base = fs::temp_directory_path() / name;
-    fs::remove_all(base);
-    fs::create_directories(base);
-    return base;
-}
+/// RAII helper to create and clean up a temporary directory
+class TempDir {
+public:
+    explicit TempDir(const std::string& name)
+        : m_path(fs::temp_directory_path() / name) {
+        fs::remove_all(m_path);
+        fs::create_directories(m_path);
+    }
+    ~TempDir() {
+        std::error_code ec;
+        fs::remove_all(m_path, ec);
+    }
+    TempDir(const TempDir&) = delete;
+    TempDir& operator=(const TempDir&) = delete;
+
+    const fs::path& path() const { return m_path; }
+
+private:
+    fs::path m_path;
+};
 
 std::string object_path_for_hash(const fs::path& base_dir, const std::string& hash) {
     std::size_t digest_start = 0;
@@ -140,12 +154,12 @@ void write_json_file(const std::string& path, const nlohmann::json& payload) {
 } // namespace
 
 TEST(ValidatorTest, ValidatesBugTrace) {
-    fs::path input_dir = create_temp_dir("sappp_validator_bug");
+    TempDir temp_dir("sappp_validator_bug");
     std::string schema_dir = SAPPP_SCHEMA_DIR;
 
-    CertBundle bundle = build_cert_store(input_dir, schema_dir);
+    CertBundle bundle = build_cert_store(temp_dir.path(), schema_dir);
 
-    sappp::validator::Validator validator(input_dir.string(), schema_dir);
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
     nlohmann::json results = validator.validate(false);
 
     ASSERT_EQ(results.at("results").size(), 1u);
@@ -156,18 +170,18 @@ TEST(ValidatorTest, ValidatesBugTrace) {
 }
 
 TEST(ValidatorTest, DowngradesOnHashMismatch) {
-    fs::path input_dir = create_temp_dir("sappp_validator_hash_mismatch");
+    TempDir temp_dir("sappp_validator_hash_mismatch");
     std::string schema_dir = SAPPP_SCHEMA_DIR;
 
-    CertBundle bundle = build_cert_store(input_dir, schema_dir);
+    CertBundle bundle = build_cert_store(temp_dir.path(), schema_dir);
 
-    std::string bug_path = object_path_for_hash(input_dir, bundle.bug_trace_hash);
+    std::string bug_path = object_path_for_hash(temp_dir.path(), bundle.bug_trace_hash);
     std::ifstream bug_stream(bug_path);
     nlohmann::json bug_trace = nlohmann::json::parse(bug_stream);
     bug_trace.at("steps").at(0).at("ir")["block_id"] = "B2";
     write_json_file(bug_path, bug_trace);
 
-    sappp::validator::Validator validator(input_dir.string(), schema_dir);
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
     nlohmann::json results = validator.validate(false);
 
     const nlohmann::json& entry = results.at("results").at(0);
@@ -177,15 +191,15 @@ TEST(ValidatorTest, DowngradesOnHashMismatch) {
 }
 
 TEST(ValidatorTest, DowngradesOnMissingDependency) {
-    fs::path input_dir = create_temp_dir("sappp_validator_missing_dep");
+    TempDir temp_dir("sappp_validator_missing_dep");
     std::string schema_dir = SAPPP_SCHEMA_DIR;
 
-    CertBundle bundle = build_cert_store(input_dir, schema_dir);
+    CertBundle bundle = build_cert_store(temp_dir.path(), schema_dir);
 
-    std::string bug_path = object_path_for_hash(input_dir, bundle.bug_trace_hash);
+    std::string bug_path = object_path_for_hash(temp_dir.path(), bundle.bug_trace_hash);
     fs::remove(bug_path);
 
-    sappp::validator::Validator validator(input_dir.string(), schema_dir);
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
     nlohmann::json results = validator.validate(false);
 
     const nlohmann::json& entry = results.at("results").at(0);

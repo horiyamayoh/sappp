@@ -16,7 +16,7 @@
 #include "sappp/common.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
-#include "validator/validator.hpp"
+#include "sappp/validator.hpp"
 #include <iostream>
 #include <string>
 #include <vector>
