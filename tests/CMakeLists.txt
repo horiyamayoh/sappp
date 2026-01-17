@@ -23,3 +23,8 @@ add_subdirectory(end_to_end)
 
 # Validator tests
 add_subdirectory(validator)
+
+# Frontend (Clang) tests
+if(SAPPP_BUILD_CLANG_FRONTEND)
+    add_subdirectory(frontend_clang)
+endif()
