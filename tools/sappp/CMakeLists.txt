@@ -5,6 +5,7 @@ add_executable(sappp
 target_link_libraries(sappp PRIVATE
     sappp_common
     sappp_canonical
+    sappp_build_capture
     nlohmann_json::nlohmann_json
 )
 
