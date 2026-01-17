@@ -13,6 +13,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # Build options
 option(SAPPP_BUILD_TESTS "Build tests" ON)
 option(SAPPP_BUILD_DOCS "Build documentation" OFF)
+option(SAPPP_BUILD_CLANG_FRONTEND "Build Clang frontend (requires LLVM/Clang)" OFF)
 
 # Export compile_commands.json for tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -27,17 +28,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     add_compile_options(-Wall -Wextra -Wpedantic -Werror=return-type)
 endif()
 
-# Find dependencies
-find_package(LLVM REQUIRED CONFIG)
-find_package(Clang REQUIRED CONFIG)
-
-message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
-message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
-
-# Include LLVM/Clang headers
-include_directories(${LLVM_INCLUDE_DIRS})
-include_directories(${CLANG_INCLUDE_DIRS})
-add_definitions(${LLVM_DEFINITIONS})
+# Find dependencies (LLVM/Clang only if frontend enabled)
+if(SAPPP_BUILD_CLANG_FRONTEND)
+    find_package(LLVM REQUIRED CONFIG)
+    find_package(Clang REQUIRED CONFIG)
+    
+    message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
+    message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+    
+    # Include LLVM/Clang headers
+    include_directories(${LLVM_INCLUDE_DIRS})
+    include_directories(${CLANG_INCLUDE_DIRS})
+    add_definitions(${LLVM_DEFINITIONS})
+endif()
 
 # nlohmann/json - header only
 # Option 1: System installed
@@ -60,7 +63,9 @@ add_subdirectory(libs/canonical)
 add_subdirectory(libs/build_capture)
 add_subdirectory(libs/ir)
 add_subdirectory(libs/po)
-add_subdirectory(libs/frontend_clang)
+if(SAPPP_BUILD_CLANG_FRONTEND)
+    add_subdirectory(libs/frontend_clang)
+endif()
 add_subdirectory(libs/analyzer)
 add_subdirectory(libs/certstore)
 add_subdirectory(libs/validator)
