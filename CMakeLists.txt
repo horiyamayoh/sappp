@@ -47,6 +47,19 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wdouble-promotion          # Warn when float is implicitly promoted to double
         -Wformat=2                  # Strict printf/scanf format checking
         -Wimplicit-fallthrough      # Warn on fallthrough in switch without annotation
+        # Even stricter warnings
+        -Wcast-qual                 # Warn on cast removing qualifiers (const, volatile)
+        -Wzero-as-null-pointer-constant  # Warn on using 0 instead of nullptr
+        -Wextra-semi                # Warn on redundant semicolons
+        -Wmissing-declarations      # Warn if global function defined without declaration
+        -Wswitch-enum               # Warn if switch on enum doesn't handle all values
+        -Wundef                     # Warn if undefined macro is used in #if
+        -Wfloat-equal               # Warn on direct float equality comparison
+        -Wpointer-arith             # Warn on suspicious pointer arithmetic
+        -Wwrite-strings             # Warn on deprecated conversion from string literal
+        -Wdisabled-optimization     # Warn when optimization is disabled due to code complexity
+        -Winit-self                 # Warn on uninitialized self-assignment
+        -Wstrict-overflow=2         # Warn on strict overflow (level 2)
     )
     # GCC-specific warnings
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
@@ -55,6 +68,23 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
             -Wduplicated-branches       # Warn on duplicated branches
             -Wlogical-op                # Warn on suspicious logical operations
             -Wuseless-cast              # Warn on useless casts
+            -Wsuggest-attribute=pure    # Suggest pure attribute
+            -Wsuggest-attribute=const   # Suggest const attribute
+            -Wsuggest-attribute=noreturn # Suggest noreturn attribute
+            -Wsuggest-override          # Suggest override specifier
+            -Warray-bounds=2            # Stricter array bounds checking
+            -Wattribute-alias=2         # Warn on attribute alias issues
+            -Wtrampolines               # Warn on trampoline generation (security)
+        )
+    endif()
+    # Clang-specific warnings
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND SAPPP_CXX_FLAGS
+            -Wmost                      # Most warnings
+            -Wthread-safety             # Thread safety analysis
+            -Wunreachable-code-aggressive # Aggressive unreachable code detection
+            -Wno-c++98-compat           # Disable C++98 compatibility warnings
+            -Wno-c++98-compat-pedantic  # Disable C++98 pedantic warnings
         )
     endif()
     if(SAPPP_WERROR)
@@ -70,6 +100,22 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
         /w14905                     # Wide string literal cast to LPSTR
         /w14906                     # String literal cast to LPWSTR
         /w14928                     # Illegal copy-initialization
+        /w14242                     # Conversion from 'type1' to 'type2', possible loss of data
+        /w14254                     # Operator conversion, possible loss of data
+        /w14263                     # Member function does not override any base class virtual
+        /w14265                     # Class has virtual functions but destructor not virtual
+        /w14287                     # Unsigned/negative constant mismatch
+        /w14289                     # Loop control variable used outside for-loop scope
+        /w14296                     # Expression is always true/false
+        /w14311                     # Pointer truncation from 'type' to 'type'
+        /w14545                     # Expression before comma evaluates to function
+        /w14546                     # Function call before comma missing argument list
+        /w14547                     # Operator before comma has no effect
+        /w14549                     # Operator before comma has no effect
+        /w14555                     # Expression has no effect
+        /w14619                     # #pragma warning: nonexistent warning number
+        /w14946                     # Reinterpret_cast between related classes
+        /w15038                     # Data member not initialized in declaration order
     )
     if(SAPPP_WERROR)
         list(APPEND SAPPP_CXX_FLAGS /WX)
