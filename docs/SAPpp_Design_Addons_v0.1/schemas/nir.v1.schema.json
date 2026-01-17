@@ -1,0 +1,477 @@
+{
+  "$defs": {
+    "BasicBlock": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "insts": {
+          "items": {
+            "$ref": "#/$defs/Instruction"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "insts"
+      ],
+      "type": "object"
+    },
+    "Cfg": {
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/BasicBlock"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/Edge"
+          },
+          "type": "array"
+        },
+        "entry": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry",
+        "blocks",
+        "edges"
+      ],
+      "type": "object"
+    },
+    "Edge": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "kind": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "Expr": {
+      "additionalProperties": true,
+      "description": "Expression AST node. This schema intentionally allows additional fields to enable evolution; canonical form is defined by the DDD.",
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/ExprValue"
+          },
+          "type": "array"
+        },
+        "op": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pretty": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "type": "object"
+    },
+    "ExprValue": {
+      "description": "Expression child node or value. Numbers MUST be integers in v1 (no float).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Expr"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "FileRef": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/Path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "FunctionDef": {
+      "additionalProperties": false,
+      "properties": {
+        "cfg": {
+          "$ref": "#/$defs/Cfg"
+        },
+        "function_uid": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "mangled_name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "signature": {
+          "$ref": "#/$defs/FunctionSignature"
+        },
+        "tables": {
+          "$ref": "#/$defs/Tables"
+        }
+      },
+      "required": [
+        "function_uid",
+        "mangled_name",
+        "cfg"
+      ],
+      "type": "object"
+    },
+    "FunctionSignature": {
+      "additionalProperties": false,
+      "properties": {
+        "noexcept": {
+          "type": "boolean"
+        },
+        "params": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "type"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "return_type": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "variadic": {
+          "type": "boolean"
+        }
+      },
+      "type": "object"
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "Instruction": {
+      "additionalProperties": true,
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/ExprValue"
+          },
+          "type": "array"
+        },
+        "effects": {
+          "type": "object"
+        },
+        "id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        },
+        "op": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "src": {
+          "additionalProperties": false,
+          "properties": {
+            "col": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "file": {
+              "$ref": "#/$defs/Path"
+            },
+            "line": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "op"
+      ],
+      "type": "object"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tables": {
+      "additionalProperties": true,
+      "properties": {
+        "vcall_candidates": {
+          "items": {
+            "$ref": "#/$defs/VCallCandidateSet"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "TypeDef": {
+      "additionalProperties": false,
+      "properties": {
+        "clang_canonical": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "layout": {
+          "$ref": "#/$defs/TypeLayout"
+        },
+        "type_id": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "type_id",
+        "clang_canonical",
+        "layout"
+      ],
+      "type": "object"
+    },
+    "TypeLayout": {
+      "additionalProperties": false,
+      "properties": {
+        "align": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "size": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "size",
+        "align"
+      ],
+      "type": "object"
+    },
+    "VCallCandidateSet": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "methods": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "methods"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/nir.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/$defs/FileRef"
+      },
+      "type": "array"
+    },
+    "functions": {
+      "items": {
+        "$ref": "#/$defs/FunctionDef"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "profile_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "proof_system_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "schema_version": {
+      "const": "nir.v1"
+    },
+    "semantics_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    },
+    "tu_id": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "types": {
+      "items": {
+        "$ref": "#/$defs/TypeDef"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "tu_id",
+    "semantics_version",
+    "functions"
+  ],
+  "title": "SAP++ nir.v1 (Normalized IR)",
+  "type": "object"
+}

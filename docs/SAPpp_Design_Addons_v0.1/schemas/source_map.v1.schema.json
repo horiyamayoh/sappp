@@ -1,0 +1,209 @@
+{
+  "$defs": {
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "IrRef": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "function_uid": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "function_uid",
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "MacroFrame": {
+      "additionalProperties": false,
+      "properties": {
+        "call_loc": {
+          "$ref": "#/$defs/Location"
+        },
+        "def_loc": {
+          "$ref": "#/$defs/Location"
+        },
+        "macro_name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "macro_name",
+        "def_loc",
+        "call_loc"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SourceMapEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "expansion_loc": {
+          "$ref": "#/$defs/Location"
+        },
+        "ir_ref": {
+          "$ref": "#/$defs/IrRef"
+        },
+        "macro_stack": {
+          "items": {
+            "$ref": "#/$defs/MacroFrame"
+          },
+          "type": "array"
+        },
+        "spelling_loc": {
+          "$ref": "#/$defs/Location"
+        }
+      },
+      "required": [
+        "ir_ref",
+        "spelling_loc",
+        "expansion_loc"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/source_map.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "entries": {
+      "items": {
+        "$ref": "#/$defs/SourceMapEntry"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "source_map.v1"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    },
+    "tu_id": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "tu_id",
+    "entries"
+  ],
+  "title": "SAP++ source_map.v1",
+  "type": "object"
+}

@@ -1,0 +1,256 @@
+{
+  "$defs": {
+    "Category": {
+      "enum": [
+        "SAFE",
+        "BUG",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "DowngradeReasonCode": {
+      "enum": [
+        "SchemaInvalid",
+        "VersionMismatch",
+        "HashMismatch",
+        "MissingDependency",
+        "RuleViolation",
+        "ProofCheckFailed",
+        "UnsupportedProofFeature"
+      ],
+      "type": "string"
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Result": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "enum": [
+                  "SAFE",
+                  "BUG"
+                ]
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "then": {
+            "required": [
+              "certificate_root"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "category": {
+                "const": "UNKNOWN"
+              }
+            },
+            "required": [
+              "category"
+            ]
+          },
+          "then": {
+            "properties": {
+              "certificate_root": {
+                "not": {}
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "certificate_root": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "downgrade_reason_code": {
+          "$ref": "#/$defs/DowngradeReasonCode"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "po_id": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "validator_status": {
+          "$ref": "#/$defs/ValidatorStatus"
+        }
+      },
+      "required": [
+        "po_id",
+        "category",
+        "validator_status"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "ValidatorStatus": {
+      "enum": [
+        "Validated",
+        "Downgraded",
+        "SchemaInvalid",
+        "VersionMismatch",
+        "HashMismatch",
+        "MissingDependency",
+        "RuleViolation",
+        "ProofCheckFailed",
+        "UnsupportedProofFeature"
+      ],
+      "type": "string"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/validated_results.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "profile_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "proof_system_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/Result"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "validated_results.v1"
+    },
+    "semantics_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    },
+    "tu_id": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "tu_id",
+    "results",
+    "semantics_version",
+    "proof_system_version",
+    "profile_version"
+  ],
+  "title": "SAP++ validated_results.v1",
+  "type": "object"
+}

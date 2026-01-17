@@ -1,0 +1,185 @@
+{
+  "$defs": {
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "PackFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "description": "Path relative to pack root.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size_bytes"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/pack_manifest.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/$defs/PackFile"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "profile_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "proof_system_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "repro_level": {
+      "enum": [
+        "L0",
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "pack_manifest.v1"
+    },
+    "semantics_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "semantics_version",
+    "proof_system_version",
+    "profile_version",
+    "input_digest",
+    "repro_level",
+    "files"
+  ],
+  "title": "SAP++ pack_manifest.v1",
+  "type": "object"
+}

@@ -1,0 +1,237 @@
+{
+  "$defs": {
+    "Category": {
+      "enum": [
+        "SAFE",
+        "BUG",
+        "UNKNOWN"
+      ],
+      "type": "string"
+    },
+    "Change": {
+      "additionalProperties": false,
+      "properties": {
+        "change_kind": {
+          "$ref": "#/$defs/ChangeKind"
+        },
+        "details": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "from": {
+          "$ref": "#/$defs/SideResult"
+        },
+        "po_id": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "reason": {
+          "$ref": "#/$defs/ChangeReason"
+        },
+        "to": {
+          "$ref": "#/$defs/SideResult"
+        }
+      },
+      "required": [
+        "po_id",
+        "from",
+        "to",
+        "change_kind"
+      ],
+      "type": "object"
+    },
+    "ChangeKind": {
+      "enum": [
+        "New",
+        "Resolved",
+        "Regressed",
+        "Unchanged",
+        "Reclassified"
+      ],
+      "type": "string"
+    },
+    "ChangeReason": {
+      "description": "Machine-readable regression reason (REQ-REP-003).",
+      "minLength": 1,
+      "type": "string"
+    },
+    "DiffSide": {
+      "additionalProperties": false,
+      "properties": {
+        "input_digest": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/VersionString"
+        },
+        "proof_system_version": {
+          "$ref": "#/$defs/VersionString"
+        },
+        "results_digest": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "semantics_version": {
+          "$ref": "#/$defs/VersionString"
+        }
+      },
+      "required": [
+        "input_digest",
+        "semantics_version",
+        "proof_system_version",
+        "profile_version",
+        "results_digest"
+      ],
+      "type": "object"
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "SideResult": {
+      "additionalProperties": false,
+      "properties": {
+        "category": {
+          "$ref": "#/$defs/Category"
+        },
+        "certificate_root": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "category"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/diff.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "after": {
+      "$ref": "#/$defs/DiffSide"
+    },
+    "before": {
+      "$ref": "#/$defs/DiffSide"
+    },
+    "changes": {
+      "items": {
+        "$ref": "#/$defs/Change"
+      },
+      "type": "array"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "schema_version": {
+      "const": "diff.v1"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "before",
+    "after",
+    "changes"
+  ],
+  "title": "SAP++ diff.v1",
+  "type": "object"
+}

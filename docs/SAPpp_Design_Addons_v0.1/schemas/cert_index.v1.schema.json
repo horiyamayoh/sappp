@@ -1,0 +1,25 @@
+{
+  "$id": "sappp:schema/cert_index.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "po_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "root": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "cert_index.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "po_id",
+    "root"
+  ],
+  "title": "SAP++ certstore index (po_id -> root hash) v1",
+  "type": "object"
+}

@@ -1,0 +1,304 @@
+{
+  "$defs": {
+    "ContractBody": {
+      "additionalProperties": true,
+      "properties": {
+        "concurrency": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "failure": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "frame": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "lifetime": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "ownership": {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        "post": {
+          "$ref": "#/$defs/ContractClause"
+        },
+        "pre": {
+          "$ref": "#/$defs/ContractClause"
+        }
+      },
+      "type": "object"
+    },
+    "ContractClause": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        },
+        "pretty": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expr",
+        "pretty"
+      ],
+      "type": "object"
+    },
+    "ContractTarget": {
+      "additionalProperties": false,
+      "properties": {
+        "display_name": {
+          "type": "string"
+        },
+        "mangled": {
+          "type": "string"
+        },
+        "usr": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "usr"
+      ],
+      "type": "object"
+    },
+    "EvidenceMeta": {
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "description": "e.g., vendor_spec, manual_review, audit, tests, etc.",
+          "type": "string"
+        },
+        "ref": {
+          "description": "Document/ticket/review identifier",
+          "type": "string"
+        },
+        "verified_at": {
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Expr": {
+      "additionalProperties": true,
+      "description": "Expression AST node. This schema intentionally allows additional fields to enable evolution; canonical form is defined by the DDD.",
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/ExprValue"
+          },
+          "type": "array"
+        },
+        "op": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pretty": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "type": "object"
+    },
+    "ExprValue": {
+      "description": "Expression child node or value. Numbers MUST be integers in v1 (no float).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Expr"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tier": {
+      "enum": [
+        "Tier0",
+        "Tier1",
+        "Tier2",
+        "Disabled"
+      ],
+      "type": "string"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionScope": {
+      "additionalProperties": false,
+      "properties": {
+        "abi": {
+          "type": "string"
+        },
+        "conditions": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "library_version": {
+          "type": "string"
+        },
+        "priority": {
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/contract_ir.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "$ref": "#/$defs/ContractBody"
+    },
+    "contract_id": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "evidence": {
+      "$ref": "#/$defs/EvidenceMeta"
+    },
+    "notes": {
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "contract_ir.v1"
+    },
+    "target": {
+      "$ref": "#/$defs/ContractTarget"
+    },
+    "tier": {
+      "$ref": "#/$defs/Tier"
+    },
+    "version_scope": {
+      "$ref": "#/$defs/VersionScope"
+    }
+  },
+  "required": [
+    "schema_version",
+    "contract_id",
+    "target",
+    "tier",
+    "version_scope",
+    "contract"
+  ],
+  "title": "SAP++ contract_ir.v1",
+  "type": "object"
+}

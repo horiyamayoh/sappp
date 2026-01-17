@@ -1,0 +1,332 @@
+{
+  "$defs": {
+    "AlignInfo": {
+      "additionalProperties": true,
+      "properties": {
+        "max": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max"
+      ],
+      "type": "object"
+    },
+    "CompileUnit": {
+      "additionalProperties": false,
+      "properties": {
+        "argv": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "cwd": {
+          "$ref": "#/$defs/Path"
+        },
+        "env_delta": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Captured environment variables (delta or whitelist) used for compilation.",
+          "type": "object"
+        },
+        "frontend": {
+          "$ref": "#/$defs/Frontend"
+        },
+        "lang": {
+          "enum": [
+            "c",
+            "c++"
+          ],
+          "type": "string"
+        },
+        "response_files": {
+          "items": {
+            "$ref": "#/$defs/ResponseFile"
+          },
+          "type": "array"
+        },
+        "std": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "target": {
+          "$ref": "#/$defs/Target"
+        },
+        "tu_id": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "tu_id",
+        "cwd",
+        "argv",
+        "lang",
+        "std",
+        "target",
+        "frontend"
+      ],
+      "type": "object"
+    },
+    "DataLayout": {
+      "additionalProperties": true,
+      "properties": {
+        "align": {
+          "$ref": "#/$defs/AlignInfo"
+        },
+        "long_bits": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "ptr_bits": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "sizes": {
+          "additionalProperties": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "ptr_bits",
+        "long_bits",
+        "align"
+      ],
+      "type": "object"
+    },
+    "Frontend": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": [
+            "clang",
+            "clang-cl"
+          ],
+          "type": "string"
+        },
+        "resource_dir": {
+          "$ref": "#/$defs/Path"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "version"
+      ],
+      "type": "object"
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "Host": {
+      "additionalProperties": false,
+      "properties": {
+        "arch": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "hostname": {
+          "type": "string"
+        },
+        "os": {
+          "enum": [
+            "linux",
+            "windows",
+            "macos"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "os",
+        "arch"
+      ],
+      "type": "object"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "ResponseFile": {
+      "additionalProperties": false,
+      "properties": {
+        "content": {
+          "description": "Optional expanded content (for debugging).",
+          "type": "string"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        },
+        "sha256": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "properties": {
+        "abi": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "data_layout": {
+          "$ref": "#/$defs/DataLayout"
+        },
+        "triple": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "triple",
+        "abi",
+        "data_layout"
+      ],
+      "type": "object"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/build_snapshot.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "compile_units": {
+      "items": {
+        "$ref": "#/$defs/CompileUnit"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "host": {
+      "$ref": "#/$defs/Host"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "schema_version": {
+      "const": "build_snapshot.v1"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "host",
+    "compile_units"
+  ],
+  "title": "SAP++ build_snapshot.v1",
+  "type": "object"
+}

@@ -1,0 +1,307 @@
+{
+  "$defs": {
+    "Anchor": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/IrAnchor"
+        },
+        {
+          "properties": {
+            "src": {
+              "additionalProperties": false,
+              "properties": {
+                "col": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "file": {
+                  "$ref": "#/$defs/Path"
+                },
+                "line": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
+              "type": "object"
+            }
+          },
+          "type": "object"
+        }
+      ]
+    },
+    "Expr": {
+      "additionalProperties": true,
+      "description": "Expression AST node. This schema intentionally allows additional fields to enable evolution; canonical form is defined by the DDD.",
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/ExprValue"
+          },
+          "type": "array"
+        },
+        "op": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pretty": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "type": "object"
+    },
+    "ExprValue": {
+      "description": "Expression child node or value. Numbers MUST be integers in v1 (no float).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Expr"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "FunctionRef": {
+      "additionalProperties": false,
+      "properties": {
+        "mangled": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "usr": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "usr",
+        "mangled"
+      ],
+      "type": "object"
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "Po": {
+      "additionalProperties": false,
+      "properties": {
+        "anchor": {
+          "$ref": "#/$defs/Anchor"
+        },
+        "function": {
+          "$ref": "#/$defs/FunctionRef"
+        },
+        "po_id": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "po_kind": {
+          "$ref": "#/$defs/PoKind"
+        },
+        "predicate": {
+          "$ref": "#/$defs/Predicate"
+        },
+        "profile_version": {
+          "$ref": "#/$defs/VersionString"
+        },
+        "proof_system_version": {
+          "$ref": "#/$defs/VersionString"
+        },
+        "repo_identity": {
+          "$ref": "#/$defs/RepoIdentity"
+        },
+        "semantics_version": {
+          "$ref": "#/$defs/VersionString"
+        }
+      },
+      "required": [
+        "po_id",
+        "po_kind",
+        "profile_version",
+        "semantics_version",
+        "proof_system_version",
+        "repo_identity",
+        "function",
+        "anchor",
+        "predicate"
+      ],
+      "type": "object"
+    },
+    "PoKind": {
+      "description": "PO kind / sink kind. v1 includes a minimal core set; tools MAY extend with new kinds by bumping schema_version.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "Predicate": {
+      "additionalProperties": false,
+      "properties": {
+        "expr": {
+          "$ref": "#/$defs/Expr"
+        },
+        "pretty": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "expr",
+        "pretty"
+      ],
+      "type": "object"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/po.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "input_digest": {
+      "$ref": "#/$defs/Sha256"
+    },
+    "pos": {
+      "items": {
+        "$ref": "#/$defs/Po"
+      },
+      "minItems": 1,
+      "type": "array"
+    },
+    "profile_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "proof_system_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "schema_version": {
+      "const": "po.v1"
+    },
+    "semantics_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    },
+    "tu_id": {
+      "$ref": "#/$defs/Sha256"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "tu_id",
+    "pos"
+  ],
+  "title": "SAP++ po.v1 (Proof Obligations)",
+  "type": "object"
+}

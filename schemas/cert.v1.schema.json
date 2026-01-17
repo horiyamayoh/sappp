@@ -1,0 +1,834 @@
+{
+  "$defs": {
+    "AbstractState": {
+      "additionalProperties": false,
+      "properties": {
+        "init": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "value": {
+                "enum": [
+                  "init",
+                  "uninit",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "var": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "var",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "lifetime": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "obj": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "value": {
+                "enum": [
+                  "alive",
+                  "dead",
+                  "unknown"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "obj",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "nullness": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "value": {
+                "enum": [
+                  "null",
+                  "non-null",
+                  "maybe-null",
+                  "unknown"
+                ],
+                "type": "string"
+              },
+              "var": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "var",
+              "value"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "numeric": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "hi": {
+                "$ref": "#/$defs/InfinityInt"
+              },
+              "lo": {
+                "$ref": "#/$defs/InfinityInt"
+              },
+              "var": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "var",
+              "lo",
+              "hi"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "predicates": {
+          "items": {
+            "$ref": "#/$defs/Expr"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "BugTraceObj": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "BugTrace"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/TraceStep"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "trace_kind": {
+          "const": "ir_path.v1",
+          "type": "string"
+        },
+        "violation": {
+          "additionalProperties": false,
+          "properties": {
+            "po_id": {
+              "$ref": "#/$defs/Sha256"
+            },
+            "predicate_holds": {
+              "description": "Should be false at the violating state (i.e., predicate does NOT hold).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "po_id",
+            "predicate_holds"
+          ],
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "trace_kind",
+        "steps"
+      ],
+      "type": "object"
+    },
+    "CertKind": {
+      "enum": [
+        "PoDef",
+        "IrRef",
+        "Invariant",
+        "BugTrace",
+        "ContractRef",
+        "DependencyGraph",
+        "ProofRoot"
+      ],
+      "type": "string"
+    },
+    "ConcreteValue": {
+      "description": "Concrete value used in BugTrace. v1 supports integers, booleans, null, and symbolic pointers.",
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "ptr": {
+              "additionalProperties": false,
+              "properties": {
+                "alloc": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "offset": {
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "alloc",
+                "offset"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "ptr"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ContractRefObj": {
+      "additionalProperties": false,
+      "properties": {
+        "contract_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "ContractRef"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        },
+        "target": {
+          "additionalProperties": false,
+          "properties": {
+            "usr": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "usr"
+          ],
+          "type": "object"
+        },
+        "tier": {
+          "enum": [
+            "Tier0",
+            "Tier1",
+            "Tier2",
+            "Disabled"
+          ],
+          "type": "string"
+        },
+        "version_scope": {
+          "additionalProperties": true,
+          "type": "object"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "contract_id",
+        "tier",
+        "target"
+      ],
+      "type": "object"
+    },
+    "DependencyEdge": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "role": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "to": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "role"
+      ],
+      "type": "object"
+    },
+    "DependencyGraphObj": {
+      "additionalProperties": false,
+      "properties": {
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/DependencyEdge"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "const": "DependencyGraph"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/Sha256"
+          },
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "nodes",
+        "edges"
+      ],
+      "type": "object"
+    },
+    "Expr": {
+      "additionalProperties": true,
+      "description": "Expression AST node. This schema intentionally allows additional fields to enable evolution; canonical form is defined by the DDD.",
+      "properties": {
+        "args": {
+          "items": {
+            "$ref": "#/$defs/ExprValue"
+          },
+          "type": "array"
+        },
+        "op": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "pretty": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "op"
+      ],
+      "type": "object"
+    },
+    "ExprValue": {
+      "description": "Expression child node or value. Numbers MUST be integers in v1 (no float).",
+      "oneOf": [
+        {
+          "$ref": "#/$defs/Expr"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "InfinityInt": {
+      "oneOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "enum": [
+            "-inf",
+            "inf"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InvariantObj": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "Abstract domain identifier. v1 expects interval+null+lifetime+init.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "Invariant"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/InvariantPoint"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "pretty": {
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "domain",
+        "points"
+      ],
+      "type": "object"
+    },
+    "InvariantPoint": {
+      "additionalProperties": false,
+      "properties": {
+        "ir": {
+          "additionalProperties": false,
+          "properties": {
+            "block_id": {
+              "pattern": "^B[0-9]+$",
+              "type": "string"
+            },
+            "function_uid": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "inst_id": {
+              "pattern": "^I[0-9]+$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "function_uid",
+            "block_id"
+          ],
+          "type": "object"
+        },
+        "state": {
+          "$ref": "#/$defs/AbstractState"
+        }
+      },
+      "required": [
+        "ir",
+        "state"
+      ],
+      "type": "object"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "IrRefObj": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "function_uid": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        },
+        "kind": {
+          "const": "IrRef"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        },
+        "tu_id": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "tu_id",
+        "function_uid",
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "PoDef": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "PoDef"
+        },
+        "po": {
+          "additionalProperties": true,
+          "properties": {
+            "anchor": {
+              "$ref": "#/$defs/IrAnchor"
+            },
+            "function": {
+              "additionalProperties": false,
+              "properties": {
+                "mangled": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "usr": {
+                  "minLength": 1,
+                  "type": "string"
+                }
+              },
+              "required": [
+                "usr",
+                "mangled"
+              ],
+              "type": "object"
+            },
+            "po_id": {
+              "$ref": "#/$defs/Sha256"
+            },
+            "po_kind": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "predicate": {
+              "additionalProperties": false,
+              "properties": {
+                "expr": {
+                  "$ref": "#/$defs/Expr"
+                },
+                "pretty": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expr",
+                "pretty"
+              ],
+              "type": "object"
+            },
+            "profile_version": {
+              "$ref": "#/$defs/VersionString"
+            },
+            "proof_system_version": {
+              "$ref": "#/$defs/VersionString"
+            },
+            "repo_identity": {
+              "$ref": "#/$defs/RepoIdentity"
+            },
+            "semantics_version": {
+              "$ref": "#/$defs/VersionString"
+            }
+          },
+          "required": [
+            "po_id",
+            "po_kind",
+            "profile_version",
+            "semantics_version",
+            "proof_system_version",
+            "repo_identity",
+            "function",
+            "anchor",
+            "predicate"
+          ],
+          "type": "object"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "po"
+      ],
+      "type": "object"
+    },
+    "ProofRootObj": {
+      "additionalProperties": false,
+      "properties": {
+        "depends": {
+          "additionalProperties": false,
+          "properties": {
+            "assumptions": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "contracts": {
+              "items": {
+                "$ref": "#/$defs/Ref"
+              },
+              "type": "array"
+            },
+            "profile_version": {
+              "$ref": "#/$defs/VersionString"
+            },
+            "proof_system_version": {
+              "$ref": "#/$defs/VersionString"
+            },
+            "semantics_version": {
+              "$ref": "#/$defs/VersionString"
+            }
+          },
+          "required": [
+            "semantics_version",
+            "proof_system_version",
+            "profile_version"
+          ],
+          "type": "object"
+        },
+        "evidence": {
+          "$ref": "#/$defs/Ref"
+        },
+        "hash_scope": {
+          "const": "hash_scope.v1",
+          "type": "string"
+        },
+        "ir": {
+          "$ref": "#/$defs/Ref"
+        },
+        "kind": {
+          "const": "ProofRoot"
+        },
+        "po": {
+          "$ref": "#/$defs/Ref"
+        },
+        "result": {
+          "enum": [
+            "SAFE",
+            "BUG"
+          ],
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "po",
+        "ir",
+        "result",
+        "evidence",
+        "depends",
+        "hash_scope"
+      ],
+      "type": "object"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "$ref": "#/$defs/Sha256"
+        }
+      },
+      "required": [
+        "ref"
+      ],
+      "type": "object"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "TraceStep": {
+      "additionalProperties": false,
+      "properties": {
+        "bindings": {
+          "items": {
+            "$ref": "#/$defs/VarBinding"
+          },
+          "type": "array"
+        },
+        "edge_kind": {
+          "type": "string"
+        },
+        "ir": {
+          "$ref": "#/$defs/IrRefObj"
+        },
+        "notes": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "ir"
+      ],
+      "type": "object"
+    },
+    "VarBinding": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/ConcreteValue"
+        }
+      },
+      "required": [
+        "name",
+        "value"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/cert.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "$ref": "#/$defs/PoDef"
+    },
+    {
+      "$ref": "#/$defs/IrRefObj"
+    },
+    {
+      "$ref": "#/$defs/InvariantObj"
+    },
+    {
+      "$ref": "#/$defs/BugTraceObj"
+    },
+    {
+      "$ref": "#/$defs/ContractRefObj"
+    },
+    {
+      "$ref": "#/$defs/DependencyGraphObj"
+    },
+    {
+      "$ref": "#/$defs/ProofRootObj"
+    }
+  ],
+  "properties": {
+    "kind": {
+      "$ref": "#/$defs/CertKind"
+    },
+    "schema_version": {
+      "const": "cert.v1"
+    }
+  },
+  "required": [
+    "schema_version",
+    "kind"
+  ],
+  "title": "SAP++ cert.v1 (Certificate CAS object)",
+  "type": "object"
+}

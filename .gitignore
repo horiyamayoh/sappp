@@ -1,0 +1,43 @@
+# Build outputs
+build/
+out/
+cmake-build-*/
+
+# IDE
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compiled
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Analysis outputs (local)
+*.pack.tar.gz
+certstore/
+validated_results.json
+
+# Dependencies (if vendored locally)
+third_party/*/
+
+# Test artifacts
+tests/**/actual/
+tests/**/tmp/
+
+# Coverage
+coverage/
+*.gcov
+*.gcda
+*.gcno

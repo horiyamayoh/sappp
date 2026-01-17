@@ -1,0 +1,258 @@
+{
+  "$defs": {
+    "AnalysisSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "budget": {
+          "$ref": "#/$defs/Budget"
+        },
+        "domains": {
+          "$ref": "#/$defs/Domains"
+        },
+        "jobs": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "refinement": {
+          "$ref": "#/$defs/RefinementSettings"
+        }
+      },
+      "required": [
+        "budget"
+      ],
+      "type": "object"
+    },
+    "Budget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_iterations": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_states": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_summary_nodes": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "max_time_ms": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Domains": {
+      "additionalProperties": false,
+      "properties": {
+        "concurrency": {
+          "enum": [
+            "unsupported",
+            "hb.simple"
+          ],
+          "type": "string"
+        },
+        "lifetime": {
+          "enum": [
+            "simple"
+          ],
+          "type": "string"
+        },
+        "memory": {
+          "enum": [
+            "points-to.simple",
+            "points-to.context"
+          ],
+          "type": "string"
+        },
+        "numeric": {
+          "enum": [
+            "interval",
+            "octagon"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "GeneratedAt": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "IrAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "block_id": {
+          "pattern": "^B[0-9]+$",
+          "type": "string"
+        },
+        "inst_id": {
+          "pattern": "^I[0-9]+$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "block_id",
+        "inst_id"
+      ],
+      "type": "object"
+    },
+    "Location": {
+      "additionalProperties": false,
+      "properties": {
+        "col": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "file": {
+          "$ref": "#/$defs/Path"
+        },
+        "line": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "offset": {
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "file",
+        "line",
+        "col"
+      ],
+      "type": "object"
+    },
+    "Path": {
+      "description": "Path string. Canonicalization rules are specified outside JSON Schema.",
+      "minLength": 1,
+      "type": "string"
+    },
+    "RefinementSettings": {
+      "additionalProperties": false,
+      "properties": {
+        "local_smt": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "max_depth": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "max_vars": {
+              "minimum": 1,
+              "type": "integer"
+            },
+            "timeout_ms": {
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        },
+        "path_split": {
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "max_splits": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "RepoIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "content_sha256": {
+          "$ref": "#/$defs/Sha256"
+        },
+        "path": {
+          "$ref": "#/$defs/Path"
+        }
+      },
+      "required": [
+        "path",
+        "content_sha256"
+      ],
+      "type": "object"
+    },
+    "Sha256": {
+      "description": "Content digest in the form sha256:<64 lowercase hex>",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "Tool": {
+      "additionalProperties": false,
+      "properties": {
+        "build_id": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "version"
+      ],
+      "type": "object"
+    },
+    "VersionString": {
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_.-]+$",
+      "type": "string"
+    }
+  },
+  "$id": "sappp:schema/analysis_config.v1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "analysis": {
+      "$ref": "#/$defs/AnalysisSettings"
+    },
+    "generated_at": {
+      "$ref": "#/$defs/GeneratedAt"
+    },
+    "profile_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "proof_system_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "schema_version": {
+      "const": "analysis_config.v1"
+    },
+    "semantics_version": {
+      "$ref": "#/$defs/VersionString"
+    },
+    "tool": {
+      "$ref": "#/$defs/Tool"
+    }
+  },
+  "required": [
+    "schema_version",
+    "tool",
+    "generated_at",
+    "semantics_version",
+    "proof_system_version",
+    "profile_version",
+    "analysis"
+  ],
+  "title": "SAP++ analysis_config.v1",
+  "type": "object"
+}
