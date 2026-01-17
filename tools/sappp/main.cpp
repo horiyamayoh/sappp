@@ -14,7 +14,10 @@
 
 #include "sappp/version.hpp"
 #include "sappp/common.hpp"
+#include "sappp/build_capture.hpp"
 #include <iostream>
+#include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 #include <cstring>
@@ -163,10 +166,30 @@ int cmd_capture(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "[capture] Not yet implemented\n";
-    std::cout << "  compile_commands: " << compile_commands << "\n";
-    std::cout << "  output: " << output << "\n";
-    return 0;
+    try {
+        sappp::BuildCapture capture(repo_root);
+        sappp::BuildSnapshot snapshot = capture.capture(compile_commands);
+
+        std::filesystem::path output_dir(output);
+        std::filesystem::create_directories(output_dir);
+        std::filesystem::path output_path = output_dir / "build_snapshot.json";
+
+        std::ofstream out(output_path);
+        if (!out) {
+            std::cerr << "Error: failed to open output file: " << output_path << "\n";
+            return 1;
+        }
+
+        out << snapshot.dump(2) << "\n";
+
+        std::cout << "[capture] Wrote build snapshot\n";
+        std::cout << "  compile_commands: " << compile_commands << "\n";
+        std::cout << "  output: " << output_path << "\n";
+        return 0;
+    } catch (const std::exception& ex) {
+        std::cerr << "Error: " << ex.what() << "\n";
+        return 1;
+    }
 }
 
 int cmd_analyze(int argc, char** argv) {
