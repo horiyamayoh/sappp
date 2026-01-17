@@ -242,7 +242,7 @@ int cmd_analyze(int argc, char** argv) {
         nlohmann::json snapshot_json;
         in >> snapshot_json;
 
-        sappp::frontend_clang::FrontendClang frontend;
+        sappp::frontend_clang::FrontendClang frontend(schema_dir);
         sappp::frontend_clang::FrontendResult result = frontend.analyze(snapshot_json);
 
         std::filesystem::path output_dir(output);
