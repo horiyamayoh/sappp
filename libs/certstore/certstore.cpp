@@ -96,12 +96,22 @@ std::string CertStore::canonical_hash(const nlohmann::json& cert) const {
 }
 
 std::string CertStore::object_path_for_hash(const std::string& hash) const {
-    if (hash.size() < 2) {
+    // Allow hashes with or without a "sha256:" prefix, but always shard based on
+    // the first two hex characters of the digest portion.
+    std::size_t digest_start = 0;
+    const std::string prefix = "sha256:";
+    if (hash.rfind(prefix, 0) == 0) {
+        digest_start = prefix.size();
+    }
+
+    if (hash.size() < digest_start + 2) {
         throw std::invalid_argument("Hash is too short: " + hash);
     }
 
+    std::string shard = hash.substr(digest_start, 2);
+
     fs::path base(m_base_dir);
-    fs::path object_dir = base / "objects" / hash.substr(0, 2);
+    fs::path object_dir = base / "objects" / shard;
     fs::path object_path = object_dir / (hash + ".json");
     return object_path.string();
 }

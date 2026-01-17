@@ -791,6 +791,7 @@
       "type": "string"
     }
   },
+  "$comment": "additionalProperties is intentionally omitted at root level because oneOf branches (PoDef, IrRefObj, etc.) each define their own strict property sets. Root-level additionalProperties:false would conflict with the polymorphic structure.",
   "$id": "sappp:schema/cert.v1",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "oneOf": [
