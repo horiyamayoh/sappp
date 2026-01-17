@@ -13,5 +13,4 @@ target_compile_definitions(test_build_capture PRIVATE
     SAPPP_SCHEMA_DIR=\"${CMAKE_SOURCE_DIR}/schemas\"
 )
 
-include(GoogleTest)
-gtest_discover_tests(test_build_capture)
+sappp_register_gtest(test_build_capture build_capture)

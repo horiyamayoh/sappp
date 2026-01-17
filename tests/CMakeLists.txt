@@ -1,5 +1,3 @@
-enable_testing()
-
 # Find or fetch GoogleTest
 include(FetchContent)
 FetchContent_Declare(
@@ -8,6 +6,17 @@ FetchContent_Declare(
     GIT_TAG v1.14.0
 )
 FetchContent_MakeAvailable(googletest)
+
+include(GoogleTest)
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+
+function(sappp_register_gtest target label)
+    gtest_discover_tests(${target}
+        DISCOVERY_MODE PRE_TEST
+        TEST_PREFIX "${label}."
+        PROPERTIES LABELS ${label}
+    )
+endfunction()
 
 # Schema validation tests
 add_subdirectory(schemas)
