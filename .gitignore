@@ -27,6 +27,8 @@ Thumbs.db
 # Analysis outputs (local)
 *.pack.tar.gz
 certstore/
+!libs/certstore/
+!libs/certstore/**
 validated_results.json
 
 # Dependencies (if vendored locally)
