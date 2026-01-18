@@ -205,9 +205,12 @@ else
     GENERATOR=""
 fi
 
-# ccache（任意）
+# ccache（デフォルト有効。無効化は SAPPP_USE_CCACHE=0）
+if [ -z "${SAPPP_USE_CCACHE:-}" ]; then
+    SAPPP_USE_CCACHE=1
+fi
 CMAKE_LAUNCHER_OPTS=""
-if [ "${SAPPP_USE_CCACHE:-0}" = "1" ] && command -v ccache &> /dev/null; then
+if [ "${SAPPP_USE_CCACHE}" = "1" ] && command -v ccache &> /dev/null; then
     CMAKE_LAUNCHER_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 fi
 
@@ -302,7 +305,7 @@ PASSED=()
 FAILED=()
 SKIPPED=()
 
-# ビルドディレクトリ（Docker CI では tmpfs で隔離されるため常に build/ を使用）
+# ビルドディレクトリ（SAPPP_BUILD_DIR/SAPPP_BUILD_CLANG_DIR で変更可能）
 BUILD_DIR="${SAPPP_BUILD_DIR:-build}"
 BUILD_CLANG_DIR="${SAPPP_BUILD_CLANG_DIR:-build-clang}"
 CLANG_BUILD_DIR="$BUILD_CLANG_DIR"
@@ -404,7 +407,7 @@ run_check() {
     echo -e "${BLUE}▶ $name${NC}"
     echo -e "${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     
-    if eval "$cmd"; then
+    if ( eval "$cmd" ); then
         echo -e "${GREEN}✓ $name: PASSED${NC}"
         PASSED+=("$name")
     else

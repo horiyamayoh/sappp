@@ -129,7 +129,8 @@ if [ -f ".git/hooks/pre-push" ] && grep -q "SAP++" ".git/hooks/pre-push" 2>/dev/
         fi
     fi
 else
-    echo -e "  ${YELLOW}⚠ pre-push hook: 未インストール（スタンプ確認に推奨）${NC}"
+    echo -e "  ${RED}✗ pre-push hook: 未インストール（必須）${NC}"
+    ERRORS=$((ERRORS + 1))
     if [ "$FIX_MODE" = true ]; then
         echo -e "  ${BLUE}→ インストール中...${NC}"
         ./scripts/install-hooks.sh

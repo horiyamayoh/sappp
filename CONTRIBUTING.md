@@ -44,7 +44,13 @@ Docker だけで CI と同等のチェックを実行できます。
 
 # デバッグ用シェル
 ./scripts/docker-ci.sh --shell
+
+# キャッシュはデフォルト有効（不要なら無効化）
+./scripts/docker-ci.sh --no-cache
 ```
+
+Docker CI は `build-docker/` と `build-docker-clang/` を使用します
+（必要なら `SAPPP_BUILD_DIR` / `SAPPP_BUILD_CLANG_DIR` で変更）。
 
 ### 方法3: ローカル環境（上級者向け）
 
@@ -86,7 +92,8 @@ make install-hooks
 ./scripts/install-hooks.sh
 ```
 
-これにより、コミット前にフルチェックが自動実行されます。
+これにより、コミット前に smart チェックが実行され、push 前にスタンプ確認が行われます。
+pre-push hook は必須です（未インストールは `make check-env` でエラー）。
 
 ### 2. 開発サイクル
 
@@ -112,8 +119,11 @@ git push
 オプション（パフォーマンス/再現性）:
 
 ```bash
-# 並列度と ccache を明示
-SAPPP_BUILD_JOBS=8 SAPPP_USE_CCACHE=1 make quick
+# 並列度を明示（ccache はデフォルト有効）
+SAPPP_BUILD_JOBS=8 make quick
+
+# ccache を無効化したい場合
+SAPPP_USE_CCACHE=0 make quick
 ```
 
 ### 3. 利用可能なコマンド

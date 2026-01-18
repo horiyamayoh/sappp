@@ -1,0 +1,153 @@
+name: "Work Package"
+description: "Implementation task for SAP++ (Codex-friendly)"
+title: "[WP] "
+labels:
+  - "milestone-a"
+assignees: []
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Codex が処理しやすいように、必要情報を埋めてください。
+        不明な項目は「TBD」で構いません。
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: "目的/背景"
+      description: "このWPの狙いと背景を1-2文で"
+      placeholder: "例: CIの再現性を上げるため、Docker gate を統一する"
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_problem
+    attributes:
+      label: "現状/問題"
+      description: "いま何が問題で、どこが痛いか"
+      placeholder: "例: ローカルで通るがCIで落ちる"
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: "スコープ"
+      description: "今回触る範囲・対象"
+      placeholder: "- scripts/\n- docs/"
+    validations:
+      required: true
+
+  - type: textarea
+    id: non_scope
+    attributes:
+      label: "非スコープ"
+      description: "今回やらないこと（なければ「なし」）"
+      placeholder: "なし"
+    validations:
+      required: true
+
+  - type: textarea
+    id: inputs
+    attributes:
+      label: "入力（前提・依存）"
+      description: "依存するファイル/成果物/環境"
+      placeholder: |
+        参照ファイル: docs/QUALITY_GATE_STRATEGY.md
+        依存成果物: build/compile_commands.json
+    validations:
+      required: true
+
+  - type: textarea
+    id: outputs
+    attributes:
+      label: "出力（成果物）"
+      description: "生成/更新するファイル/成果物"
+      placeholder: "- scripts/docker-ci.sh"
+    validations:
+      required: true
+
+  - type: textarea
+    id: dod
+    attributes:
+      label: "完了条件（DoD）"
+      description: "チェックリスト形式で"
+      value: |
+        - [ ] 変更内容の説明が可能
+        - [ ] ビルド警告ゼロ（WERROR）
+        - [ ] 全テスト通過（ctest）
+        - [ ] 決定性テスト通過（ctest -R determinism）
+        - [ ] スキーマ検証通過（必要時）
+        - [ ] C++変更時: clang-format/clang-tidy 実行
+    validations:
+      required: true
+
+  - type: dropdown
+    id: docker
+    attributes:
+      label: "Docker 可否"
+      options:
+        - "使える"
+        - "使えない"
+        - "未確認"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: gate_mode
+    attributes:
+      label: "ゲートモード"
+      options:
+        - "smart"
+        - "full"
+        - "ci"
+    validations:
+      required: true
+
+  - type: textarea
+    id: env
+    attributes:
+      label: "重要な環境変数"
+      description: "必要なら記載（なければ「なし」）"
+      placeholder: "SAPPP_GATE_MODE=ci"
+    validations:
+      required: true
+
+  - type: textarea
+    id: commands
+    attributes:
+      label: "実行コマンド"
+      description: "再現/検証に必要なコマンド"
+      placeholder: "./scripts/docker-ci.sh --ci"
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: "参照"
+      description: "設計書/仕様書の該当セクション（不明ならTBD）"
+      placeholder: |
+        - Implementation Directive: §X
+        - DDD: §Y
+        - ADR/CLI Spec: §Z
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: "備考/注意点"
+      description: "AIエージェントへの追加指示等"
+      placeholder: "決定性/スキーマ/依存追加禁止など"
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        ### Codex 最終チェック（必須）
+        PR 作成前に必ず以下を実行し、成功するまで完了とみなさない:
+        ```bash
+        ./scripts/agent-final-check.sh
+        ```

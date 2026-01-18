@@ -16,7 +16,11 @@ This document summarizes the quality-gate updates and the issues they address.
 - `--ci` mode enforces CI parity and forbids skip flags.
 - clang-tidy uses Clang compile_commands in CI to match local behavior.
 - Docker CI can now write stamps (`--stamp`) for pre-push validation.
-- Optional Docker caching (`--cache`, `--cache-build`, `--ccache`) for speed.
+- Docker caching is enabled by default (ccache + host build). Disable with
+  `--no-cache` or `--tmpfs` when isolation is preferred.
+- Docker uses dedicated build dirs (`build-docker`, `build-docker-clang`) to
+  avoid host/CI cache path mismatches.
+- pre-push hook is treated as required (missing hook is flagged by check-env).
 - Stamp now records mode, tidy scope, and skipped steps.
 - Skipped steps are explicitly reported and downgrade full/ci stamps to partial.
 - GitHub CI runs the same Docker gate script as local for parity.

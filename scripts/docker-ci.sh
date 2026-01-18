@@ -29,8 +29,10 @@ IMAGE_NAME="sappp-ci"
 COMMAND="./scripts/pre-commit-check.sh"
 INTERACTIVE=false
 WRITE_STAMP=false
-USE_TMPFS=true
-ENABLE_CCACHE=false
+USE_TMPFS=false
+ENABLE_CCACHE=true
+BUILD_DIR="${SAPPP_BUILD_DIR:-build-docker}"
+BUILD_CLANG_DIR="${SAPPP_BUILD_CLANG_DIR:-build-docker-clang}"
 
 # オプション解析
 for arg in "$@"; do
@@ -57,12 +59,22 @@ for arg in "$@"; do
         --cache-build)
             USE_TMPFS=false
             ;;
+        --tmpfs)
+            USE_TMPFS=true
+            ;;
         --ccache)
             ENABLE_CCACHE=true
+            ;;
+        --no-ccache)
+            ENABLE_CCACHE=false
             ;;
         --cache)
             USE_TMPFS=false
             ENABLE_CCACHE=true
+            ;;
+        --no-cache)
+            USE_TMPFS=true
+            ENABLE_CCACHE=false
             ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
@@ -76,9 +88,12 @@ for arg in "$@"; do
             echo "  --build-only  ビルドのみ実行"
             echo "  --shell       コンテナ内でシェルを起動（デバッグ用）"
             echo "  --stamp       成功時にスタンプを保存（ホスト側に出力）"
-            echo "  --cache-build build/ を tmpfs ではなくホストに保存"
-            echo "  --ccache      ccache を永続化して高速化"
-            echo "  --cache       --cache-build + --ccache"
+            echo "  --cache-build build/ をホストに保存（デフォルト）"
+            echo "  --tmpfs       build/ を tmpfs に隔離"
+            echo "  --ccache      ccache を永続化して高速化（デフォルト）"
+            echo "  --no-ccache   ccache を無効化"
+            echo "  --cache       --cache-build + --ccache（デフォルト）"
+            echo "  --no-cache    --tmpfs + --no-ccache"
             echo "  --help, -h    このヘルプを表示"
             echo ""
             echo "Examples:"
@@ -139,11 +154,16 @@ main() {
     
     # Docker実行オプション
     # --user でホストの UID/GID を使用し、パーミッション問題を回避
-    # tmpfs でビルドディレクトリを隔離し、ホストの build/ との競合を回避
+    # tmpfs 有効時はビルドディレクトリを隔離し、ホストの build/ との競合を回避
     HOST_UID=$(id -u)
     HOST_GID=$(id -g)
     
+    CONTAINER_ROOT="/workspace"
     STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$PROJECT_ROOT/.git/sappp/ci-stamp.json}"
+    STAMP_FILE_CONTAINER="$STAMP_FILE"
+    if [[ "$STAMP_FILE" == "$PROJECT_ROOT"* ]]; then
+        STAMP_FILE_CONTAINER="${CONTAINER_ROOT}${STAMP_FILE#$PROJECT_ROOT}"
+    fi
 
     if [ "$ENABLE_CCACHE" = true ]; then
         mkdir -p "$PROJECT_ROOT/.cache/ccache"
@@ -157,19 +177,21 @@ main() {
         -e "TERM=xterm-256color"
         -e "SAPPP_CI_ENV=docker"
         -e "SAPPP_BUILD_JOBS=${SAPPP_BUILD_JOBS:-}"
+        -e "SAPPP_BUILD_DIR=$BUILD_DIR"
+        -e "SAPPP_BUILD_CLANG_DIR=$BUILD_CLANG_DIR"
         -e "HOME=/tmp"
     )
 
     if [ "$WRITE_STAMP" = true ]; then
-        DOCKER_OPTS+=(-e "SAPPP_CI_STAMP_FILE=$STAMP_FILE")
+        DOCKER_OPTS+=(-e "SAPPP_CI_STAMP_FILE=$STAMP_FILE_CONTAINER")
     else
         DOCKER_OPTS+=(-e "SAPPP_CI_STAMP_FILE=")
     fi
 
     if [ "$USE_TMPFS" = true ]; then
         DOCKER_OPTS+=(
-            --tmpfs "/workspace/build:exec,uid=$HOST_UID,gid=$HOST_GID"
-            --tmpfs "/workspace/build-clang:exec,uid=$HOST_UID,gid=$HOST_GID"
+            --tmpfs "/workspace/$BUILD_DIR:exec,uid=$HOST_UID,gid=$HOST_GID"
+            --tmpfs "/workspace/$BUILD_CLANG_DIR:exec,uid=$HOST_UID,gid=$HOST_GID"
         )
     fi
 

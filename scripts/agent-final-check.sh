@@ -27,8 +27,8 @@ cd "$PROJECT_ROOT"
 USE_DOCKER="${SAPPP_AGENT_USE_DOCKER:-auto}" # auto|force|local
 RETRIES="${SAPPP_AGENT_RETRIES:-2}"
 SLEEP_SECS="${SAPPP_AGENT_SLEEP:-3}"
-UNTIL_OK=false
-MODE="full"
+UNTIL_OK="${SAPPP_AGENT_UNTIL_OK:-false}" # true|false
+MODE="${SAPPP_GATE_MODE:-full}" # full|quick
 
 for arg in "$@"; do
     case $arg in

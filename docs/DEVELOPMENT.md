@@ -66,9 +66,20 @@ Dev Container を使わない場合でも、Docker で CI 同等の環境を利�
 # スタンプを書き込む（pre-push 連携用）
 ./scripts/docker-ci.sh --stamp
 
-# ビルドキャッシュを使う（ローカル高速化）
-./scripts/docker-ci.sh --cache
+# ビルドキャッシュはデフォルト有効（ccache + build/）
+# 無効化: tmpfs で隔離
+./scripts/docker-ci.sh --no-cache
+
+# ccache のみ無効化
+./scripts/docker-ci.sh --no-ccache
+
+# build/ のみ tmpfs にしたい場合
+./scripts/docker-ci.sh --tmpfs
 ```
+
+Docker CI はホストの `build/` と競合しないように、
+`build-docker/` と `build-docker-clang/` を使用します。
+必要なら `SAPPP_BUILD_DIR` / `SAPPP_BUILD_CLANG_DIR` で変更できます。
 
 ### ローカル環境構築（Ubuntu 24.04）
 
@@ -87,6 +98,8 @@ sudo npm install -g ajv-cli ajv-formats
 
 # Git hooks
 ./scripts/install-hooks.sh
+
+pre-push hook は必須です（未インストールの場合は `make check-env` でエラー）。
 ```
 
 ---
@@ -136,7 +149,7 @@ sappp/
 | 変数 | 説明 | 例 |
 |------|------|----|
 | `SAPPP_BUILD_JOBS` | build/ctest の並列度 | `8` |
-| `SAPPP_USE_CCACHE` | ccache を使用（1で有効） | `1` |
+| `SAPPP_USE_CCACHE` | ccache を使用（デフォルト: 1。無効化は 0） | `1` |
 | `SAPPP_LOG_DIR` | CIログの出力先 | `build/ci-logs` |
 
 ### ビルド例
@@ -263,6 +276,8 @@ workflow_dispatch からも同じ指定が可能です。
 
 # pre-push のスタンプ確認（高速）
 ./scripts/pre-push-check.sh
+
+pre-push hook は必須です（`make check-env` で未インストールはエラー）。
 ```
 
 pre-commit hook はデフォルトで `smart` モードを使用します。必要に応じて環境変数で切り替え可能です:

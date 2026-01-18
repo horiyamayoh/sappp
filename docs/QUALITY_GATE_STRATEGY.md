@@ -56,6 +56,9 @@ The pre-push check validates the stamp and rejects modes not in its allow-list
 - `SAPPP_PRE_PUSH_REQUIRE=full,ci,smart`
 - `./scripts/pre-push-check.sh --require=full,ci,smart`
 
+Install hooks once (`make install-hooks`). The pre-push hook is treated as
+required and is flagged by `make check-env` if missing.
+
 ## Recommended Workflow
 
 1. `make quick` while iterating
@@ -66,4 +69,8 @@ The pre-push check validates the stamp and rejects modes not in its allow-list
 
 - CI parity: `./scripts/docker-ci.sh --ci`
 - Stamp write: `./scripts/docker-ci.sh --stamp`
-- Cache for speed (local only): `./scripts/docker-ci.sh --cache`
+- Cache is enabled by default (ccache + host build).
+- Disable cache: `./scripts/docker-ci.sh --no-cache`
+- Use tmpfs while keeping ccache: `./scripts/docker-ci.sh --tmpfs`
+- Docker builds use `build-docker` / `build-docker-clang` by default to avoid
+  host cache conflicts (override via `SAPPP_BUILD_DIR` / `SAPPP_BUILD_CLANG_DIR`).

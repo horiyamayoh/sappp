@@ -57,9 +57,12 @@ else
     GENERATOR=""
 fi
 
-# ccache（任意）
+# ccache（デフォルト有効。無効化は SAPPP_USE_CCACHE=0）
+if [ -z "${SAPPP_USE_CCACHE:-}" ]; then
+    SAPPP_USE_CCACHE=1
+fi
 CMAKE_LAUNCHER_OPTS=""
-if [ "${SAPPP_USE_CCACHE:-0}" = "1" ] && command -v ccache &> /dev/null; then
+if [ "${SAPPP_USE_CCACHE}" = "1" ] && command -v ccache &> /dev/null; then
     CMAKE_LAUNCHER_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
 fi
 
