@@ -1,12 +1,8 @@
 # SAP++ Continuous Integration
 #
-# This workflow runs on every push and pull request to ensure code quality.
-# It enforces the quality gates defined in AGENTS.md:
-# - Build with warnings as errors
-# - All tests pass
-# - Determinism tests pass
-# - clang-format check
-# - clang-tidy check
+# This workflow runs the exact same quality gate script as local Docker CI to
+# prevent configuration drift between local and remote environments.
+# Gate mode can be controlled via workflow_dispatch input or a repo variable.
 
 name: CI
 
@@ -15,183 +11,50 @@ on:
     branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  workflow_dispatch:
+    inputs:
+      gate_mode:
+        description: "Quality gate mode: smart/full/ci"
+        required: false
+        default: ci
+        type: choice
+        options:
+          - smart
+          - full
+          - ci
 
 env:
-  BUILD_TYPE: Debug
+  SAPPP_CI_GATE_MODE: ${{ inputs.gate_mode || vars.SAPPP_CI_GATE_MODE || 'ci' }}
 
 jobs:
-  # ===========================================================================
-  # Build and Test (GCC 14)
-  # ===========================================================================
-  build-gcc:
-    name: Build & Test (GCC 14)
+  quality-gate:
+    name: Quality Gate (Docker)
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Run unified gate
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14 cmake ninja-build
+          if ! command -v docker >/dev/null; then
+            echo "Docker is required for CI parity but was not found"
+            exit 1
+          fi
 
-      - name: Configure CMake
-        run: |
-          cmake -S . -B build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER=gcc-14 \
-            -DCMAKE_CXX_COMPILER=g++-14 \
-            -DSAPPP_BUILD_TESTS=ON \
-            -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
-            -DSAPPP_WERROR=ON \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run Tests
-        run: ctest --test-dir build --output-on-failure
-
-      - name: Run Determinism Tests
-        run: ctest --test-dir build -R determinism --output-on-failure
-
-      - name: Upload compile_commands.json
-        uses: actions/upload-artifact@v4
-        with:
-          name: compile-commands-gcc
-          path: build/compile_commands.json
-
-  # ===========================================================================
-  # Build and Test (Clang 19)
-  # ===========================================================================
-  # Note: Uses libstdc++ instead of libc++ because libc++ does not yet
-  # implement std::views::enumerate (C++23 P2164R9).
-  build-clang:
-    name: Build & Test (Clang 19)
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-19 libstdc++-14-dev cmake ninja-build
-
-      - name: Configure CMake
-        run: |
-          cmake -S . -B build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER=clang-19 \
-            -DCMAKE_CXX_COMPILER=clang++-19 \
-            -DSAPPP_BUILD_TESTS=ON \
-            -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
-            -DSAPPP_WERROR=ON \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Run Tests
-        run: ctest --test-dir build --output-on-failure
-
-      - name: Run Determinism Tests
-        run: ctest --test-dir build -R determinism --output-on-failure
-
-      - name: Upload compile_commands.json
-        uses: actions/upload-artifact@v4
-        with:
-          name: compile-commands-clang
-          path: build/compile_commands.json
-  # ===========================================================================
-  # Code Format Check (clang-format)
-  # ===========================================================================
-  format-check:
-    name: Format Check (clang-format)
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install clang-format
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-format-19
-
-      - name: Check formatting
-        run: |
-          find libs tools tests include \
-            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
-            -print0 | xargs -0 clang-format-19 --dry-run --Werror
-
-  # ===========================================================================
-  # Static Analysis (clang-tidy)
-  # ===========================================================================
-  tidy-check:
-    name: Static Analysis (clang-tidy)
-    runs-on: ubuntu-24.04
-    needs: build-clang  # Need compile_commands.json
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y clang-19 clang-tidy-19 libstdc++-14-dev cmake ninja-build
-
-      - name: Download compile_commands.json
-        uses: actions/download-artifact@v4
-        with:
-          name: compile-commands-clang
-          path: build/
-
-      - name: Configure (for headers)
-        run: |
-          cmake -S . -B build \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER=clang-19 \
-            -DCMAKE_CXX_COMPILER=clang++-19 \
-            -DSAPPP_BUILD_TESTS=ON \
-            -DSAPPP_BUILD_CLANG_FRONTEND=OFF
-
-      - name: Run clang-tidy
-        run: |
-          find libs -name '*.cpp' -print0 | \
-            xargs -0 -P$(nproc) -I{} \
-            clang-tidy-19 -p build --warnings-as-errors='*' {}
-
-  # ===========================================================================
-  # Schema Validation
-  # ===========================================================================
-  schema-check:
-    name: Schema Validation
-    runs-on: ubuntu-24.04
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install ajv-cli
-        run: npm install -g ajv-cli ajv-formats
-
-      - name: Validate schemas are valid JSON Schema
-        run: |
-          # Build reference list for cross-schema references (excluding the schema being validated)
-          for schema in schemas/*.schema.json; do
-            refs=""
-            for ref_schema in schemas/*.schema.json; do
-              if [ "$ref_schema" != "$schema" ]; then
-                refs="$refs -r $ref_schema"
-              fi
-            done
-            echo "Validating: $schema"
-            ajv compile -s "$schema" --spec=draft2020 -c ajv-formats $refs || exit 1
-          done
+          MODE="${SAPPP_CI_GATE_MODE}"
+          case "$MODE" in
+            smart)
+              ./scripts/docker-ci.sh --smart
+              ;;
+            full)
+              ./scripts/docker-ci.sh
+              ;;
+            ci)
+              ./scripts/docker-ci.sh --ci
+              ;;
+            *)
+              echo "Invalid SAPPP_CI_GATE_MODE: $MODE (expected smart/full/ci)"
+              exit 1
+              ;;
+          esac

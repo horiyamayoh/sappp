@@ -140,7 +140,7 @@ make tidy           # clang-tidy 実行
 |-------|----------|------|
 | **L0: Quick** | 任意（作業中） | format + build + quick test（30秒以内） |
 | **L1: Commit Gate** | pre-commit | 変更内容に応じた build/test/tidy/スキーマ検証 |
-| **L2: Remote CI** | push後 | GCC/Clang マトリクス + determinism + tidy + スキーマ検証 |
+| **L2: Remote CI** | push後 | Dockerで `pre-commit-check.sh --ci` を実行（ローカルと同一ゲート） |
 
 ### 必須要件
 

@@ -247,11 +247,10 @@ ctest --test-dir build -j$(nproc) --output-on-failure
 
 | ジョブ | 内容 |
 |-------|------|
-| `build-gcc` | GCC 14 でビルド＋テスト |
-| `build-clang` | Clang 19 でビルド＋テスト |
-| `format-check` | clang-format チェック |
-| `tidy-check` | clang-tidy チェック |
-| `schema-check` | JSON Schema 検証 |
+| `quality-gate` | Docker で `pre-commit-check.sh` を実行（ローカルと同一のゲート） |
+
+CI のゲートモードは `SAPPP_CI_GATE_MODE` で制御できます（`smart` / `full` / `ci`）。
+workflow_dispatch からも同じ指定が可能です。
 
 ### ローカルでの CI 再現
 

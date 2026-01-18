@@ -37,6 +37,10 @@ keeping developer feedback fast and avoiding duplicate work.
   - Command: `./scripts/pre-commit-check.sh --ci` or
     `./scripts/docker-ci.sh --ci`
 
+CI uses the same Docker-based gate as local development to prevent drift.
+The mode can be controlled with `SAPPP_CI_GATE_MODE` (`smart`/`full`/`ci`)
+or via workflow_dispatch input.
+
 ## Stamps
 
 Successful checks write a stamp file (default: `.git/sappp/ci-stamp.json`) with
@@ -63,4 +67,3 @@ The pre-push check validates the stamp and rejects modes not in its allow-list
 - CI parity: `./scripts/docker-ci.sh --ci`
 - Stamp write: `./scripts/docker-ci.sh --stamp`
 - Cache for speed (local only): `./scripts/docker-ci.sh --cache`
-
