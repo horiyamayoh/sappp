@@ -7,21 +7,24 @@
 
 #include "sappp/common.hpp"
 
-#include <nlohmann/json.hpp>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace sappp::validator {
 
-class Validator {
+class Validator
+{
 public:
     explicit Validator(std::string input_dir, std::string schema_dir = "schemas");
 
     [[nodiscard]] sappp::Result<nlohmann::json> validate(bool strict);
-    [[nodiscard]] sappp::VoidResult write_results(const nlohmann::json& results, const std::string& output_path) const;
+    [[nodiscard]] sappp::VoidResult write_results(const nlohmann::json& results,
+                                                  const std::string& output_path) const;
 
 private:
     std::string m_input_dir;
     std::string m_schema_dir;
 };
 
-} // namespace sappp::validator
+}  // namespace sappp::validator

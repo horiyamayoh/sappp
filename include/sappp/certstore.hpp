@@ -9,12 +9,15 @@
  */
 
 #include "sappp/common.hpp"
-#include <nlohmann/json.hpp>
+
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace sappp::certstore {
 
-class CertStore {
+class CertStore
+{
 public:
     explicit CertStore(std::string base_dir, std::string schema_dir = "schemas");
 
@@ -43,13 +46,14 @@ private:
     [[nodiscard]] std::string cert_schema_path() const;
     [[nodiscard]] std::string index_schema_path() const;
 
-    [[nodiscard]] sappp::Result<std::string> canonical_hash(const nlohmann::json& cert) const;
+    [[nodiscard]] static sappp::Result<std::string> canonical_hash(const nlohmann::json& cert);
 
     [[nodiscard]] sappp::Result<std::string> object_path_for_hash(const std::string& hash) const;
     [[nodiscard]] std::string index_path_for_po(const std::string& po_id) const;
 
-    [[nodiscard]] sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) const;
-    [[nodiscard]] sappp::Result<nlohmann::json> read_json_file(const std::string& path) const;
+    [[nodiscard]] static sappp::VoidResult write_json_file(const std::string& path,
+                                                           const nlohmann::json& payload);
+    [[nodiscard]] static sappp::Result<nlohmann::json> read_json_file(const std::string& path);
 };
 
-} // namespace sappp::certstore
+}  // namespace sappp::certstore

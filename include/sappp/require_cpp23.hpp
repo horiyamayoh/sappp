@@ -11,17 +11,18 @@
  *
  * Required compiler versions:
  *   - GCC 14.0+
- *   - Clang 18.0+
+ *   - Clang 19.0+
  */
 
+#include <expected>
 #include <version>
 
 // =============================================================================
 // C++23 Language Standard Check
 // =============================================================================
 
-#if !defined(__cplusplus) || __cplusplus < 202302L
-#error "SAP++ requires C++23 or later (__cplusplus >= 202302L)."
+#if !defined(__cplusplus) || __cplusplus < 202'302L
+    #error "SAP++ requires C++23 or later (__cplusplus >= 202302L)."
 #endif
 
 // =============================================================================
@@ -30,9 +31,9 @@
 // Required for: Console output (replaces std::cout)
 // Minimum value: 202207L
 
-#if !defined(__cpp_lib_print) || __cpp_lib_print < 202207L
-#error "SAP++ requires std::print/std::println (__cpp_lib_print >= 202207L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_print) || __cpp_lib_print < 202'207L
+    #error "SAP++ requires std::print/std::println (__cpp_lib_print >= 202207L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -41,9 +42,9 @@
 // Required for: Error handling (replaces exceptions)
 // Minimum value: 202202L
 
-#if !defined(__cpp_lib_expected) || __cpp_lib_expected < 202202L
-#error "SAP++ requires std::expected (__cpp_lib_expected >= 202202L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_expected) || __cpp_lib_expected < 202'202L
+    #error "SAP++ requires std::expected (__cpp_lib_expected >= 202202L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -52,9 +53,9 @@
 // Required for: Indexed iteration (replaces manual index loops)
 // Minimum value: 202302L
 
-#if !defined(__cpp_lib_ranges_enumerate) || __cpp_lib_ranges_enumerate < 202302L
-#error "SAP++ requires std::views::enumerate (__cpp_lib_ranges_enumerate >= 202302L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_ranges_enumerate) || __cpp_lib_ranges_enumerate < 202'302L
+    #error "SAP++ requires std::views::enumerate (__cpp_lib_ranges_enumerate >= 202302L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -63,9 +64,9 @@
 // Required for: Bit rotation operations
 // Minimum value: 201907L
 
-#if !defined(__cpp_lib_bitops) || __cpp_lib_bitops < 201907L
-#error "SAP++ requires <bit> bit operations (__cpp_lib_bitops >= 201907L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_bitops) || __cpp_lib_bitops < 201'907L
+    #error "SAP++ requires <bit> bit operations (__cpp_lib_bitops >= 201907L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -74,9 +75,9 @@
 // Required for: Endian conversion
 // Minimum value: 202110L
 
-#if !defined(__cpp_lib_byteswap) || __cpp_lib_byteswap < 202110L
-#error "SAP++ requires std::byteswap (__cpp_lib_byteswap >= 202110L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_byteswap) || __cpp_lib_byteswap < 202'110L
+    #error "SAP++ requires std::byteswap (__cpp_lib_byteswap >= 202110L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -85,9 +86,9 @@
 // Required for: enum to underlying type conversion (replaces static_cast)
 // Minimum value: 202102L
 
-#if !defined(__cpp_lib_to_underlying) || __cpp_lib_to_underlying < 202102L
-#error "SAP++ requires std::to_underlying (__cpp_lib_to_underlying >= 202102L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_to_underlying) || __cpp_lib_to_underlying < 202'102L
+    #error "SAP++ requires std::to_underlying (__cpp_lib_to_underlying >= 202102L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -96,9 +97,9 @@
 // Required for: String formatting (used extensively with std::print)
 // Minimum value: 202110L
 
-#if !defined(__cpp_lib_format) || __cpp_lib_format < 202110L
-#error "SAP++ requires std::format (__cpp_lib_format >= 202110L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_format) || __cpp_lib_format < 202'110L
+    #error "SAP++ requires std::format (__cpp_lib_format >= 202110L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================
@@ -107,9 +108,9 @@
 // Required for: Range algorithms and views
 // Minimum value: 202110L
 
-#if !defined(__cpp_lib_ranges) || __cpp_lib_ranges < 202110L
-#error "SAP++ requires std::ranges (__cpp_lib_ranges >= 202110L). " \
-       "Please use GCC 14+ or Clang 18+ with a compatible standard library."
+#if !defined(__cpp_lib_ranges) || __cpp_lib_ranges < 202'110L
+    #error "SAP++ requires std::ranges (__cpp_lib_ranges >= 202110L). " \
+       "Please use GCC 14+ or Clang 19+ with a compatible standard library."
 #endif
 
 // =============================================================================

@@ -263,9 +263,7 @@ if(SAPPP_BUILD_CLANG_FRONTEND)
     message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
     message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
     
-    # Include LLVM/Clang headers
-    include_directories(${LLVM_INCLUDE_DIRS})
-    include_directories(${CLANG_INCLUDE_DIRS})
+    # LLVM/Clang include dirs are applied per-target.
     add_definitions(${LLVM_DEFINITIONS})
 endif()
 

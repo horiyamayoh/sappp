@@ -8,7 +8,40 @@
 > **差分・再現手順・実行ログを“完了報告”として提示**すること。
 
 ---
+## 開発環境（まずここを確認）
 
+本プロジェクトは **Docker / Dev Container** による統一環境を提供しています。  
+ローカル環境との差異によるCI失敗を防ぐため、以下の方法を推奨します。
+
+### 推奨: Docker CI（CI と完全同一環境）
+
+```bash
+# 高速チェック（作業中）
+./scripts/docker-ci.sh --quick
+
+# フルチェック（コミット前）
+./scripts/docker-ci.sh
+
+# デバッグ用シェル
+./scripts/docker-ci.sh --shell
+```
+
+### 代替: Makefile コマンド
+
+```bash
+make help           # コマンド一覧
+make quick          # 高速チェック（ローカル）
+make docker-ci      # Docker CI
+make install-hooks  # Git hooks インストール
+```
+
+### 環境詳細
+
+詳細な開発環境のセットアップは以下を参照:
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — クイックスタート・開発ワークフロー
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — 詳細な開発ガイド・トラブルシューティング
+
+---
 ## 0) まず守るべき最上位原則（破ったら失格）
 
 ### 0.1 嘘SAFE/嘘BUGを絶対に作らない（最重要）
@@ -87,6 +120,20 @@ clang-tidy -p build path/to/file.cpp
 ```
 
 > 例外で抑制が必要な場合は `NOLINTNEXTLINE(<check>)` + **理由コメント**を必須とする。
+
+### 1.5 Codex 完了ゲート（必須）
+AI エージェントは**完了判定前にフルチェックを実行し、失敗時は修正＋再実行してOKになるまで継続**すること。
+
+```bash
+# 推奨（DockerでCI完全再現）
+./scripts/docker-ci.sh
+
+# 代替（ローカル実行）
+./scripts/pre-commit-check.sh
+
+# Codex 自動リトライ用ヘルパー（必要なら）
+./scripts/agent-final-check.sh --until-ok
+```
 
 ---
 
@@ -287,7 +334,7 @@ diff -u /tmp/unk_j1.txt /tmp/unk_j8.txt
 
 **詳細規約は [`docs/CODING_STYLE_CPP23.md`](docs/CODING_STYLE_CPP23.md) を参照。**
 
-本プロジェクトは **C++23 を全面採用**（GCC 14+ / Clang 18+）。  
+本プロジェクトは **C++23 を全面採用**（GCC 14+ / Clang 19+）。  
 以下は最重要ポイントの要約。違反はレビューで即指摘対象。
 
 ### 8.1 C++23 必須機能（抜粋）
@@ -373,11 +420,22 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
 ---
 
 ## 付録: 仕様の一次ソース（必読）
-- **`docs/CODING_STYLE_CPP23.md`** — C++23 コーディング規約（詳細）
-- `docs/SAPpp_Implementation_Directive_v0.1.md`
-- `docs/SAPpp_SRS_v1.1.md`
-- `docs/SAPpp_Detailed_Design_v0.1.md`
-- `docs/SAPpp_Architecture_Design_v0.1.md`
+
+### 開発環境・ワークフロー
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — クイックスタート・開発ワークフロー
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — 詳細な開発ガイド・トラブルシューティング
+- **[Makefile](Makefile)** — 統一ビルドコマンド（`make help` で一覧）
+
+### コーディング規約
+- **[docs/CODING_STYLE_CPP23.md](docs/CODING_STYLE_CPP23.md)** — C++23 コーディング規約（詳細）
+
+### 設計・仕様書
+- [docs/SAPpp_Implementation_Directive_v0.1.md](docs/SAPpp_Implementation_Directive_v0.1.md)
+- [docs/SAPpp_SRS_v1.1.md](docs/SAPpp_SRS_v1.1.md)
+- [docs/SAPpp_Detailed_Design_v0.1.md](docs/SAPpp_Detailed_Design_v0.1.md)
+- [docs/SAPpp_Architecture_Design_v0.1.md](docs/SAPpp_Architecture_Design_v0.1.md)
 - `docs/ADR/`（特に determinism / po_id / unknown / canonical json）
 - `docs/CLI_Spec_v0.1.md`
+
+### スキーマ
 - `schemas/*.schema.json`

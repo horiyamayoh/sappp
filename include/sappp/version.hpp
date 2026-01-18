@@ -20,4 +20,4 @@ constexpr const char* kSemanticsVersion = "sem.v1";
 constexpr const char* kProofSystemVersion = "proof.v1";
 constexpr const char* kProfileVersion = "safety.core.v1";
 
-} // namespace sappp
+}  // namespace sappp

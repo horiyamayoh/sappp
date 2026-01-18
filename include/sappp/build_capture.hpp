@@ -10,12 +10,14 @@
 
 #include "sappp/common.hpp"
 
-#include <nlohmann/json.hpp>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace sappp::build_capture {
 
-class BuildSnapshot {
+class BuildSnapshot
+{
 public:
     explicit BuildSnapshot(nlohmann::json json);
 
@@ -35,7 +37,8 @@ private:
     nlohmann::json m_json;
 };
 
-class BuildCapture {
+class BuildCapture
+{
 public:
     explicit BuildCapture(std::string repo_root = {}, std::string schema_dir = "schemas");
 
@@ -46,4 +49,4 @@ private:
     std::string m_schema_dir;
 };
 
-} // namespace sappp::build_capture
+}  // namespace sappp::build_capture

@@ -5,24 +5,26 @@
  * @brief Common utilities: hash, path normalization, stable sort
  */
 
-#include <string>
-#include <string_view>
-#include <vector>
 #include <cstdint>
 #include <expected>
+#include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
 namespace sappp {
 
 /**
  * @brief Error information for Result types
  */
-struct Error {
+struct Error
+{
     std::string code;     ///< Machine-readable error code
     std::string message;  ///< Human-readable error message
 
-    [[nodiscard]] static Error make(std::string code, std::string message) {
-        return Error{std::move(code), std::move(message)};
+    [[nodiscard]] static Error make(std::string code, std::string message)
+    {
+        return Error{.code = std::move(code), .message = std::move(message)};
     }
 };
 
@@ -30,7 +32,7 @@ struct Error {
  * @brief Result type using std::expected (C++23)
  * @tparam T Success value type
  */
-template<typename T>
+template <typename T>
 using Result = std::expected<T, Error>;
 
 /**
@@ -38,7 +40,7 @@ using Result = std::expected<T, Error>;
  */
 using VoidResult = std::expected<void, Error>;
 
-} // namespace sappp
+}  // namespace sappp
 
 namespace sappp::common {
 
@@ -70,7 +72,7 @@ namespace sappp::common {
  * - Remove trailing slashes
  * - Resolve '..' and '.'
  * - Optionally make relative to repo_root
- * 
+ *
  * @param input Input path
  * @param repo_root Optional repository root for relative paths
  * @return Normalized path
@@ -85,7 +87,13 @@ namespace sappp::common {
 /**
  * Make path relative to base
  */
-[[nodiscard]] std::string make_relative(std::string_view path, std::string_view base);
+struct RelativePathSpec
+{
+    std::string_view path;
+    std::string_view base;
+};
+
+[[nodiscard]] std::string make_relative(RelativePathSpec spec);
 
 // ============================================================================
 // Stable Sort Comparators
@@ -94,8 +102,9 @@ namespace sappp::common {
 /**
  * Compare two strings for stable sorting (lexicographic)
  */
-[[nodiscard]] inline bool stable_string_less(const std::string& a, const std::string& b) {
+[[nodiscard]] inline bool stable_string_less(const std::string& a, const std::string& b)
+{
     return a < b;
 }
 
-} // namespace sappp::common
+}  // namespace sappp::common

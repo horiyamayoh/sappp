@@ -1,0 +1,75 @@
+{
+    "name": "SAP++ Development",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": "..",
+        "args": {
+            "USERNAME": "developer",
+            "USER_UID": "1000",
+            "USER_GID": "1000"
+        }
+    },
+    "features": {
+        "ghcr.io/devcontainers/features/git:1": {}
+    },
+    "mounts": [
+        "source=sappp-ccache,target=/home/developer/.ccache,type=volume"
+    ],
+    "customizations": {
+        "vscode": {
+            "settings": {
+                "editor.formatOnSave": true,
+                "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
+                "clangd.path": "/usr/bin/clangd-19",
+                "clangd.arguments": [
+                    "--background-index",
+                    "--clang-tidy",
+                    "--header-insertion=iwyu",
+                    "--completion-style=detailed",
+                    "--function-arg-placeholders=false"
+                ],
+                "C_Cpp.intelliSenseEngine": "disabled",
+                "cmake.configureOnOpen": true,
+                "cmake.buildDirectory": "${workspaceFolder}/build",
+                "cmake.generator": "Ninja",
+                "cmake.configureSettings": {
+                    "CMAKE_BUILD_TYPE": "Debug",
+                    "CMAKE_C_COMPILER": "gcc-14",
+                    "CMAKE_CXX_COMPILER": "g++-14",
+                    "SAPPP_BUILD_TESTS": "ON",
+                    "SAPPP_BUILD_CLANG_FRONTEND": "OFF",
+                    "SAPPP_WERROR": "ON",
+                    "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+                },
+                "files.associations": {
+                    "*.schema.json": "json"
+                },
+                "files.trimTrailingWhitespace": true,
+                "files.insertFinalNewline": true,
+                "terminal.integrated.defaultProfile.linux": "bash"
+            },
+            "extensions": [
+                "llvm-vs-code-extensions.vscode-clangd",
+                "ms-vscode.cmake-tools",
+                "twxs.cmake",
+                "streetsidesoftware.code-spell-checker",
+                "eamodio.gitlens",
+                "github.copilot",
+                "github.copilot-chat",
+                "ms-azuretools.vscode-docker"
+            ]
+        }
+    },
+    "postCreateCommand": "chmod +x scripts/*.sh && ./scripts/install-hooks.sh && ccache --max-size=2G && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DSAPPP_BUILD_TESTS=ON -DSAPPP_WERROR=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build --parallel",
+    "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
+    "remoteUser": "developer",
+    "containerEnv": {
+        "SAPPP_CI_ENV": "devcontainer",
+        "SAPPP_USE_CCACHE": "1"
+    },
+    "runArgs": [
+        "--init"
+    ],
+    "workspaceMount": "source=${localWorkspaceFolder},target=/home/developer/workspace,type=bind,consistency=cached",
+    "workspaceFolder": "/home/developer/workspace"
+}

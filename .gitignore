@@ -1,5 +1,6 @@
 # Build outputs
 build/
+build-*/
 out/
 cmake-build-*/
 
@@ -46,3 +47,4 @@ coverage/
 
 # CTest temporary files
 Testing/Temporary/
+build-container/

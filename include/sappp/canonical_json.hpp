@@ -3,7 +3,7 @@
 /**
  * @file canonical_json.hpp
  * @brief Canonical JSON serialization for deterministic hashing
- * 
+ *
  * Rules (ADR-0101):
  * - UTF-8 encoding
  * - Object keys in lexicographic order
@@ -14,8 +14,9 @@
 
 #include "sappp/common.hpp"
 
-#include <nlohmann/json.hpp>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace sappp::canonical {
 
@@ -60,4 +61,4 @@ void sort_keys_recursive(nlohmann::json& j);
  */
 [[nodiscard]] sappp::VoidResult validate_for_canonical(const nlohmann::json& j);
 
-} // namespace sappp::canonical
+}  // namespace sappp::canonical

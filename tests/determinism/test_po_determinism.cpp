@@ -9,15 +9,15 @@
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"
 
-#include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <ranges>
 #include <string>
 #include <vector>
 
-using json = nlohmann::json;
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
+
+using Json = nlohmann::json;
 
 namespace sappp::determinism {
 namespace {
@@ -31,24 +31,9 @@ namespace {
 class PoMergeDeterminismTest : public ::testing::Test
 {
 protected:
-    // Simulate POs from different translation units (could arrive in any order)
-    std::vector<json> m_po_batches = {
-        json::array({
-            {{"po_id", "sha256:aaaa"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_c"}},
-            {{"po_id", "sha256:bbbb"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}
-        }),
-        json::array({
-            {{"po_id", "sha256:cccc"}, {"po_kind", "UB.OutOfBounds"}, {"function_uid", "func_b"}},
-            {{"po_id", "sha256:dddd"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_d"}}
-        }),
-        json::array({
-            {{"po_id", "sha256:eeee"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}
-        })
-    };
-
-    [[nodiscard]] json merge_and_sort(const std::vector<json>& batches) const
+    [[nodiscard]] static Json merge_and_sort(const std::vector<Json>& batches)
     {
-        std::vector<json> all_pos;
+        std::vector<Json> all_pos;
         for (const auto& batch : batches) {
             for (const auto& po : batch) {
                 all_pos.push_back(po);
@@ -56,20 +41,40 @@ protected:
         }
 
         // Stable sort by po_id (as per AGENTS.md Section 4.1)
-        std::ranges::stable_sort(all_pos, [](const json& a, const json& b) {
+        std::ranges::stable_sort(all_pos, [](const Json& a, const Json& b) {
             return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
         });
 
-        return json{{"pos", all_pos}};
+        return Json{
+            {"pos", all_pos}
+        };
     }
+
+    [[nodiscard]] const std::vector<Json>& po_batches() const { return m_po_batches; }
+
+private:
+    // Simulate POs from different translation units (could arrive in any order)
+    std::vector<Json> m_po_batches = {
+        Json::array(
+            {{{"po_id", "sha256:aaaa"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_c"}},
+                     {{"po_id", "sha256:bbbb"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}}
+            ),
+        Json::array(
+            {{{"po_id", "sha256:cccc"}, {"po_kind", "UB.OutOfBounds"}, {"function_uid", "func_b"}},
+                     {{"po_id", "sha256:dddd"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_d"}}}
+            ),
+        Json::array(
+            {{{"po_id", "sha256:eeee"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}}
+            )
+    };
 };
 
 TEST_F(PoMergeDeterminismTest, MergeOrderDoesNotAffectResult)
 {
     // Simulate different arrival orders (as would happen with different --jobs)
-    std::vector<json> order1 = {m_po_batches[0], m_po_batches[1], m_po_batches[2]};
-    std::vector<json> order2 = {m_po_batches[2], m_po_batches[0], m_po_batches[1]};
-    std::vector<json> order3 = {m_po_batches[1], m_po_batches[2], m_po_batches[0]};
+    std::vector<Json> order1 = {po_batches()[0], po_batches()[1], po_batches()[2]};
+    std::vector<Json> order2 = {po_batches()[2], po_batches()[0], po_batches()[1]};
+    std::vector<Json> order3 = {po_batches()[1], po_batches()[2], po_batches()[0]};
 
     auto result1 = merge_and_sort(order1);
     auto result2 = merge_and_sort(order2);
@@ -94,7 +99,7 @@ TEST_F(PoMergeDeterminismTest, MergeOrderDoesNotAffectResult)
 
 TEST_F(PoMergeDeterminismTest, PoIdOrderIsStable)
 {
-    auto result = merge_and_sort(m_po_batches);
+    auto result = merge_and_sort(po_batches());
     const auto& pos = result.at("pos");
 
     // Verify po_ids are in ascending order
@@ -112,19 +117,9 @@ TEST_F(PoMergeDeterminismTest, PoIdOrderIsStable)
 class UnknownLedgerDeterminismTest : public ::testing::Test
 {
 protected:
-    std::vector<json> m_unknown_batches = {
-        json::array({
-            {{"unknown_stable_id", "unk:0003"}, {"unknown_code", "UnsupportedFeature"}},
-            {{"unknown_stable_id", "unk:0001"}, {"unknown_code", "LoopBound"}}
-        }),
-        json::array({
-            {{"unknown_stable_id", "unk:0002"}, {"unknown_code", "ExternalCall"}}
-        })
-    };
-
-    [[nodiscard]] json merge_and_sort(const std::vector<json>& batches) const
+    [[nodiscard]] static Json merge_and_sort(const std::vector<Json>& batches)
     {
-        std::vector<json> all_unknowns;
+        std::vector<Json> all_unknowns;
         for (const auto& batch : batches) {
             for (const auto& unk : batch) {
                 all_unknowns.push_back(unk);
@@ -132,19 +127,32 @@ protected:
         }
 
         // Stable sort by unknown_stable_id (as per AGENTS.md Section 4.1)
-        std::ranges::stable_sort(all_unknowns, [](const json& a, const json& b) {
-            return a.at("unknown_stable_id").get<std::string>() <
-                   b.at("unknown_stable_id").get<std::string>();
+        std::ranges::stable_sort(all_unknowns, [](const Json& a, const Json& b) {
+            return a.at("unknown_stable_id").get<std::string>()
+                   < b.at("unknown_stable_id").get<std::string>();
         });
 
-        return json{{"unknowns", all_unknowns}};
+        return Json{
+            {"unknowns", all_unknowns}
+        };
     }
+
+    [[nodiscard]] const std::vector<Json>& unknown_batches() const { return m_unknown_batches; }
+
+private:
+    std::vector<Json> m_unknown_batches = {
+        Json::array({{{"unknown_stable_id", "unk:0003"}, {"unknown_code", "UnsupportedFeature"}},
+                     {{"unknown_stable_id", "unk:0001"}, {"unknown_code", "LoopBound"}}}
+        ),
+        Json::array({{{"unknown_stable_id", "unk:0002"}, {"unknown_code", "ExternalCall"}}}
+        )
+    };
 };
 
 TEST_F(UnknownLedgerDeterminismTest, MergeOrderDoesNotAffectResult)
 {
-    std::vector<json> order1 = {m_unknown_batches[0], m_unknown_batches[1]};
-    std::vector<json> order2 = {m_unknown_batches[1], m_unknown_batches[0]};
+    std::vector<Json> order1 = {unknown_batches()[0], unknown_batches()[1]};
+    std::vector<Json> order2 = {unknown_batches()[1], unknown_batches()[0]};
 
     auto result1 = merge_and_sort(order1);
     auto result2 = merge_and_sort(order2);
@@ -165,19 +173,9 @@ TEST_F(UnknownLedgerDeterminismTest, MergeOrderDoesNotAffectResult)
 class ValidatedResultsDeterminismTest : public ::testing::Test
 {
 protected:
-    std::vector<json> m_result_batches = {
-        json::array({
-            {{"po_id", "sha256:zzzz"}, {"category", "BUG"}},
-            {{"po_id", "sha256:aaaa"}, {"category", "SAFE"}}
-        }),
-        json::array({
-            {{"po_id", "sha256:mmmm"}, {"category", "UNKNOWN"}}
-        })
-    };
-
-    [[nodiscard]] json merge_and_sort(const std::vector<json>& batches) const
+    [[nodiscard]] static Json merge_and_sort(const std::vector<Json>& batches)
     {
-        std::vector<json> all_results;
+        std::vector<Json> all_results;
         for (const auto& batch : batches) {
             for (const auto& r : batch) {
                 all_results.push_back(r);
@@ -185,18 +183,31 @@ protected:
         }
 
         // Stable sort by po_id (as per AGENTS.md Section 4.1)
-        std::ranges::stable_sort(all_results, [](const json& a, const json& b) {
+        std::ranges::stable_sort(all_results, [](const Json& a, const Json& b) {
             return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
         });
 
-        return json{{"results", all_results}};
+        return Json{
+            {"results", all_results}
+        };
     }
+
+    [[nodiscard]] const std::vector<Json>& result_batches() const { return m_result_batches; }
+
+private:
+    std::vector<Json> m_result_batches = {
+        Json::array({{{"po_id", "sha256:zzzz"}, {"category", "BUG"}},
+                     {{"po_id", "sha256:aaaa"}, {"category", "SAFE"}}}
+        ),
+        Json::array({{{"po_id", "sha256:mmmm"}, {"category", "UNKNOWN"}}}
+        )
+    };
 };
 
 TEST_F(ValidatedResultsDeterminismTest, MergeOrderDoesNotAffectResult)
 {
-    std::vector<json> order1 = {m_result_batches[0], m_result_batches[1]};
-    std::vector<json> order2 = {m_result_batches[1], m_result_batches[0]};
+    std::vector<Json> order1 = {result_batches()[0], result_batches()[1]};
+    std::vector<Json> order2 = {result_batches()[1], result_batches()[0]};
 
     auto result1 = merge_and_sort(order1);
     auto result2 = merge_and_sort(order2);
@@ -215,17 +226,13 @@ TEST_F(ValidatedResultsDeterminismTest, MergeOrderDoesNotAffectResult)
  */
 TEST(DeterminismRepeatTest, RepeatedCanonicalHashIsIdentical)
 {
-    json complex_data = {
-        {"version", "1.0.0"},
-        {"pos", json::array({
-            {{"id", "c"}, {"value", 3}},
-            {{"id", "a"}, {"value", 1}},
-            {{"id", "b"}, {"value", 2}}
-        })},
-        {"metadata", {
-            {"z_field", "last"},
-            {"a_field", "first"}
-        }}
+    Json complex_data = {
+        { "version",                 "1.0.0"                    },
+        {     "pos",
+         Json::array({{{"id", "c"}, {"value", 3}},
+         {{"id", "a"}, {"value", 1}},
+         {{"id", "b"}, {"value", 2}}})                          },
+        {"metadata", {{"z_field", "last"}, {"a_field", "first"}}}
     };
 
     // Run 100 times to catch any non-determinism
@@ -237,8 +244,7 @@ TEST(DeterminismRepeatTest, RepeatedCanonicalHashIsIdentical)
         if (i == 0) {
             first_hash = *hash;
         } else {
-            EXPECT_EQ(*hash, first_hash)
-                << "Hash differs at iteration " << i;
+            EXPECT_EQ(*hash, first_hash) << "Hash differs at iteration " << i;
         }
     }
 }

@@ -14,13 +14,9 @@
 #include "sappp/version.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
-#include <ctime>
 #include <filesystem>
-#include <format>
 #include <fstream>
-#include <iomanip>
 #include <iterator>
 #include <ranges>
 #include <string>
@@ -31,48 +27,47 @@ namespace sappp::po {
 
 namespace {
 
-std::string current_time_utc() {
-    const auto now = std::chrono::system_clock::now();
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
-}
-
-sappp::Result<std::string> read_file_contents(const std::string& path) {
+sappp::Result<std::string> read_file_contents(const std::string& path)
+{
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        return std::unexpected(Error::make("SourceFileOpenFailed",
-            "Failed to open source file: " + path));
+        return std::unexpected(
+            Error::make("SourceFileOpenFailed", "Failed to open source file: " + path));
     }
-    return std::string{std::istreambuf_iterator<char>{in},
-                       std::istreambuf_iterator<char>{}};
+    return std::string{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
 }
 
-std::string normalize_kind_token(std::string token) {
-    std::ranges::transform(token, token.begin(),
-                           [](unsigned char c) noexcept { return static_cast<char>(std::tolower(c)); });
+std::string normalize_kind_token(std::string token)
+{
+    std::ranges::transform(token, token.begin(), [](unsigned char c) noexcept {
+        return static_cast<char>(std::tolower(c));
+    });
     if (token.starts_with("ub.")) {
         token = token.substr(3);
     }
     return token;
 }
 
-std::string map_po_kind(const std::string& token) {
+std::string map_po_kind(const std::string& token)
+{
     const std::string normalized = normalize_kind_token(token);
-    if (normalized == "div0" || normalized == "divzero" || normalized == "div_zero" ||
-        normalized == "div-by-zero") {
+    if (normalized == "div0" || normalized == "divzero" || normalized == "div_zero"
+        || normalized == "div-by-zero") {
         return "UB.DivZero";
     }
-    if (normalized == "null" || normalized == "null_deref" || normalized == "null-deref" ||
-        normalized == "nullderef") {
+    if (normalized == "null" || normalized == "null_deref" || normalized == "null-deref"
+        || normalized == "nullderef") {
         return "UB.NullDeref";
     }
-    if (normalized == "oob" || normalized == "out_of_bounds" || normalized == "out-of-bounds" ||
-        normalized == "outofbounds") {
+    if (normalized == "oob" || normalized == "out_of_bounds" || normalized == "out-of-bounds"
+        || normalized == "outofbounds") {
         return "UB.OutOfBounds";
     }
     return "";
 }
 
-std::string extract_kind_token(const nlohmann::json& inst) {
+std::string extract_kind_token(const nlohmann::json& inst)
+{
     if (inst.contains("kind") && inst.at("kind").is_string()) {
         return inst.at("kind").get<std::string>();
     }
@@ -88,7 +83,8 @@ std::string extract_kind_token(const nlohmann::json& inst) {
     return "";
 }
 
-std::string infer_po_kind(const nlohmann::json& inst) {
+std::string infer_po_kind(const nlohmann::json& inst)
+{
     std::string token = extract_kind_token(inst);
     std::string mapped = map_po_kind(token);
     if (!mapped.empty()) {
@@ -100,9 +96,11 @@ std::string infer_po_kind(const nlohmann::json& inst) {
     return "UB.Unknown";
 }
 
-sappp::Result<nlohmann::json> build_repo_identity(
+// Keep as a single block to mirror schema construction steps.
+sappp::Result<nlohmann::json> build_repo_identity(  // NOLINT(readability-function-size)
     const nlohmann::json& inst,
-    std::unordered_map<std::string, std::string>& file_hashes) {
+    std::unordered_map<std::string, std::string>& file_hashes)
+{
     std::string path = "unknown";
     std::string content_hash = common::sha256_prefixed("");
 
@@ -125,21 +123,21 @@ sappp::Result<nlohmann::json> build_repo_identity(
     }
 
     return nlohmann::json{
-        {"path", path},
+        {          "path",         path},
         {"content_sha256", content_hash}
     };
 }
 
-nlohmann::json build_anchor_id(const std::string& block_id,
-                               const std::string& inst_id) {
+nlohmann::json build_anchor_id(const std::string& block_id, const std::string& inst_id)
+{
     return nlohmann::json{
         {"block_id", block_id},
-        {"inst_id", inst_id}
+        { "inst_id",  inst_id}
     };
 }
 
-nlohmann::json build_predicate_args(const nlohmann::json& inst,
-                                    const std::string& po_kind) {
+nlohmann::json build_predicate_args(const nlohmann::json& inst, const std::string& po_kind)
+{
     nlohmann::json args = nlohmann::json::array();
     if (inst.contains("args") && inst.at("args").is_array()) {
         const auto& inst_args = inst.at("args");
@@ -161,7 +159,8 @@ nlohmann::json build_predicate_args(const nlohmann::json& inst,
     return args;
 }
 
-sappp::Result<std::string> pretty_arg(const nlohmann::json& arg) {
+sappp::Result<std::string> pretty_arg(const nlohmann::json& arg)
+{
     if (arg.is_string()) {
         return arg.get<std::string>();
     }
@@ -175,8 +174,9 @@ sappp::Result<std::string> pretty_arg(const nlohmann::json& arg) {
         return std::to_string(arg.get<unsigned long long>());
     }
     if (arg.is_number_float()) {
-        return std::unexpected(Error::make("FloatingPointNotAllowed",
-            "Floating point numbers not allowed in PO predicate args"));
+        return std::unexpected(
+            Error::make("FloatingPointNotAllowed",
+                        "Floating point numbers not allowed in PO predicate args"));
     }
     if (arg.is_null()) {
         return "null";
@@ -184,8 +184,8 @@ sappp::Result<std::string> pretty_arg(const nlohmann::json& arg) {
     return canonical::canonicalize(arg);
 }
 
-sappp::Result<std::string> format_pretty(const std::string& op,
-                                         const nlohmann::json& args) {
+sappp::Result<std::string> format_pretty(const std::string& op, const nlohmann::json& args)
+{
     std::string result = op + "(";
     if (args.is_array()) {
         // Use views::enumerate to track index
@@ -204,12 +204,15 @@ sappp::Result<std::string> format_pretty(const std::string& op,
     return result;
 }
 
-sappp::Result<nlohmann::json> build_predicate(const std::string& op,
-                                              const std::string& po_kind,
-                                              const nlohmann::json& inst) {
+// Parameter order matches predicate construction; keep as-is.
+sappp::Result<nlohmann::json>
+build_predicate(const std::string& op,  // NOLINT(bugprone-easily-swappable-parameters)
+                const std::string& po_kind,
+                const nlohmann::json& inst)
+{
     nlohmann::json args = build_predicate_args(inst, po_kind);
     nlohmann::json expr = {
-        {"op", op},
+        {  "op",   op},
         {"args", args}
     };
     auto pretty = format_pretty(op, args);
@@ -217,27 +220,31 @@ sappp::Result<nlohmann::json> build_predicate(const std::string& op,
         return std::unexpected(pretty.error());
     }
     return nlohmann::json{
-        {"expr", expr},
+        {  "expr",    expr},
         {"pretty", *pretty}
     };
 }
 
-} // namespace
+}  // namespace
 
-sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_json) const {
+// Keep as instance method for future state; structure follows schema mapping.
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static, readability-function-size)
+sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_json) const
+{
     const std::string semantics_version = nir_json.at("semantics_version").get<std::string>();
     const std::string proof_system_version = nir_json.at("proof_system_version").get<std::string>();
     const std::string profile_version = nir_json.at("profile_version").get<std::string>();
+    const std::string generated_at = nir_json.at("generated_at").get<std::string>();
 
     nlohmann::json output = {
-        {"schema_version", "po.v1"},
-        {"tool", nir_json.at("tool")},
-        {"generated_at", nir_json.value("generated_at", current_time_utc())},
-        {"tu_id", nir_json.at("tu_id")},
-        {"semantics_version", semantics_version},
-        {"proof_system_version", proof_system_version},
-        {"profile_version", profile_version},
-        {"pos", nlohmann::json::array()}
+        {      "schema_version",                 "po.v1"},
+        {                "tool",     nir_json.at("tool")},
+        {        "generated_at",            generated_at},
+        {               "tu_id",    nir_json.at("tu_id")},
+        {   "semantics_version",       semantics_version},
+        {"proof_system_version",    proof_system_version},
+        {     "profile_version",         profile_version},
+        {                 "pos", nlohmann::json::array()}
     };
 
     if (nir_json.contains("input_digest")) {
@@ -274,13 +281,13 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
                 const nlohmann::json anchor_id = build_anchor_id(block_id, inst_id);
 
                 nlohmann::json po_id_input = {
-                    {"repo_identity", *repo_identity},
-                    {"function", {{"usr", function_uid}}},
-                    {"anchor", anchor_id},
-                    {"po_kind", po_kind},
-                    {"semantics_version", semantics_version},
-                    {"proof_system_version", proof_system_version},
-                    {"profile_version", profile_version}
+                    {       "repo_identity",          *repo_identity},
+                    {            "function", {{"usr", function_uid}}},
+                    {              "anchor",               anchor_id},
+                    {             "po_kind",                 po_kind},
+                    {   "semantics_version",       semantics_version},
+                    {"proof_system_version",    proof_system_version},
+                    {     "profile_version",         profile_version}
                 };
                 auto po_id_result = canonical::hash_canonical(po_id_input);
                 if (!po_id_result) {
@@ -294,18 +301,15 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
                 }
 
                 nlohmann::json po_entry = {
-                    {"po_id", po_id},
-                    {"po_kind", po_kind},
-                    {"semantics_version", semantics_version},
-                    {"proof_system_version", proof_system_version},
-                    {"profile_version", profile_version},
-                    {"repo_identity", *repo_identity},
-                    {"function", {
-                        {"usr", function_uid},
-                        {"mangled", mangled_name}
-                    }},
-                    {"anchor", anchor_id},
-                    {"predicate", *predicate}
+                    {               "po_id",                                              po_id},
+                    {             "po_kind",                                            po_kind},
+                    {   "semantics_version",                                  semantics_version},
+                    {"proof_system_version",                               proof_system_version},
+                    {     "profile_version",                                    profile_version},
+                    {       "repo_identity",                                     *repo_identity},
+                    {            "function", {{"usr", function_uid}, {"mangled", mangled_name}}},
+                    {              "anchor",                                          anchor_id},
+                    {           "predicate",                                         *predicate}
                 };
                 pos.push_back(std::move(po_entry));
             }
@@ -313,17 +317,16 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
     }
 
     if (pos.empty()) {
-        return std::unexpected(Error::make("PoGenerationFailed",
-            "No sink instructions found for PO generation"));
+        return std::unexpected(
+            Error::make("PoGenerationFailed", "No sink instructions found for PO generation"));
     }
 
-    std::ranges::stable_sort(pos,
-                              [](const nlohmann::json& a, const nlohmann::json& b) {
-                                  return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
-                              });
+    std::ranges::stable_sort(pos, [](const nlohmann::json& a, const nlohmann::json& b) {
+        return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
+    });
 
     output["pos"] = std::move(pos);
     return output;
 }
 
-} // namespace sappp::po
+}  // namespace sappp::po

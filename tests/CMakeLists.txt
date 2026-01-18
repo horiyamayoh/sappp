@@ -10,11 +10,24 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
 
+set(SAPPP_QUICK_LABELS
+    build_capture
+    determinism
+    po
+    schemas
+    validator
+)
+
 function(sappp_register_gtest target label)
+    set(labels "${label}")
+    if (label IN_LIST SAPPP_QUICK_LABELS)
+        list(APPEND labels quick)
+    endif()
+
     gtest_discover_tests(${target}
         DISCOVERY_MODE PRE_TEST
         TEST_PREFIX "${label}."
-        PROPERTIES LABELS ${label}
+        PROPERTIES LABELS "${labels}"
     )
 endfunction()
 
