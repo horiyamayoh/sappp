@@ -27,22 +27,26 @@ namespace {
 
 namespace fs = std::filesystem;
 
-struct ValidationError {
+struct ValidationError
+{
     std::string status;
     std::string reason;
     std::string message;
 };
 
-[[nodiscard]] std::string current_time_rfc3339() {
+[[nodiscard]] std::string current_time_rfc3339()
+{
     const auto now = std::chrono::system_clock::now();
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
-[[nodiscard]] bool is_hex_lower(char c) {
+[[nodiscard]] bool is_hex_lower(char c)
+{
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
 }
 
-[[nodiscard]] bool is_sha256_prefixed(std::string_view value) {
+[[nodiscard]] bool is_sha256_prefixed(std::string_view value)
+{
     constexpr std::string_view prefix = "sha256:";
     if (!value.starts_with(prefix)) {
         return false;
@@ -53,7 +57,8 @@ struct ValidationError {
     return std::ranges::all_of(value.substr(prefix.size()), is_hex_lower);
 }
 
-[[nodiscard]] std::string derive_po_id_from_path(const fs::path& path) {
+[[nodiscard]] std::string derive_po_id_from_path(const fs::path& path)
+{
     std::string stem = path.stem().string();
     if (is_sha256_prefixed(stem)) {
         return stem;
@@ -61,47 +66,52 @@ struct ValidationError {
     return sappp::common::sha256_prefixed(stem);
 }
 
-[[nodiscard]] std::string cert_schema_path(const std::string& schema_dir) {
+[[nodiscard]] std::string cert_schema_path(const std::string& schema_dir)
+{
     return (fs::path(schema_dir) / "cert.v1.schema.json").string();
 }
 
-[[nodiscard]] std::string cert_index_schema_path(const std::string& schema_dir) {
+[[nodiscard]] std::string cert_index_schema_path(const std::string& schema_dir)
+{
     return (fs::path(schema_dir) / "cert_index.v1.schema.json").string();
 }
 
-[[nodiscard]] std::string validated_results_schema_path(const std::string& schema_dir) {
+[[nodiscard]] std::string validated_results_schema_path(const std::string& schema_dir)
+{
     return (fs::path(schema_dir) / "validated_results.v1.schema.json").string();
 }
 
-[[nodiscard]] sappp::Result<std::string> object_path_for_hash(const fs::path& base_dir, const std::string& hash) {
+[[nodiscard]] sappp::Result<std::string> object_path_for_hash(const fs::path& base_dir,
+                                                              const std::string& hash)
+{
     constexpr std::string_view prefix = "sha256:";
     std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0;
     if (hash.size() < digest_start + 2) {
-        return std::unexpected(Error::make("InvalidHash",
-            "Hash is too short: " + hash));
+        return std::unexpected(Error::make("InvalidHash", "Hash is too short: " + hash));
     }
     std::string shard = hash.substr(digest_start, 2);
     fs::path object_path = base_dir / "certstore" / "objects" / shard / (hash + ".json");
     return object_path.string();
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> read_json_file(const std::string& path) {
+[[nodiscard]] sappp::Result<nlohmann::json> read_json_file(const std::string& path)
+{
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {
-        return std::unexpected(Error::make("IOError",
-            "Failed to open file for read: " + path));
+        return std::unexpected(Error::make("IOError", "Failed to open file for read: " + path));
     }
-    std::string content{std::istreambuf_iterator<char>{in},
-                        std::istreambuf_iterator<char>{}};
+    std::string content{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
     try {
         return nlohmann::json::parse(content);
     } catch (const std::exception& ex) {
-        return std::unexpected(Error::make("ParseError",
-            "Failed to parse JSON from " + path + ": " + ex.what()));
+        return std::unexpected(
+            Error::make("ParseError", "Failed to parse JSON from " + path + ": " + ex.what()));
     }
 }
 
-[[nodiscard]] sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) {
+[[nodiscard]] sappp::VoidResult write_json_file(const std::string& path,
+                                                const nlohmann::json& payload)
+{
     fs::path out_path(path);
     fs::path parent = out_path.parent_path();
     if (!parent.empty()) {
@@ -109,13 +119,14 @@ struct ValidationError {
         fs::create_directories(parent, ec);
         if (ec) {
             return std::unexpected(Error::make("IOError",
-                "Failed to create directory: " + parent.string() + ": " + ec.message()));
+                                               "Failed to create directory: " + parent.string()
+                                                   + ": " + ec.message()));
         }
     }
     std::ofstream out(out_path, std::ios::binary | std::ios::trunc);
     if (!out.is_open()) {
-        return std::unexpected(Error::make("IOError",
-            "Failed to open file for write: " + out_path.string()));
+        return std::unexpected(
+            Error::make("IOError", "Failed to open file for write: " + out_path.string()));
     }
     auto canonical = sappp::canonical::canonicalize(payload);
     if (!canonical) {
@@ -123,22 +134,24 @@ struct ValidationError {
     }
     out << *canonical;
     if (!out) {
-        return std::unexpected(Error::make("IOError",
-            "Failed to write file: " + out_path.string()));
+        return std::unexpected(
+            Error::make("IOError", "Failed to write file: " + out_path.string()));
     }
     return {};
 }
 
-[[nodiscard]] ValidationError make_error(const std::string& status, const std::string& message) {
+[[nodiscard]] ValidationError make_error(const std::string& status, const std::string& message)
+{
     return {status, status, message};
 }
 
 [[nodiscard]] nlohmann::json make_unknown_result(const std::string& po_id,
-                                  const ValidationError& error) {
+                                                 const ValidationError& error)
+{
     nlohmann::json result = {
-        {"po_id", po_id},
-        {"category", "UNKNOWN"},
-        {"validator_status", error.status},
+        {                "po_id",        po_id},
+        {             "category",    "UNKNOWN"},
+        {     "validator_status", error.status},
         {"downgrade_reason_code", error.reason}
     };
     if (!error.message.empty()) {
@@ -148,23 +161,26 @@ struct ValidationError {
 }
 
 [[nodiscard]] nlohmann::json make_validated_result(const std::string& po_id,
-                                     const std::string& category,
-                                     const std::string& certificate_root) {
+                                                   const std::string& category,
+                                                   const std::string& certificate_root)
+{
     return nlohmann::json{
-        {"po_id", po_id},
-        {"category", category},
-        {"validator_status", "Validated"},
+        {           "po_id",            po_id},
+        {        "category",         category},
+        {"validator_status",      "Validated"},
         {"certificate_root", certificate_root}
     };
 }
 
-[[nodiscard]] ValidationError make_error_from_result(const sappp::Error& error) {
+[[nodiscard]] ValidationError make_error_from_result(const sappp::Error& error)
+{
     return make_error(error.code, error.message);
 }
 
 [[nodiscard]] sappp::Result<nlohmann::json> load_cert_object(const std::string& input_dir,
-                                               const std::string& schema_dir,
-                                               const std::string& hash) {
+                                                             const std::string& schema_dir,
+                                                             const std::string& hash)
+{
     auto path = object_path_for_hash(input_dir, hash);
     if (!path) {
         return std::unexpected(path.error());
@@ -173,11 +189,11 @@ struct ValidationError {
     std::error_code ec;
     if (!fs::exists(*path, ec)) {
         if (ec) {
-            return std::unexpected(Error::make("IOError",
-                "Failed to stat certificate: " + *path + ": " + ec.message()));
+            return std::unexpected(
+                Error::make("IOError",
+                            "Failed to stat certificate: " + *path + ": " + ec.message()));
         }
-        return std::unexpected(Error::make("MissingDependency",
-            "Missing certificate: " + hash));
+        return std::unexpected(Error::make("MissingDependency", "Missing certificate: " + hash));
     }
 
     auto cert_result = read_json_file(*path);
@@ -185,9 +201,10 @@ struct ValidationError {
         return std::unexpected(cert_result.error());
     }
 
-    if (auto result = sappp::common::validate_json(*cert_result, cert_schema_path(schema_dir)); !result) {
-        return std::unexpected(Error::make("SchemaInvalid",
-            "Certificate schema invalid: " + result.error().message));
+    if (auto result = sappp::common::validate_json(*cert_result, cert_schema_path(schema_dir));
+        !result) {
+        return std::unexpected(
+            Error::make("SchemaInvalid", "Certificate schema invalid: " + result.error().message));
     }
 
     auto computed_hash = sappp::canonical::hash_canonical(*cert_result);
@@ -195,63 +212,77 @@ struct ValidationError {
         return std::unexpected(computed_hash.error());
     }
     if (*computed_hash != hash) {
-        return std::unexpected(Error::make("HashMismatch",
-            "Certificate hash mismatch: expected " + hash + ", got " + *computed_hash));
+        return std::unexpected(
+            Error::make("HashMismatch",
+                        "Certificate hash mismatch: expected " + hash + ", got " + *computed_hash));
     }
 
     return *cert_result;
 }
 
-ValidationError version_mismatch_error(const std::string& message) {
+ValidationError version_mismatch_error(const std::string& message)
+{
     return {"VersionMismatch", "VersionMismatch", message};
 }
 
-ValidationError unsupported_error(const std::string& message) {
+ValidationError unsupported_error(const std::string& message)
+{
     return {"UnsupportedProofFeature", "UnsupportedProofFeature", message};
 }
 
-ValidationError proof_failed_error(const std::string& message) {
+ValidationError proof_failed_error(const std::string& message)
+{
     return {"ProofCheckFailed", "ProofCheckFailed", message};
 }
 
-ValidationError rule_violation_error(const std::string& message) {
+ValidationError rule_violation_error(const std::string& message)
+{
     return {"RuleViolation", "RuleViolation", message};
 }
 
-[[nodiscard]] bool is_supported_safety_domain(std::string_view domain) {
+[[nodiscard]] bool is_supported_safety_domain(std::string_view domain)
+{
     return domain == "interval+null+lifetime+init";
 }
 
-} // namespace
+}  // namespace
 
 Validator::Validator(std::string input_dir, std::string schema_dir)
-    : m_input_dir(std::move(input_dir)),
-      m_schema_dir(std::move(schema_dir)) {}
+    : m_input_dir(std::move(input_dir))
+    , m_schema_dir(std::move(schema_dir))
+{}
 
-sappp::Result<nlohmann::json> Validator::validate(bool strict) {
+sappp::Result<nlohmann::json> Validator::validate(bool strict)
+{
     fs::path index_dir = fs::path(m_input_dir) / "certstore" / "index";
     std::error_code ec;
     if (!fs::exists(index_dir, ec)) {
         if (ec) {
             return std::unexpected(Error::make("IOError",
-                "Failed to stat certstore index directory: " + index_dir.string() + ": " + ec.message()));
+                                               "Failed to stat certstore index directory: "
+                                                   + index_dir.string() + ": " + ec.message()));
         }
-        return std::unexpected(Error::make("MissingDependency",
-            "certstore index directory not found: " + index_dir.string()));
+        return std::unexpected(
+            Error::make("MissingDependency",
+                        "certstore index directory not found: " + index_dir.string()));
     }
 
     std::vector<fs::path> index_files;
-    for (fs::directory_iterator it(index_dir, ec); it != fs::directory_iterator(); it.increment(ec)) {
+    for (fs::directory_iterator it(index_dir, ec); it != fs::directory_iterator();
+         it.increment(ec)) {
         if (ec) {
-            return std::unexpected(Error::make("IOError",
-                "Failed to read certstore index directory: " + ec.message()));
+            return std::unexpected(
+                Error::make("IOError",
+                            "Failed to read certstore index directory: " + ec.message()));
         }
         const auto& entry = *it;
         std::error_code entry_ec;
         bool is_regular = entry.is_regular_file(entry_ec);
         if (entry_ec) {
-            return std::unexpected(Error::make("IOError",
-                "Failed to stat index entry: " + entry.path().string() + ": " + entry_ec.message()));
+            return std::unexpected(
+                Error::make("IOError",
+                            "Failed to stat index entry: " + entry.path().string() + ": "
+                                + entry_ec.message()));
         }
         if (!is_regular) {
             continue;
@@ -261,8 +292,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
         }
     }
     if (ec) {
-        return std::unexpected(Error::make("IOError",
-            "Failed to read certstore index directory: " + ec.message()));
+        return std::unexpected(
+            Error::make("IOError", "Failed to read certstore index directory: " + ec.message()));
     }
 
     std::ranges::sort(index_files);
@@ -277,20 +308,24 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
             if (strict) {
                 return std::unexpected(index_json_result.error());
             }
-            results.push_back(make_unknown_result(fallback_po_id,
-                                                  make_error_from_result(index_json_result.error())));
+            results.push_back(
+                make_unknown_result(fallback_po_id,
+                                    make_error_from_result(index_json_result.error())));
             continue;
         }
 
-        if (auto result = sappp::common::validate_json(*index_json_result, cert_index_schema_path(m_schema_dir));
+        if (auto result = sappp::common::validate_json(*index_json_result,
+                                                       cert_index_schema_path(m_schema_dir));
             !result) {
             if (strict) {
-                return std::unexpected(Error::make("SchemaInvalid",
-                    "Cert index schema invalid: " + result.error().message));
+                return std::unexpected(
+                    Error::make("SchemaInvalid",
+                                "Cert index schema invalid: " + result.error().message));
             }
-            results.push_back(make_unknown_result(fallback_po_id,
-                                                  make_error("SchemaInvalid",
-                                                             "Cert index schema invalid: " + result.error().message)));
+            results.push_back(make_unknown_result(
+                fallback_po_id,
+                make_error("SchemaInvalid",
+                           "Cert index schema invalid: " + result.error().message)));
             continue;
         }
 
@@ -302,7 +337,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
             if (strict) {
                 return std::unexpected(root_cert.error());
             }
-            results.push_back(make_unknown_result(po_id, make_error_from_result(root_cert.error())));
+            results.push_back(
+                make_unknown_result(po_id, make_error_from_result(root_cert.error())));
             continue;
         }
 
@@ -320,9 +356,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
         std::string sem_version = depends.at("semantics_version").get<std::string>();
         std::string proof_version = depends.at("proof_system_version").get<std::string>();
         std::string profile_version = depends.at("profile_version").get<std::string>();
-        if (sem_version != sappp::kSemanticsVersion ||
-            proof_version != sappp::kProofSystemVersion ||
-            profile_version != sappp::kProfileVersion) {
+        if (sem_version != sappp::kSemanticsVersion || proof_version != sappp::kProofSystemVersion
+            || profile_version != sappp::kProfileVersion) {
             ValidationError mismatch = version_mismatch_error("ProofRoot version triple mismatch");
             if (strict) {
                 return std::unexpected(Error::make(mismatch.reason, mismatch.message));
@@ -390,7 +425,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
             if (strict) {
                 return std::unexpected(evidence_cert.error());
             }
-            results.push_back(make_unknown_result(po_id, make_error_from_result(evidence_cert.error())));
+            results.push_back(
+                make_unknown_result(po_id, make_error_from_result(evidence_cert.error())));
             continue;
         }
 
@@ -411,13 +447,15 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
             if (violation_po_id != po_id) {
                 ValidationError violation_error = rule_violation_error("BugTrace po_id mismatch");
                 if (strict) {
-                    return std::unexpected(Error::make(violation_error.reason, violation_error.message));
+                    return std::unexpected(
+                        Error::make(violation_error.reason, violation_error.message));
                 }
                 results.push_back(make_unknown_result(po_id, violation_error));
                 continue;
             }
             if (predicate_holds) {
-                ValidationError proof_error = proof_failed_error("BugTrace predicate holds at violation state");
+                ValidationError proof_error =
+                    proof_failed_error("BugTrace predicate holds at violation state");
                 if (strict) {
                     return std::unexpected(Error::make(proof_error.reason, proof_error.message));
                 }
@@ -436,7 +474,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
 
             std::string evidence_kind = evidence_cert->at("kind").get<std::string>();
             if (evidence_kind != "Invariant" && evidence_kind != "SafetyProof") {
-                ValidationError unsupported = unsupported_error("SAFE evidence is not SafetyProof/Invariant");
+                ValidationError unsupported =
+                    unsupported_error("SAFE evidence is not SafetyProof/Invariant");
                 if (strict) {
                     return std::unexpected(Error::make(unsupported.reason, unsupported.message));
                 }
@@ -449,7 +488,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
 
             std::string domain = evidence_cert->at("domain").get<std::string>();
             if (!is_supported_safety_domain(domain)) {
-                ValidationError unsupported = unsupported_error("Unsupported SafetyProof domain: " + domain);
+                ValidationError unsupported =
+                    unsupported_error("Unsupported SafetyProof domain: " + domain);
                 if (strict) {
                     return std::unexpected(Error::make(unsupported.reason, unsupported.message));
                 }
@@ -473,10 +513,11 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
                         break;
                     }
                     if (contract_cert->at("kind").get<std::string>() != "ContractRef") {
-                        ValidationError violation = rule_violation_error(
-                            "Contract reference is not ContractRef");
+                        ValidationError violation =
+                            rule_violation_error("Contract reference is not ContractRef");
                         if (strict) {
-                            return std::unexpected(Error::make(violation.reason, violation.message));
+                            return std::unexpected(
+                                Error::make(violation.reason, violation.message));
                         }
                         record_unknown(violation);
                         break;
@@ -484,10 +525,11 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
 
                     std::string tier = contract_cert->at("tier").get<std::string>();
                     if (tier == "Tier2" || tier == "Disabled") {
-                        ValidationError proof_error = proof_failed_error(
-                            "Contract tier not allowed for SAFE: " + tier);
+                        ValidationError proof_error =
+                            proof_failed_error("Contract tier not allowed for SAFE: " + tier);
                         if (strict) {
-                            return std::unexpected(Error::make(proof_error.reason, proof_error.message));
+                            return std::unexpected(
+                                Error::make(proof_error.reason, proof_error.message));
                         }
                         record_unknown(proof_error);
                         break;
@@ -517,10 +559,12 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
                 if (point_ir.at("block_id").get<std::string>() != block_id) {
                     continue;
                 }
-                if (point_ir.contains("inst_id")) {
-                    if (point_ir.at("inst_id").get<std::string>() != inst_id) {
-                        continue;
-                    }
+                // Require inst_id match for instruction-level anchors to prevent false SAFE.
+                // A block-level invariant (without inst_id) cannot validate an instruction-level
+                // PO because intervening instructions may invalidate the predicate.
+                if (!point_ir.contains("inst_id")
+                    || point_ir.at("inst_id").get<std::string>() != inst_id) {
+                    continue;
                 }
                 anchor_found = true;
 
@@ -542,8 +586,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
             }
 
             if (!anchor_found) {
-                ValidationError proof_error = proof_failed_error(
-                    "SafetyProof missing anchor invariant");
+                ValidationError proof_error =
+                    proof_failed_error("SafetyProof missing anchor invariant");
                 if (strict) {
                     return std::unexpected(Error::make(proof_error.reason, proof_error.message));
                 }
@@ -555,8 +599,8 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
             }
 
             if (!predicate_implied) {
-                ValidationError proof_error = proof_failed_error(
-                    "SafetyProof does not imply PO predicate");
+                ValidationError proof_error =
+                    proof_failed_error("SafetyProof does not imply PO predicate");
                 if (strict) {
                     return std::unexpected(Error::make(proof_error.reason, proof_error.message));
                 }
@@ -578,49 +622,52 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
     }
 
     if (results.empty()) {
-        return std::unexpected(Error::make("MissingDependency",
-            "No certificate index entries found"));
+        return std::unexpected(
+            Error::make("MissingDependency", "No certificate index entries found"));
     }
 
-    std::ranges::stable_sort(results,
-                              [](const nlohmann::json& a, const nlohmann::json& b) {
-                                  return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
-                              });
+    std::ranges::stable_sort(results, [](const nlohmann::json& a, const nlohmann::json& b) {
+        return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
+    });
 
     if (tu_id.empty()) {
-        return std::unexpected(Error::make("RuleViolation",
-            "Failed to determine tu_id from IR references"));
+        return std::unexpected(
+            Error::make("RuleViolation", "Failed to determine tu_id from IR references"));
     }
 
     nlohmann::json output = {
-        {"schema_version", "validated_results.v1"},
-        {"tool", {
-            {"name", "sappp"},
-            {"version", sappp::kVersion},
-            {"build_id", sappp::kBuildId}
-        }},
-        {"generated_at", current_time_rfc3339()},
-        {"tu_id", tu_id},
-        {"results", results},
-        {"semantics_version", sappp::kSemanticsVersion},
-        {"proof_system_version", sappp::kProofSystemVersion},
-        {"profile_version", sappp::kProfileVersion}
+        {      "schema_version",                                                           "validated_results.v1"},
+        {                "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
+        {        "generated_at",                                                           current_time_rfc3339()},
+        {               "tu_id",                                                                            tu_id},
+        {             "results",                                                                          results},
+        {   "semantics_version",                                                         sappp::kSemanticsVersion},
+        {"proof_system_version",                                                       sappp::kProofSystemVersion},
+        {     "profile_version",                                                           sappp::kProfileVersion}
     };
 
-    if (auto result = sappp::common::validate_json(output, validated_results_schema_path(m_schema_dir)); !result) {
-        return std::unexpected(Error::make("SchemaInvalid",
-            "Validated results schema invalid: " + result.error().message));
+    if (auto result =
+            sappp::common::validate_json(output, validated_results_schema_path(m_schema_dir));
+        !result) {
+        return std::unexpected(
+            Error::make("SchemaInvalid",
+                        "Validated results schema invalid: " + result.error().message));
     }
 
     return output;
 }
 
-sappp::VoidResult Validator::write_results(const nlohmann::json& results, const std::string& output_path) const {
-    if (auto result = sappp::common::validate_json(results, validated_results_schema_path(m_schema_dir)); !result) {
-        return std::unexpected(Error::make("SchemaInvalid",
-            "Validated results schema invalid: " + result.error().message));
+sappp::VoidResult Validator::write_results(const nlohmann::json& results,
+                                           const std::string& output_path) const
+{
+    if (auto result =
+            sappp::common::validate_json(results, validated_results_schema_path(m_schema_dir));
+        !result) {
+        return std::unexpected(
+            Error::make("SchemaInvalid",
+                        "Validated results schema invalid: " + result.error().message));
     }
     return write_json_file(output_path, results);
 }
 
-} // namespace sappp::validator
+}  // namespace sappp::validator
