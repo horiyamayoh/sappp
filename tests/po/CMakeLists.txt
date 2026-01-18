@@ -14,5 +14,4 @@ target_compile_definitions(test_po_generator PRIVATE
     SAPPP_SCHEMA_DIR="${CMAKE_SOURCE_DIR}/schemas"
 )
 
-include(GoogleTest)
-gtest_discover_tests(test_po_generator)
+sappp_register_gtest(test_po_generator po)

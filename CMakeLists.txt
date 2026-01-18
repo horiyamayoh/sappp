@@ -56,7 +56,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wsign-conversion               # Sign conversions
         -Wfloat-conversion              # Float to int conversion
         -Wnarrowing                     # Narrowing conversions in initializers
-        -Warith-conversion              # Arithmetic conversion issues
         -Wdouble-promotion              # Float implicitly promoted to double
         -Wfloat-equal                   # Direct float equality comparison
         
@@ -106,11 +105,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         -Wpointer-arith                 # Suspicious pointer arithmetic
         -Wwrite-strings                 # Deprecated string literal conversion
         -Wdisabled-optimization         # Optimization disabled due to complexity
-        -Wstrict-overflow=2             # Strict overflow
         -Wpacked                        # Packed attribute problems
         -Winline                        # Inline function cannot be inlined
         -Wtype-limits                   # Type limits (comparison always true/false)
-        -Wshift-overflow=2              # Shift overflow
         -Wparentheses                   # Suspicious parentheses
         -Wsequence-point                # Undefined sequence point behavior
         -Wdangling-else                 # Dangling else
@@ -119,6 +116,13 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     # GCC-specific warnings
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
         list(APPEND SAPPP_CXX_FLAGS
+            # Type safety (GCC-specific)
+            -Warith-conversion              # Arithmetic conversion issues
+            
+            # Additional strictness (GCC-specific)
+            -Wstrict-overflow=2             # Strict overflow (level 2)
+            -Wshift-overflow=2              # Shift overflow (level 2)
+            
             # Logic errors
             -Wduplicated-cond               # Duplicated conditions
             -Wduplicated-branches           # Duplicated branches
@@ -165,6 +169,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         list(APPEND SAPPP_CXX_FLAGS
             -Wmost                          # Most warnings
+            
+            # Additional strictness (Clang equivalent)
+            -Wshift-overflow                # Shift overflow (Clang doesn't support =2)
             
             # Thread safety (Clang has better analysis)
             -Wthread-safety                 # Thread safety analysis
