@@ -18,6 +18,7 @@
 
 #include "sappp/version.hpp"
 #include "sappp/common.hpp"
+#include "sappp/analyzer.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
 #include "sappp/schema_validate.hpp"
@@ -370,12 +371,24 @@ int cmd_analyze(int argc, char** argv) {
     }
     po_out << *po_canonical << "\n";
 
+    sappp::analyzer::Analyzer analyzer(schema_dir);
+    auto analyzer_result = analyzer.analyze(*po_list_result, output_dir.string());
+    if (!analyzer_result) {
+        std::println(stderr, "Error: analyzer failed: {}", analyzer_result.error().message);
+        return 1;
+    }
+
+    std::filesystem::path unknown_path = output_dir / "analyzer" / "unknown_ledger.json";
+    std::filesystem::path certstore_dir = output_dir / "certstore";
+
     std::println("[analyze] Wrote frontend outputs");
     std::println("  snapshot: {}", snapshot);
     std::println("  output: {}", output_dir.string());
     std::println("  nir: {}", nir_path.string());
     std::println("  source_map: {}", source_map_path.string());
     std::println("  po: {}", po_path.string());
+    std::println("  unknown: {}", unknown_path.string());
+    std::println("  certstore: {}", certstore_dir.string());
     return 0;
 #endif
 }

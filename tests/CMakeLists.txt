@@ -27,6 +27,9 @@ add_subdirectory(build_capture)
 # Determinism tests
 add_subdirectory(determinism)
 
+# Analyzer tests
+add_subdirectory(analyzer)
+
 # End-to-end tests
 add_subdirectory(end_to_end)
 
