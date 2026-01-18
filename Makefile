@@ -8,7 +8,7 @@
 #
 # このMakefileはCI/ローカルで共通のコマンドを提供します。
 
-.PHONY: help quick ci docker-ci build test clean format tidy install-hooks
+.PHONY: help quick ci docker-ci build test clean format tidy install-hooks check-env
 
 # デフォルトターゲット
 .DEFAULT_GOAL := help
@@ -62,15 +62,15 @@ help:
 	@echo ""
 	@echo "$(BLUE)セットアップ:$(NC)"
 	@echo "  make install-hooks Git hooksをインストール"
+	@echo "  make check-env     環境の状態をチェック"
 	@echo "  make docker-build  Dockerイメージをビルド"
 	@echo ""
 	@echo "$(BLUE)推奨ワークフロー:$(NC)"
-	@echo "  1. make install-hooks  # 初回のみ"
-	@echo "  2. （コーディング）"
-	@echo "  3. make quick          # コミット前"
-	@echo "  4. git commit          # pre-commit hookが自動実行"
-	@echo "  5. make docker-ci      # プッシュ前（確実）"
-	@echo "  6. git push"
+	@echo "  1. make check-env       # 環境確認"
+	@echo "  2. make install-hooks   # Git hooks インストール"
+	@echo "  3. （コーディング）"
+	@echo "  4. git commit           # pre-commit hookが自動実行"
+	@echo "  5. git push             # pre-push hookが自動実行"
 	@echo ""
 
 # ===========================================================================
@@ -99,6 +99,15 @@ docker-shell:
 
 docker-build:
 	@docker build -t sappp-ci docker/
+
+# ===========================================================================
+# 環境チェック
+# ===========================================================================
+check-env:
+	@./scripts/check-env.sh
+
+check-env-fix:
+	@./scripts/check-env.sh --fix
 
 # ===========================================================================
 # ビルド
