@@ -50,6 +50,13 @@ struct CertBundle {
     std::string bug_trace_hash;
 };
 
+struct SafeCertBundle {
+    std::string po_id;
+    std::string tu_id;
+    std::string root_hash;
+    std::string safety_proof_hash;
+};
+
 CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema_dir) {
     fs::path certstore_dir = input_dir / "certstore";
     sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
@@ -155,6 +162,114 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
     return {po_id, tu_id, root_hash, bug_hash};
 }
 
+SafeCertBundle build_safe_cert_store(const fs::path& input_dir,
+                                     const std::string& schema_dir,
+                                     bool include_predicate) {
+    fs::path certstore_dir = input_dir / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-safe-1");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-safe-1");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+
+    nlohmann::json po_cert = {
+        {"schema_version", "cert.v1"},
+        {"kind", "PoDef"},
+        {"po", {
+            {"po_id", po_id},
+            {"po_kind", "div0"},
+            {"profile_version", sappp::kProfileVersion},
+            {"semantics_version", sappp::kSemanticsVersion},
+            {"proof_system_version", sappp::kProofSystemVersion},
+            {"repo_identity", {
+                {"path", "src/test.cpp"},
+                {"content_sha256", sappp::common::sha256_prefixed("content")}
+            }},
+            {"function", {
+                {"usr", "c:@F@test"},
+                {"mangled", "_Z4testv"}
+            }},
+            {"anchor", {
+                {"block_id", "B1"},
+                {"inst_id", "I1"}
+            }},
+            {"predicate", {
+                {"expr", predicate_expr},
+                {"pretty", "x != 0"}
+            }}
+        }}
+    };
+
+    nlohmann::json ir_cert = {
+        {"schema_version", "cert.v1"},
+        {"kind", "IrRef"},
+        {"tu_id", tu_id},
+        {"function_uid", "func1"},
+        {"block_id", "B1"},
+        {"inst_id", "I1"}
+    };
+
+    nlohmann::json state = nlohmann::json::object();
+    if (include_predicate) {
+        state["predicates"] = nlohmann::json::array({predicate_expr});
+    }
+
+    nlohmann::json safety_proof = {
+        {"schema_version", "cert.v1"},
+        {"kind", "SafetyProof"},
+        {"domain", "interval+null+lifetime+init"},
+        {"points", {
+            {
+                {"ir", {
+                    {"function_uid", "func1"},
+                    {"block_id", "B1"},
+                    {"inst_id", "I1"}
+                }},
+                {"state", state}
+            }
+        }}
+    };
+
+    auto po_result = store.put(po_cert);
+    EXPECT_TRUE(po_result.has_value()) << "put(po_cert) failed: " << po_result.error().message;
+    std::string po_hash = *po_result;
+
+    auto ir_result = store.put(ir_cert);
+    EXPECT_TRUE(ir_result.has_value()) << "put(ir_cert) failed: " << ir_result.error().message;
+    std::string ir_hash = *ir_result;
+
+    auto safety_result = store.put(safety_proof);
+    EXPECT_TRUE(safety_result.has_value()) << "put(safety_proof) failed: " << safety_result.error().message;
+    std::string safety_hash = *safety_result;
+
+    nlohmann::json proof_root = {
+        {"schema_version", "cert.v1"},
+        {"kind", "ProofRoot"},
+        {"po", { {"ref", po_hash} }},
+        {"ir", { {"ref", ir_hash} }},
+        {"evidence", { {"ref", safety_hash} }},
+        {"result", "SAFE"},
+        {"depends", {
+            {"semantics_version", sappp::kSemanticsVersion},
+            {"proof_system_version", sappp::kProofSystemVersion},
+            {"profile_version", sappp::kProfileVersion}
+        }},
+        {"hash_scope", "hash_scope.v1"}
+    };
+
+    auto root_result = store.put(proof_root);
+    EXPECT_TRUE(root_result.has_value()) << "put(proof_root) failed: " << root_result.error().message;
+    std::string root_hash = *root_result;
+
+    auto bind_result = store.bind_po(po_id, root_hash);
+    EXPECT_TRUE(bind_result.has_value()) << "bind_po() failed: " << bind_result.error().message;
+
+    return {po_id, tu_id, root_hash, safety_hash};
+}
+
 sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
     if (!out) {
@@ -232,4 +347,37 @@ TEST(ValidatorTest, DowngradesOnMissingDependency) {
     EXPECT_EQ(entry.at("category"), "UNKNOWN");
     EXPECT_EQ(entry.at("validator_status"), "MissingDependency");
     EXPECT_EQ(entry.at("downgrade_reason_code"), "MissingDependency");
+}
+
+TEST(ValidatorTest, ValidatesSafetyProof) {
+    TempDir temp_dir("sappp_validator_safe");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    SafeCertBundle bundle = build_safe_cert_store(temp_dir.path(), schema_dir, true);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    ASSERT_EQ(results->at("results").size(), 1u);
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "SAFE");
+    EXPECT_EQ(entry.at("validator_status"), "Validated");
+    EXPECT_EQ(entry.at("certificate_root"), bundle.root_hash);
+}
+
+TEST(ValidatorTest, DowngradesOnMissingSafetyPredicate) {
+    TempDir temp_dir("sappp_validator_safe_missing_predicate");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    build_safe_cert_store(temp_dir.path(), schema_dir, false);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "UNKNOWN");
+    EXPECT_EQ(entry.at("validator_status"), "ProofCheckFailed");
+    EXPECT_EQ(entry.at("downgrade_reason_code"), "ProofCheckFailed");
 }

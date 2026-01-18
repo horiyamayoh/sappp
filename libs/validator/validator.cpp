@@ -218,6 +218,10 @@ ValidationError rule_violation_error(const std::string& message) {
     return {"RuleViolation", "RuleViolation", message};
 }
 
+[[nodiscard]] bool is_supported_safety_domain(std::string_view domain) {
+    return domain == "interval+null+lifetime+init";
+}
+
 } // namespace
 
 Validator::Validator(std::string input_dir, std::string schema_dir)
@@ -423,11 +427,147 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
 
             results.push_back(make_validated_result(po_id, "BUG", root_hash));
         } else if (result_kind == "SAFE") {
-            ValidationError unsupported = unsupported_error("SAFE validation not yet supported");
-            if (strict) {
-                return std::unexpected(Error::make(unsupported.reason, unsupported.message));
+            bool safe_failed = false;
+
+            auto record_unknown = [&](const ValidationError& error) {
+                results.push_back(make_unknown_result(po_id, error));
+                safe_failed = true;
+            };
+
+            std::string evidence_kind = evidence_cert->at("kind").get<std::string>();
+            if (evidence_kind != "Invariant" && evidence_kind != "SafetyProof") {
+                ValidationError unsupported = unsupported_error("SAFE evidence is not SafetyProof/Invariant");
+                if (strict) {
+                    return std::unexpected(Error::make(unsupported.reason, unsupported.message));
+                }
+                record_unknown(unsupported);
             }
-            results.push_back(make_unknown_result(po_id, unsupported));
+
+            if (safe_failed) {
+                continue;
+            }
+
+            std::string domain = evidence_cert->at("domain").get<std::string>();
+            if (!is_supported_safety_domain(domain)) {
+                ValidationError unsupported = unsupported_error("Unsupported SafetyProof domain: " + domain);
+                if (strict) {
+                    return std::unexpected(Error::make(unsupported.reason, unsupported.message));
+                }
+                record_unknown(unsupported);
+            }
+
+            if (safe_failed) {
+                continue;
+            }
+
+            if (depends.contains("contracts")) {
+                const auto& contracts = depends.at("contracts");
+                for (const auto& contract_ref : contracts) {
+                    std::string contract_hash = contract_ref.at("ref").get<std::string>();
+                    auto contract_cert = load_cert_object(m_input_dir, m_schema_dir, contract_hash);
+                    if (!contract_cert) {
+                        if (strict) {
+                            return std::unexpected(contract_cert.error());
+                        }
+                        record_unknown(make_error_from_result(contract_cert.error()));
+                        break;
+                    }
+                    if (contract_cert->at("kind").get<std::string>() != "ContractRef") {
+                        ValidationError violation = rule_violation_error(
+                            "Contract reference is not ContractRef");
+                        if (strict) {
+                            return std::unexpected(Error::make(violation.reason, violation.message));
+                        }
+                        record_unknown(violation);
+                        break;
+                    }
+
+                    std::string tier = contract_cert->at("tier").get<std::string>();
+                    if (tier == "Tier2" || tier == "Disabled") {
+                        ValidationError proof_error = proof_failed_error(
+                            "Contract tier not allowed for SAFE: " + tier);
+                        if (strict) {
+                            return std::unexpected(Error::make(proof_error.reason, proof_error.message));
+                        }
+                        record_unknown(proof_error);
+                        break;
+                    }
+                }
+            }
+
+            if (safe_failed) {
+                continue;
+            }
+
+            const nlohmann::json& po = po_cert->at("po");
+            const nlohmann::json& anchor = po.at("anchor");
+            const std::string block_id = anchor.at("block_id").get<std::string>();
+            const std::string inst_id = anchor.at("inst_id").get<std::string>();
+            const std::string function_uid = ir_cert->at("function_uid").get<std::string>();
+            const nlohmann::json& predicate_expr = po.at("predicate").at("expr");
+
+            bool anchor_found = false;
+            bool predicate_implied = false;
+
+            for (const auto& point : evidence_cert->at("points")) {
+                const auto& point_ir = point.at("ir");
+                if (point_ir.at("function_uid").get<std::string>() != function_uid) {
+                    continue;
+                }
+                if (point_ir.at("block_id").get<std::string>() != block_id) {
+                    continue;
+                }
+                if (point_ir.contains("inst_id")) {
+                    if (point_ir.at("inst_id").get<std::string>() != inst_id) {
+                        continue;
+                    }
+                }
+                anchor_found = true;
+
+                if (point.contains("state")) {
+                    const auto& state = point.at("state");
+                    if (state.contains("predicates") && state.at("predicates").is_array()) {
+                        for (const auto& predicate : state.at("predicates")) {
+                            if (predicate == predicate_expr) {
+                                predicate_implied = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if (predicate_implied) {
+                    break;
+                }
+            }
+
+            if (!anchor_found) {
+                ValidationError proof_error = proof_failed_error(
+                    "SafetyProof missing anchor invariant");
+                if (strict) {
+                    return std::unexpected(Error::make(proof_error.reason, proof_error.message));
+                }
+                record_unknown(proof_error);
+            }
+
+            if (safe_failed) {
+                continue;
+            }
+
+            if (!predicate_implied) {
+                ValidationError proof_error = proof_failed_error(
+                    "SafetyProof does not imply PO predicate");
+                if (strict) {
+                    return std::unexpected(Error::make(proof_error.reason, proof_error.message));
+                }
+                record_unknown(proof_error);
+            }
+
+            if (safe_failed) {
+                continue;
+            }
+
+            results.push_back(make_validated_result(po_id, "SAFE", root_hash));
         } else {
             ValidationError violation = rule_violation_error("ProofRoot result is invalid");
             if (strict) {

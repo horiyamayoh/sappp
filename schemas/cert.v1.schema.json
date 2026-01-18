@@ -163,6 +163,7 @@
         "PoDef",
         "IrRef",
         "Invariant",
+        "SafetyProof",
         "BugTrace",
         "ContractRef",
         "DependencyGraph",
@@ -384,6 +385,39 @@
         },
         "kind": {
           "const": "Invariant"
+        },
+        "points": {
+          "items": {
+            "$ref": "#/$defs/InvariantPoint"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "pretty": {
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "cert.v1"
+        }
+      },
+      "required": [
+        "schema_version",
+        "kind",
+        "domain",
+        "points"
+      ],
+      "type": "object"
+    },
+    "SafetyProofObj": {
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "Abstract domain identifier. v1 expects interval+null+lifetime+init.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "kind": {
+          "const": "SafetyProof"
         },
         "points": {
           "items": {
@@ -803,6 +837,9 @@
     },
     {
       "$ref": "#/$defs/InvariantObj"
+    },
+    {
+      "$ref": "#/$defs/SafetyProofObj"
     },
     {
       "$ref": "#/$defs/BugTraceObj"
