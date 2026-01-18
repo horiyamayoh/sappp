@@ -39,17 +39,17 @@
     },
     {
       "name": "clang-debug",
-      "displayName": "Clang 18 Debug",
+      "displayName": "Clang 19 Debug",
       "inherits": "base",
       "binaryDir": "${sourceDir}/build-clang",
       "cacheVariables": {
-        "CMAKE_C_COMPILER": "clang-18",
-        "CMAKE_CXX_COMPILER": "clang++-18"
+        "CMAKE_C_COMPILER": "clang-19",
+        "CMAKE_CXX_COMPILER": "clang++-19"
       }
     },
     {
       "name": "clang-debug-frontend",
-      "displayName": "Clang 18 Debug + Clang Frontend",
+      "displayName": "Clang 19 Debug + Clang Frontend",
       "inherits": "clang-debug",
       "binaryDir": "${sourceDir}/build-clang-frontend",
       "cacheVariables": {

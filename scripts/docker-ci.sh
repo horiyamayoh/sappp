@@ -110,18 +110,24 @@ main() {
     echo -e "${BLUE}  Command: $COMMAND${NC}\n"
     
     # Docker実行オプション
+    # --user でホストの UID/GID を使用し、パーミッション問題を回避
     # tmpfs でビルドディレクトリを隔離し、ホストの build/ との競合を回避
-    # これにより完全なCI再現性を確保
+    HOST_UID=$(id -u)
+    HOST_GID=$(id -g)
+    
     DOCKER_OPTS=(
         --rm
+        --user "$HOST_UID:$HOST_GID"
         -v "$PROJECT_ROOT:/workspace"
-        --tmpfs /workspace/build:exec
-        --tmpfs /workspace/build-clang:exec
+        --tmpfs "/workspace/build:exec,uid=$HOST_UID,gid=$HOST_GID"
+        --tmpfs "/workspace/build-clang:exec,uid=$HOST_UID,gid=$HOST_GID"
         -w /workspace
         -e "TERM=xterm-256color"
         -e "SAPPP_CI_ENV=docker"
+        -e "SAPPP_CI_STAMP_FILE=${SAPPP_CI_STAMP_FILE:-}"
         -e "SAPPP_BUILD_JOBS=${SAPPP_BUILD_JOBS:-}"
         -e "SAPPP_USE_CCACHE=${SAPPP_USE_CCACHE:-0}"
+        -e "HOME=/tmp"
     )
     
     if [ "$INTERACTIVE" = true ]; then

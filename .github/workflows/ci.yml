@@ -64,12 +64,12 @@ jobs:
           path: build/compile_commands.json
 
   # ===========================================================================
-  # Build and Test (Clang 18)
+  # Build and Test (Clang 19)
   # ===========================================================================
   # Note: Uses libstdc++ instead of libc++ because libc++ does not yet
-  # implement std::views::enumerate (C++23 P2164R9) as of version 18.
+  # implement std::views::enumerate (C++23 P2164R9).
   build-clang:
-    name: Build & Test (Clang 18)
+    name: Build & Test (Clang 19)
     runs-on: ubuntu-24.04
 
     steps:
@@ -79,15 +79,15 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-18 libstdc++-14-dev cmake ninja-build
+          sudo apt-get install -y clang-19 libstdc++-14-dev cmake ninja-build
 
       - name: Configure CMake
         run: |
           cmake -S . -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER=clang-18 \
-            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
             -DSAPPP_BUILD_TESTS=ON \
             -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
             -DSAPPP_WERROR=ON
@@ -115,13 +115,13 @@ jobs:
       - name: Install clang-format
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format-18
+          sudo apt-get install -y clang-format-19
 
       - name: Check formatting
         run: |
           find libs tools tests include \
             \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
-            -print0 | xargs -0 clang-format-18 --dry-run --Werror
+            -print0 | xargs -0 clang-format-19 --dry-run --Werror
 
   # ===========================================================================
   # Static Analysis (clang-tidy)
@@ -138,7 +138,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14 clang-tidy-18 cmake ninja-build
+          sudo apt-get install -y gcc-14 g++-14 clang-tidy-19 cmake ninja-build
 
       - name: Download compile_commands.json
         uses: actions/download-artifact@v4
@@ -160,7 +160,7 @@ jobs:
         run: |
           find libs -name '*.cpp' -print0 | \
             xargs -0 -P$(nproc) -I{} \
-            clang-tidy-18 -p build --warnings-as-errors='*' {}
+            clang-tidy-19 -p build --warnings-as-errors='*' {}
 
   # ===========================================================================
   # Schema Validation

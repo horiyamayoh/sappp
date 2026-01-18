@@ -21,14 +21,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # GCC 14 (C++23)
     gcc-14 \
     g++-14 \
-    # Clang 18 (C++23)
-    clang-18 \
-    clang-format-18 \
-    clang-tidy-18 \
-    clangd-18 \
+    # Clang 19 (C++23)
+    clang-19 \
+    clang-format-19 \
+    clang-tidy-19 \
+    clangd-19 \
     libstdc++-14-dev \
     # Clang Frontend dependencies (optional)
-    libclang-18-dev \
+    libclang-19-dev \
     # Node.js for ajv-cli (schema validation)
     nodejs \
     npm \
@@ -63,12 +63,12 @@ RUN npm install -g ajv-cli ajv-formats
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 && \
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
 
-# Set Clang 18 tools as alternatives
-RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100 && \
-    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100 && \
-    update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-18 100 && \
-    update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-18 100 && \
-    update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-18 100
+# Set Clang 19 tools as alternatives
+RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100 && \
+    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100 && \
+    update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-19 100 && \
+    update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100 && \
+    update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
 
 # Create non-root user for development
 ARG USERNAME=developer

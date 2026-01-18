@@ -26,6 +26,9 @@ SKIP_CLANG_BUILD=false
 SKIP_TIDY=false
 SKIP_SCHEMA=false
 TIDY_ALL=false
+CHECK_MODE="full"
+STAMP_FILE="${SAPPP_CI_STAMP_FILE:-}"
+NO_STAMP=false
 
 for arg in "$@"; do
     case $arg in
@@ -34,6 +37,7 @@ for arg in "$@"; do
             SKIP_CLANG_BUILD=true
             SKIP_TIDY=true
             SKIP_SCHEMA=true
+            CHECK_MODE="quick"
             ;;
         --skip-clang)
             SKIP_CLANG_BUILD=true
@@ -47,15 +51,23 @@ for arg in "$@"; do
         --tidy-all)
             TIDY_ALL=true
             ;;
+        --stamp-file=*)
+            STAMP_FILE="${arg#*=}"
+            ;;
+        --no-stamp)
+            NO_STAMP=true
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --quick        最小限のチェック（GCCビルド+テスト+フォーマット）"
-            echo "  --skip-clang   Clang 18 ビルドをスキップ"
+            echo "  --skip-clang   Clang 19 ビルドをスキップ"
             echo "  --skip-tidy    clang-tidy をスキップ"
             echo "  --skip-schema  スキーマ検証をスキップ"
             echo "  --tidy-all     clang-tidy を全ファイルに適用"
+            echo "  --stamp-file=  成功時のスタンプ保存先を指定"
+            echo "  --no-stamp     スタンプを出力しない"
             echo "  --help, -h     このヘルプを表示"
             exit 0
             ;;
@@ -101,6 +113,33 @@ print_compiler_warnings() {
     fi
 }
 
+write_stamp() {
+    if [ "$NO_STAMP" = true ] || [ -z "$STAMP_FILE" ]; then
+        return 0
+    fi
+
+    local stamp_dir
+    stamp_dir="$(dirname "$STAMP_FILE")"
+    mkdir -p "$stamp_dir"
+
+    local tree_hash=""
+    local head_hash=""
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        tree_hash="$(git write-tree 2>/dev/null || true)"
+        if git rev-parse --verify HEAD > /dev/null 2>&1; then
+            head_hash="$(git rev-parse HEAD)"
+        fi
+    fi
+
+    local checked_at
+    checked_at="$(date +%s)"
+
+    cat > "$STAMP_FILE" << EOF
+{"check_mode":"$CHECK_MODE","tree_hash":"$tree_hash","head_before":"$head_hash","checked_at":$checked_at}
+EOF
+    echo -e "${GREEN}✓ スタンプを保存しました: $STAMP_FILE${NC}"
+}
+
 # 結果追跡
 PASSED=()
 FAILED=()
@@ -108,6 +147,7 @@ FAILED=()
 # ビルドディレクトリ（Docker CI では tmpfs で隔離されるため常に build/ を使用）
 BUILD_DIR="${SAPPP_BUILD_DIR:-build}"
 BUILD_CLANG_DIR="${SAPPP_BUILD_CLANG_DIR:-build-clang}"
+CLANG_BUILD_DIR="$BUILD_CLANG_DIR"
 LOG_ROOT="${SAPPP_LOG_DIR:-}"
 if [ -n "$LOG_ROOT" ]; then
     GCC_LOG_DIR="$LOG_ROOT/gcc"
@@ -176,8 +216,8 @@ echo -e "${NC}"
 # 1. clang-format チェック
 # ===========================================================================
 run_check "Format Check (clang-format)" '
-    if command -v clang-format-18 &> /dev/null; then
-        CLANG_FORMAT=clang-format-18
+    if command -v clang-format-19 &> /dev/null; then
+        CLANG_FORMAT=clang-format-19
     elif command -v clang-format &> /dev/null; then
         CLANG_FORMAT=clang-format
     else
@@ -244,40 +284,50 @@ run_check "Determinism Tests" '
 '
 
 # ===========================================================================
-# 5. Clang 18 ビルド（オプション）
-#    NOTE: libc++ 18 は std::views::enumerate 未実装のため libstdc++ を使用
+# 5. Clang ビルド（オプション）
+#    NOTE: libc++ は std::views::enumerate 未実装のため libstdc++ を使用
 # ===========================================================================
+CLANG_CXX_COMPILER=""
+CLANG_C_COMPILER=""
+if command -v clang++-19 &> /dev/null; then
+    CLANG_CXX_COMPILER=clang++-19
+    CLANG_C_COMPILER=clang-19
+fi
+
 if [ "$SKIP_CLANG_BUILD" = false ]; then
-    run_check "Build (Clang 18)" '
-        if ! command -v clang++-18 &> /dev/null; then
-            echo "Warning: clang++-18 not found, skipping"
-        else
-            rm -rf "$BUILD_CLANG_DIR"
-            mkdir -p "$CLANG_LOG_DIR"
-            cmake -S . -B "$BUILD_CLANG_DIR" $GENERATOR \
-                -DCMAKE_BUILD_TYPE=Debug \
-                -DCMAKE_C_COMPILER=clang-18 \
-                -DCMAKE_CXX_COMPILER=clang++-18 \
-                -DSAPPP_BUILD_TESTS=ON \
-                -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
-                -DSAPPP_WERROR=ON \
-                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-                $CMAKE_LAUNCHER_OPTS \
-                > "$CLANG_LOG_DIR/config.log" 2>&1 || { \
-                    echo "CMake configure failed"; \
-                    tail -100 "$CLANG_LOG_DIR/config.log"; \
-                    false; } \
-            && cmake --build "$BUILD_CLANG_DIR" --parallel "$BUILD_JOBS" > "$CLANG_LOG_DIR/build.log" 2>&1 || { \
-                echo "Build failed"; \
-                tail -100 "$CLANG_LOG_DIR/build.log"; \
+    if [ -z "$CLANG_CXX_COMPILER" ]; then
+        echo -e "${YELLOW}Warning: clang++-19 not found, skipping Clang build${NC}"
+        SKIP_CLANG_BUILD=true
+    fi
+fi
+
+if [ "$SKIP_CLANG_BUILD" = false ]; then
+    run_check "Build (Clang)" '
+        rm -rf "$CLANG_BUILD_DIR"
+        mkdir -p "$CLANG_LOG_DIR"
+        cmake -S . -B "$CLANG_BUILD_DIR" $GENERATOR \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER='"$CLANG_C_COMPILER"' \
+            -DCMAKE_CXX_COMPILER='"$CLANG_CXX_COMPILER"' \
+            -DSAPPP_BUILD_TESTS=ON \
+            -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
+            -DSAPPP_WERROR=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            $CMAKE_LAUNCHER_OPTS \
+            > "$CLANG_LOG_DIR/config.log" 2>&1 || { \
+                echo "CMake configure failed"; \
+                tail -100 "$CLANG_LOG_DIR/config.log"; \
                 false; } \
-            && if has_compiler_warnings "$CLANG_LOG_DIR/build.log"; then \
-                echo "Compiler warnings found"; \
-                print_compiler_warnings "$CLANG_LOG_DIR/build.log"; \
-                false; \
-            fi \
-            && ctest --test-dir "$BUILD_CLANG_DIR" --output-on-failure -j "$BUILD_JOBS"
-        fi
+        && cmake --build "$CLANG_BUILD_DIR" --parallel "$BUILD_JOBS" > "$CLANG_LOG_DIR/build.log" 2>&1 || { \
+            echo "Build failed"; \
+            tail -100 "$CLANG_LOG_DIR/build.log"; \
+            false; } \
+        && if has_compiler_warnings "$CLANG_LOG_DIR/build.log"; then \
+            echo "Compiler warnings found"; \
+            print_compiler_warnings "$CLANG_LOG_DIR/build.log"; \
+            false; \
+        fi \
+        && ctest --test-dir "$CLANG_BUILD_DIR" --output-on-failure -j "$BUILD_JOBS"
     '
 fi
 
@@ -286,15 +336,15 @@ fi
 # ===========================================================================
 if [ "$SKIP_TIDY" = false ]; then
     run_check "Static Analysis (clang-tidy)" '
-        if command -v clang-tidy-18 &> /dev/null; then
-            CLANG_TIDY=clang-tidy-18
+        if command -v clang-tidy-19 &> /dev/null; then
+            CLANG_TIDY=clang-tidy-19
         elif command -v clang-tidy &> /dev/null; then
             CLANG_TIDY=clang-tidy
         else
             echo "Warning: clang-tidy not found, skipping"
             CLANG_TIDY=""
         fi
-        
+
         # 変更されたファイルのみチェック（高速化）
         if [ -n "$CLANG_TIDY" ]; then
             CHANGED_FILES=$(collect_tidy_files)
@@ -303,7 +353,16 @@ if [ "$SKIP_TIDY" = false ]; then
             else
                 echo "Checking files:"
                 echo "$CHANGED_FILES"
-                echo "$CHANGED_FILES" | xargs -P"$BUILD_JOBS" -I{} $CLANG_TIDY -p "$BUILD_DIR" --warnings-as-errors="*" {}
+                # Use Clang build directory if available, otherwise use GCC build with extra args to suppress GCC-specific flags
+                TIDY_BUILD_DIR="$BUILD_DIR"
+                TIDY_EXTRA_ARGS=""
+                if [ -d "$BUILD_CLANG_DIR" ] && [ -f "$BUILD_CLANG_DIR/compile_commands.json" ]; then
+                    TIDY_BUILD_DIR="$BUILD_CLANG_DIR"
+                else
+                    # Suppress GCC-specific unknown warning options when using GCC compile_commands
+                    TIDY_EXTRA_ARGS="--extra-arg=-Wno-unknown-warning-option"
+                fi
+                echo "$CHANGED_FILES" | xargs -P"$BUILD_JOBS" -I{} $CLANG_TIDY -p "$TIDY_BUILD_DIR" --warnings-as-errors="*" $TIDY_EXTRA_ARGS {}
             fi
         fi
     '
@@ -377,6 +436,7 @@ if [ ${#FAILED[@]} -gt 0 ]; then
     echo -e "\n${RED}━━━ CI チェック失敗 ━━━${NC}"
     exit 1
 else
+    write_stamp
     echo -e "\n${GREEN}━━━ 全チェック通過！コミットしてOK ━━━${NC}"
     exit 0
 fi

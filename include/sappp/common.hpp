@@ -24,7 +24,7 @@ struct Error
 
     [[nodiscard]] static Error make(std::string code, std::string message)
     {
-        return Error{std::move(code), std::move(message)};
+        return Error{.code = std::move(code), .message = std::move(message)};
     }
 };
 

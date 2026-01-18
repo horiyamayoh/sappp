@@ -123,8 +123,8 @@ fi
 echo -e "\n${BLUE}▶ Format Check${NC}"
 
 if [ -n "$CHANGED_CPP" ]; then
-    if command -v clang-format-18 &> /dev/null; then
-        CLANG_FORMAT=clang-format-18
+    if command -v clang-format-19 &> /dev/null; then
+        CLANG_FORMAT=clang-format-19
     elif command -v clang-format &> /dev/null; then
         CLANG_FORMAT=clang-format
     else
@@ -144,7 +144,7 @@ if [ -n "$CHANGED_CPP" ]; then
         done
         
         if [ $FORMAT_ERRORS -gt 0 ]; then
-            echo -e "${RED}Format errors found. Run: clang-format-18 -i <files>${NC}"
+            echo -e "${RED}Format errors found. Run: ${CLANG_FORMAT} -i <files>${NC}"
             exit 1
         fi
         echo -e "${GREEN}✓ Format check passed${NC}"

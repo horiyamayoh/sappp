@@ -15,12 +15,8 @@
 
 #include <algorithm>
 #include <cctype>
-#include <chrono>
-#include <ctime>
 #include <filesystem>
-#include <format>
 #include <fstream>
-#include <iomanip>
 #include <iterator>
 #include <ranges>
 #include <string>
@@ -30,12 +26,6 @@
 namespace sappp::po {
 
 namespace {
-
-std::string current_time_utc()
-{
-    const auto now = std::chrono::system_clock::now();
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
-}
 
 sappp::Result<std::string> read_file_contents(const std::string& path)
 {
@@ -106,9 +96,10 @@ std::string infer_po_kind(const nlohmann::json& inst)
     return "UB.Unknown";
 }
 
-sappp::Result<nlohmann::json>
-build_repo_identity(const nlohmann::json& inst,
-                    std::unordered_map<std::string, std::string>& file_hashes)
+// Keep as a single block to mirror schema construction steps.
+sappp::Result<nlohmann::json> build_repo_identity(  // NOLINT(readability-function-size)
+    const nlohmann::json& inst,
+    std::unordered_map<std::string, std::string>& file_hashes)
 {
     std::string path = "unknown";
     std::string content_hash = common::sha256_prefixed("");
@@ -213,8 +204,11 @@ sappp::Result<std::string> format_pretty(const std::string& op, const nlohmann::
     return result;
 }
 
+// Parameter order matches predicate construction; keep as-is.
 sappp::Result<nlohmann::json>
-build_predicate(const std::string& op, const std::string& po_kind, const nlohmann::json& inst)
+build_predicate(const std::string& op,  // NOLINT(bugprone-easily-swappable-parameters)
+                const std::string& po_kind,
+                const nlohmann::json& inst)
 {
     nlohmann::json args = build_predicate_args(inst, po_kind);
     nlohmann::json expr = {
@@ -233,21 +227,24 @@ build_predicate(const std::string& op, const std::string& po_kind, const nlohman
 
 }  // namespace
 
+// Keep as instance method for future state; structure follows schema mapping.
+// NOLINTNEXTLINE(readability-convert-member-functions-to-static, readability-function-size)
 sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_json) const
 {
     const std::string semantics_version = nir_json.at("semantics_version").get<std::string>();
     const std::string proof_system_version = nir_json.at("proof_system_version").get<std::string>();
     const std::string profile_version = nir_json.at("profile_version").get<std::string>();
+    const std::string generated_at = nir_json.at("generated_at").get<std::string>();
 
     nlohmann::json output = {
-        {"schema_version", "po.v1"},
-        {"tool", nir_json.at("tool")},
-        {"generated_at", nir_json.value("generated_at", current_time_utc())},
-        {"tu_id", nir_json.at("tu_id")},
-        {"semantics_version", semantics_version},
-        {"proof_system_version", proof_system_version},
-        {"profile_version", profile_version},
-        {"pos", nlohmann::json::array()}
+        {      "schema_version",                 "po.v1"},
+        {                "tool",     nir_json.at("tool")},
+        {        "generated_at",            generated_at},
+        {               "tu_id",    nir_json.at("tu_id")},
+        {   "semantics_version",       semantics_version},
+        {"proof_system_version",    proof_system_version},
+        {     "profile_version",         profile_version},
+        {                 "pos", nlohmann::json::array()}
     };
 
     if (nir_json.contains("input_digest")) {

@@ -7,7 +7,7 @@
 #   docker build -t sappp-ci docker/
 #
 # Usage:
-#   docker run --rm -v $(pwd):/workspace -w /workspace sappp-ci ./scripts/ci-check.sh
+#   docker run --rm -v $(pwd):/workspace -w /workspace sappp-ci ./scripts/pre-commit-check.sh
 #
 FROM ubuntu:24.04
 
@@ -27,11 +27,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # GCC 14 (C++23)
     gcc-14 \
     g++-14 \
-    # Clang 18 (C++23)
-    clang-18 \
-    clang-format-18 \
-    clang-tidy-18 \
-    clangd-18 \
+    # Clang 19 (C++23)
+    clang-19 \
+    clang-format-19 \
+    clang-tidy-19 \
+    clangd-19 \
     libstdc++-14-dev \
     # Node.js for ajv-cli (schema validation)
     nodejs \
@@ -55,9 +55,15 @@ RUN npm install -g ajv-cli ajv-formats
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100 && \
     update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100
 
-# Create non-root user for better security
-RUN useradd -m -s /bin/bash developer
-USER developer
+# Set Clang 19 tools as alternatives
+RUN update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100 && \
+    update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100 && \
+    update-alternatives --install /usr/bin/clang-format clang-format /usr/bin/clang-format-19 100 && \
+    update-alternatives --install /usr/bin/clang-tidy clang-tidy /usr/bin/clang-tidy-19 100
+
+# Note: Running as root in CI container is intentional.
+# GitHub Actions runners also run as root.
+# For local development, docker-ci.sh uses --user to match host UID/GID.
 WORKDIR /workspace
 
 # Default command

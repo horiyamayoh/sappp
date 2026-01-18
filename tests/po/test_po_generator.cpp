@@ -19,12 +19,16 @@ namespace sappp::po::tests {
 
 namespace {
 
-std::filesystem::path write_temp_source(const std::string& contents = "int main() { return 0; }\n")
+// Keep tag first for readability in tests.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+std::filesystem::path write_temp_source(const std::string& tag,
+                                        const std::string& contents = "int main() { return 0; }\n")
 {
     std::filesystem::path temp_root =
         std::filesystem::temp_directory_path() / "sappp_po_generator_test";
     std::filesystem::create_directories(temp_root);
-    std::filesystem::path source_path = temp_root / "sample.cpp";
+    std::string filename = tag.empty() ? "sample.cpp" : "sample_" + tag + ".cpp";
+    std::filesystem::path source_path = temp_root / filename;
     std::ofstream out(source_path);
     out << contents;
     return source_path;
@@ -74,7 +78,7 @@ nlohmann::json build_minimal_nir(const std::filesystem::path& source_path,
 
 TEST(PoGeneratorTest, GeneratesPoAndValidatesSchema)
 {
-    std::filesystem::path source_path = write_temp_source();
+    std::filesystem::path source_path = write_temp_source("generate_schema");
     nlohmann::json nir = build_minimal_nir(source_path);
 
     PoGenerator generator;
@@ -104,7 +108,7 @@ TEST(PoGeneratorTest, GeneratesPoAndValidatesSchema)
 
 TEST(PoGeneratorTest, PoIdIsDeterministic)
 {
-    std::filesystem::path source_path = write_temp_source();
+    std::filesystem::path source_path = write_temp_source("deterministic");
     nlohmann::json nir = build_minimal_nir(source_path);
 
     PoGenerator generator;
@@ -127,7 +131,7 @@ TEST(PoGeneratorTest, PoIdIsDeterministic)
 TEST(PoGeneratorTest, PoIdMatchesSpec)
 {
     const std::string contents = "int main() { return 0; }\n";
-    std::filesystem::path source_path = write_temp_source(contents);
+    std::filesystem::path source_path = write_temp_source("matches_spec", contents);
     nlohmann::json nir = build_minimal_nir(source_path);
 
     PoGenerator generator;
@@ -156,12 +160,16 @@ TEST(PoGeneratorTest, PoIdMatchesSpec)
     auto expected_id = sappp::canonical::hash_canonical(po_id_input);
     ASSERT_TRUE(expected_id);
 
+    EXPECT_EQ(po.at("repo_identity"), repo_identity);
+    EXPECT_EQ(po.at("anchor"), anchor);
+    EXPECT_EQ(po.at("function").at("usr").get<std::string>(), "f1");
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "UB.DivZero");
     EXPECT_EQ(po.at("po_id").get<std::string>(), *expected_id);
 }
 
 TEST(PoGeneratorTest, SinkMarkerGeneratesPo)
 {
-    std::filesystem::path source_path = write_temp_source();
+    std::filesystem::path source_path = write_temp_source("sink_marker");
     nlohmann::json nir =
         build_minimal_nir(source_path, "sink.marker", nlohmann::json::array({"OOB"}));
 

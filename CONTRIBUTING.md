@@ -24,7 +24,7 @@ SAP++ への貢献ガイドです。開発を始める前に必ずお読みく�
 
 4. 自動的に以下が実行されます：
    - Docker イメージのビルド
-   - 開発ツールのインストール（GCC 14, Clang 18, clangd, etc.）
+   - 開発ツールのインストール（GCC 14, Clang 19, clangd, etc.）
    - CMake 設定とビルド
    - Git hooks のインストール
 
@@ -33,10 +33,10 @@ SAP++ への貢献ガイドです。開発を始める前に必ずお読みく�
 Docker だけで CI と同等のチェックを実行できます。
 
 ```bash
-# フルチェック（プッシュ前に推奨）
+# フルチェック（コミット前 / CI再現）
 ./scripts/docker-ci.sh
 
-# 高速チェック（コミット前）
+# 高速チェック（作業中）
 ./scripts/docker-ci.sh --quick
 
 # デバッグ用シェル
@@ -49,7 +49,7 @@ Docker だけで CI と同等のチェックを実行できます。
 
 ```bash
 # Ubuntu 24.04 LTS
-sudo apt install gcc-14 g++-14 clang-18 clang-format-18 clang-tidy-18 cmake ninja-build ccache ripgrep
+sudo apt install gcc-14 g++-14 clang-19 clang-format-19 clang-tidy-19 cmake ninja-build ccache ripgrep
 
 # ビルド
 cmake -S . -B build -G Ninja \
@@ -83,23 +83,23 @@ make install-hooks
 ./scripts/install-hooks.sh
 ```
 
-これにより、コミット前に自動でチェックが走ります。
+これにより、コミット前にフルチェックが自動実行されます。
 
 ### 2. 開発サイクル
 
 ```bash
 # コーディング...
 
-# 高速チェック（30秒以内）
+# 高速チェック（30秒以内、任意）
 make quick
 
-# コミット（pre-commit hook が自動実行）
+# コミット（pre-commit hook がフルチェック + スタンプ保存）
 git commit -m "変更内容"
 
-# プッシュ前のフルチェック
+# 必要ならDockerでフルチェック（CI再現）
 make docker-ci
 
-# プッシュ
+# プッシュ（pre-push hook はスタンプ確認のみ）
 git push
 ```
 
@@ -114,8 +114,8 @@ SAPPP_BUILD_JOBS=8 SAPPP_USE_CCACHE=1 make quick
 
 ```bash
 make help           # コマンド一覧
-make quick          # 高速チェック（コミット前）
-make ci             # フルCIチェック（ローカル）
+make quick          # 高速チェック（作業中）
+make ci             # フルCIチェック（コミット前）
 make docker-ci      # Docker環境でフルCIチェック
 make build          # ビルドのみ
 make test           # テストのみ
@@ -131,9 +131,9 @@ make tidy           # clang-tidy 実行
 
 | ゲート | タイミング | 内容 |
 |-------|----------|------|
-| **L1: Quick** | pre-commit | format + build + test（30秒以内） |
-| **L2: Local CI** | push前 | 全 build + 全 test + tidy |
-| **L3: Remote CI** | push後 | GCC/Clang マトリクス + スキーマ検証 |
+| **L0: Quick** | 任意（作業中） | format + build + quick test（30秒以内） |
+| **L1: Commit Gate** | pre-commit | 全 build + 全 test + determinism + tidy + スキーマ検証 |
+| **L2: Remote CI** | push後 | GCC/Clang マトリクス + スキーマ検証 |
 
 ### 必須要件
 
@@ -151,7 +151,7 @@ make tidy           # clang-tidy 実行
 
 ### 要点
 
-- **C++23 必須**（GCC 14+ / Clang 18+）
+- **C++23 必須**（GCC 14+ / Clang 19+）
 - `std::print` を使用（`std::cout` 禁止）
 - `std::expected` でエラー処理（例外禁止）
 - 命名: 型は `PascalCase`、関数/変数は `snake_case`
@@ -183,6 +183,20 @@ sudo apt install gcc-14 g++-14
 緊急時のみ：
 ```bash
 SKIP_PRE_COMMIT=1 git commit -m "緊急修正"
+```
+
+速度優先で pre-commit を Quick にする場合：
+```bash
+SAPPP_PRE_COMMIT_MODE=quick git commit -m "変更内容"
+```
+
+pre-push の動作を切り替えたい場合：
+```bash
+# スタンプ確認のみ（デフォルト）
+SAPPP_PRE_PUSH_MODE=stamp git push
+
+# 完全に無効化
+SAPPP_PRE_PUSH_MODE=off git push
 ```
 
 ---

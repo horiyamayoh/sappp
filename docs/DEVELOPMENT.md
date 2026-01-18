@@ -24,10 +24,10 @@ Dev Container を使用すると、CI と完全に同一の環境で開発でき
 | ツール | バージョン | 用途 |
 |-------|-----------|------|
 | GCC | 14.x | メインコンパイラ |
-| Clang | 18.x | セカンダリコンパイラ |
-| clangd | 18.x | LSP（コード補完・診断） |
-| clang-format | 18.x | コードフォーマット |
-| clang-tidy | 18.x | 静的解析 |
+| Clang | 19.x | セカンダリコンパイラ |
+| clangd | 19.x | LSP（コード補完・診断） |
+| clang-format | 19.x | コードフォーマット |
+| clang-tidy | 19.x | 静的解析 |
 | CMake | 3.28+ | ビルドシステム |
 | Ninja | 1.11+ | ビルドツール |
 | ajv-cli | latest | JSONスキーマ検証 |
@@ -65,7 +65,7 @@ Dev Container を使わない場合でも、Docker で CI 同等の環境を利�
 sudo apt update
 sudo apt install -y \
     gcc-14 g++-14 \
-    clang-18 clang-format-18 clang-tidy-18 clangd-18 \
+    clang-19 clang-format-19 clang-tidy-19 clangd-19 \
     cmake ninja-build \
     ccache ripgrep \
     nodejs npm
@@ -218,10 +218,10 @@ ctest --test-dir build -j$(nproc) --output-on-failure
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│   L1: Quick │───▶│  L2: CI     │───▶│ L3: Remote  │
-│  (30秒以内) │    │ (ローカル)  │    │  (GitHub)   │
+│   L0: Quick │───▶│ L1: Commit  │───▶│ L2: Remote  │
+│  (任意/短)  │    │ (フル)      │    │  (GitHub)   │
 └─────────────┘    └─────────────┘    └─────────────┘
-   pre-commit         push前            push後
+    作業中           pre-commit         push後
 ```
 
 ### GitHub Actions ジョブ
@@ -229,7 +229,7 @@ ctest --test-dir build -j$(nproc) --output-on-failure
 | ジョブ | 内容 |
 |-------|------|
 | `build-gcc` | GCC 14 でビルド＋テスト |
-| `build-clang` | Clang 18 でビルド＋テスト |
+| `build-clang` | Clang 19 でビルド＋テスト |
 | `format-check` | clang-format チェック |
 | `tidy-check` | clang-tidy チェック |
 | `schema-check` | JSON Schema 検証 |
@@ -240,8 +240,11 @@ ctest --test-dir build -j$(nproc) --output-on-failure
 # Docker で完全再現（推奨）
 ./scripts/docker-ci.sh
 
-# ローカル環境で実行
+# ローカル環境で実行（コミット前フルチェック）
 ./scripts/pre-commit-check.sh
+
+# pre-push のスタンプ確認（高速）
+./scripts/pre-push-check.sh
 ```
 
 ---
@@ -263,7 +266,7 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
 Clang + libc++ の組み合わせでは未実装です。libstdc++ を使用してください：
 ```bash
 # Clang でも libstdc++ を使う（CI のデフォルト）
-cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-18
+cmake -S . -B build -DCMAKE_CXX_COMPILER=clang++-19
 ```
 
 ### テストエラー

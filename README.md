@@ -65,8 +65,9 @@ ctest --test-dir build --output-on-failure
 
 ```bash
 make help           # コマンド一覧
-make quick          # 高速チェック（コミット前）
-make docker-ci      # Docker CI（プッシュ前）
+make quick          # 高速チェック（作業中）
+make ci             # ローカルフルチェック（コミット前）
+make docker-ci      # Docker CI（フルチェック）
 make install-hooks  # Git hooks インストール
 ```
 
@@ -78,7 +79,7 @@ make install-hooks  # Git hooks インストール
 
 - **C++23対応コンパイラ**:
   - GCC 14+ (推奨) - `<print>` ヘッダが必要
-  - Clang 18+
+  - Clang 19+
 - CMake 3.16+
 - LLVM/Clang (libTooling) - `frontend_clang` ビルド時
 - nlohmann/json (自動取得)

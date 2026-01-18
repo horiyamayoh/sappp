@@ -88,7 +88,7 @@ fi
 if [ -f ".git/hooks/pre-push" ] && grep -q "SAP++" ".git/hooks/pre-push" 2>/dev/null; then
     echo -e "  ${GREEN}✓ pre-push hook: インストール済み${NC}"
 else
-    echo -e "  ${YELLOW}⚠ pre-push hook: 未インストール（推奨）${NC}"
+    echo -e "  ${YELLOW}⚠ pre-push hook: 未インストール（スタンプ確認に推奨）${NC}"
     if [ "$FIX_MODE" = true ]; then
         echo -e "  ${BLUE}→ インストール中...${NC}"
         ./scripts/install-hooks.sh
@@ -143,11 +143,11 @@ else
     echo -e "  ${YELLOW}⚠ GCC 14: 未インストール（Docker使用時は不要）${NC}"
 fi
 
-if command -v clang++-18 &> /dev/null; then
-    VERSION=$(extract_version "$(clang++-18 --version | head -1)")
-    echo -e "  ${GREEN}✓ Clang 18: $VERSION${NC}"
+if command -v clang++-19 &> /dev/null; then
+    VERSION=$(extract_version "$(clang++-19 --version | head -1)")
+    echo -e "  ${GREEN}✓ Clang 19: $VERSION${NC}"
 else
-    echo -e "  ${YELLOW}⚠ Clang 18: 未インストール（Docker使用時は不要）${NC}"
+    echo -e "  ${YELLOW}⚠ Clang 19: 未インストール（Docker使用時は不要）${NC}"
 fi
 
 # ===========================================================================
@@ -172,9 +172,9 @@ check_tool() {
 
 check_tool "CMake" "cmake" "optional"
 check_tool "Ninja" "ninja" "optional"
-check_tool "clang-format" "clang-format-18" "optional"
-check_tool "clang-tidy" "clang-tidy-18" "optional"
-check_tool "clangd" "clangd-18" "optional"
+check_tool "clang-format" "clang-format-19" "optional"
+check_tool "clang-tidy" "clang-tidy-19" "optional"
+check_tool "clangd" "clangd-19" "optional"
 check_tool "ccache" "ccache" "optional"
 check_tool "jq" "jq" "optional"
 check_tool "rg" "rg" "optional"
@@ -246,8 +246,9 @@ fi
 echo ""
 echo -e "${BLUE}推奨ワークフロー:${NC}"
 echo "  1. make install-hooks    # Git hooks インストール"
-echo "  2. make docker-ci        # Docker で CI チェック"
-echo "  3. git commit / push     # 自動でチェックが実行される"
+echo "  2. make quick            # 任意の高速チェック"
+echo "  3. git commit            # フルチェックが自動実行"
+echo "  4. git push              # スタンプ確認のみ（高速）"
 
 if [ $ERRORS -gt 0 ]; then
     exit 1

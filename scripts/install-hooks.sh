@@ -6,7 +6,8 @@
 #   ./scripts/install-hooks.sh --remove  # hooks を削除
 #
 # インストールされるフック:
-#   pre-commit: quick-check.sh を実行（30秒以内の高速チェック）
+#   pre-commit: フルチェック（Docker優先）
+#   pre-push:   フルチェック済みスタンプ確認（高速）
 
 set -euo pipefail
 
@@ -81,10 +82,22 @@ if [ -n "${SKIP_PRE_COMMIT:-}" ]; then
     exit 0
 fi
 
+# スタンプ保存先
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+export SAPPP_CI_STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$REPO_ROOT/.git/sappp/ci-stamp.json}"
+
+# 実行モード（full/quick）
+PRE_COMMIT_MODE="${SAPPP_PRE_COMMIT_MODE:-full}"
+
 # Docker環境内かどうかを検出
 if [ -n "${SAPPP_CI_ENV:-}" ]; then
-    # Docker/DevContainer内 - quick-check.sh を直接実行
-    if ./scripts/quick-check.sh; then
+    # Docker/DevContainer内 - 直接実行
+    if [ "$PRE_COMMIT_MODE" = "quick" ]; then
+        CHECK_CMD="./scripts/quick-check.sh"
+    else
+        CHECK_CMD="./scripts/pre-commit-check.sh"
+    fi
+    if $CHECK_CMD; then
         echo -e "${GREEN}✓ Pre-commit check passed${NC}"
         exit 0
     else
@@ -100,7 +113,12 @@ if command -v docker &> /dev/null && docker info &> /dev/null; then
     # Dockerイメージがあるか確認
     if docker image inspect sappp-ci &> /dev/null; then
         echo -e "${BLUE}Docker環境で実行中...${NC}"
-        if ./scripts/docker-ci.sh --quick; then
+        if [ "$PRE_COMMIT_MODE" = "quick" ]; then
+            DOCKER_CMD="./scripts/docker-ci.sh --quick"
+        else
+            DOCKER_CMD="./scripts/docker-ci.sh"
+        fi
+        if $DOCKER_CMD; then
             echo -e "${GREEN}✓ Pre-commit check passed${NC}"
             exit 0
         else
@@ -111,8 +129,13 @@ if command -v docker &> /dev/null && docker info &> /dev/null; then
     fi
 fi
 
-# フォールバック: ローカルで quick-check.sh を実行
-if ./scripts/quick-check.sh; then
+# フォールバック: ローカルで実行
+if [ "$PRE_COMMIT_MODE" = "quick" ]; then
+    CHECK_CMD="./scripts/quick-check.sh"
+else
+    CHECK_CMD="./scripts/pre-commit-check.sh"
+fi
+if $CHECK_CMD; then
     echo -e "${GREEN}✓ Pre-commit check passed${NC}"
     exit 0
 else
@@ -137,7 +160,7 @@ cat > "$HOOKS_DIR/pre-push" << 'EOF'
 # インストール: ./scripts/install-hooks.sh
 # 削除: ./scripts/install-hooks.sh --remove
 #
-# push前にフルCIチェックを実行します（Docker推奨）
+# push前はフルチェック済みスタンプの確認（高速）
 
 set -euo pipefail
 
@@ -145,7 +168,6 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${YELLOW}━━━ SAP++ Pre-push Check ━━━${NC}"
@@ -157,55 +179,30 @@ if [ -n "${SKIP_PRE_PUSH:-}" ]; then
     exit 0
 fi
 
-# Docker環境内かどうかを検出
-if [ -n "${SAPPP_CI_ENV:-}" ]; then
-    # Docker/DevContainer内 - pre-commit-check.sh を直接実行
-    echo -e "${BLUE}フルCIチェックを実行中...${NC}"
-    if ./scripts/pre-commit-check.sh; then
-        echo -e "${GREEN}✓ Pre-push check passed${NC}"
+# スタンプ保存先
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+export SAPPP_CI_STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$REPO_ROOT/.git/sappp/ci-stamp.json}"
+
+PRE_PUSH_MODE="${SAPPP_PRE_PUSH_MODE:-stamp}"
+
+case "$PRE_PUSH_MODE" in
+    off)
+        echo -e "${YELLOW}⚠ pre-push チェックを無効化しています${NC}"
         exit 0
-    else
-        echo -e "${RED}✗ Pre-push check failed${NC}"
-        echo -e "${YELLOW}修正後に再度プッシュしてください${NC}"
-        echo -e "${YELLOW}スキップ: SKIP_PRE_PUSH=1 git push ...${NC}"
-        exit 1
-    fi
-fi
+        ;;
+    quick)
+        ./scripts/quick-check.sh
+        ;;
+    full)
+        ./scripts/pre-commit-check.sh
+        ;;
+    *)
+        ./scripts/pre-push-check.sh
+        ;;
+esac
 
-# ローカル環境 - Dockerが使えるならDockerで実行（フルチェック）
-if command -v docker &> /dev/null && docker info &> /dev/null; then
-    if docker image inspect sappp-ci &> /dev/null; then
-        echo -e "${BLUE}Docker環境でフルCIチェックを実行中...${NC}"
-        echo -e "${YELLOW}（これには数分かかる場合があります）${NC}"
-        if ./scripts/docker-ci.sh; then
-            echo -e "${GREEN}✓ Pre-push check passed${NC}"
-            exit 0
-        else
-            echo -e "${RED}✗ Pre-push check failed${NC}"
-            echo -e "${YELLOW}修正後に再度プッシュしてください${NC}"
-            echo -e "${YELLOW}スキップ: SKIP_PRE_PUSH=1 git push ...${NC}"
-            exit 1
-        fi
-    else
-        echo -e "${YELLOW}⚠ Docker イメージがありません${NC}"
-        echo -e "${YELLOW}  ビルド: docker build -t sappp-ci docker/${NC}"
-    fi
-else
-    echo -e "${YELLOW}⚠ Docker が利用できません${NC}"
-fi
-
-# フォールバック: ローカルで pre-commit-check.sh を実行
-echo -e "${YELLOW}⚠ ローカル環境でチェックを実行します（CI環境と異なる可能性があります）${NC}"
-if ./scripts/pre-commit-check.sh; then
-    echo -e "${GREEN}✓ Pre-push check passed${NC}"
-    echo -e "${YELLOW}⚠ Docker CI での確認を推奨: ./scripts/docker-ci.sh${NC}"
-    exit 0
-else
-    echo -e "${RED}✗ Pre-push check failed${NC}"
-    echo -e "${YELLOW}修正後に再度プッシュしてください${NC}"
-    echo -e "${YELLOW}スキップ: SKIP_PRE_PUSH=1 git push ...${NC}"
-    exit 1
-fi
+echo -e "${GREEN}✓ Pre-push check passed${NC}"
+exit 0
 EOF
 
 chmod +x "$HOOKS_DIR/pre-push"
@@ -217,12 +214,14 @@ echo -e "${GREEN}✓ pre-push hook をインストールしました${NC}"
 echo -e "\n${GREEN}━━━ Git Hooks インストール完了 ━━━${NC}"
 echo ""
 echo "インストールされたフック:"
-echo "  • pre-commit: コミット前に quick-check.sh を実行（Docker優先）"
-echo "  • pre-push:   プッシュ前にフルCIチェックを実行（Docker優先）"
+echo "  • pre-commit: コミット前にフルチェックを実行（Docker優先）"
+echo "  • pre-push:   プッシュ前にフルチェック済みスタンプを確認（高速）"
 echo ""
 echo "使い方:"
 echo "  • 通常のコミット: git commit -m '...'"
 echo "  • 通常のプッシュ: git push"
 echo "  • コミットスキップ: SKIP_PRE_COMMIT=1 git commit -m '...'"
 echo "  • プッシュスキップ: SKIP_PRE_PUSH=1 git push"
+echo "  • pre-commit 速度優先: SAPPP_PRE_COMMIT_MODE=quick git commit -m '...'"
+echo "  • pre-push モード指定: SAPPP_PRE_PUSH_MODE=stamp|quick|full|off git push"
 echo "  • フック削除: ./scripts/install-hooks.sh --remove"

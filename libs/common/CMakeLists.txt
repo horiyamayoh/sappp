@@ -12,7 +12,19 @@ FetchContent_Declare(
     GIT_REPOSITORY https://github.com/tristanpenman/valijson.git
     GIT_TAG v1.0.2
 )
+# Suppress valijson's legacy CMake deprecation warning to keep warning-zero policy.
+set(_sappp_warn_deprecated_was_set FALSE)
+if(DEFINED CMAKE_WARN_DEPRECATED)
+    set(_sappp_warn_deprecated_was_set TRUE)
+    set(_sappp_old_warn_deprecated "${CMAKE_WARN_DEPRECATED}")
+endif()
+set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(valijson)
+if(_sappp_warn_deprecated_was_set)
+    set(CMAKE_WARN_DEPRECATED "${_sappp_old_warn_deprecated}" CACHE BOOL "" FORCE)
+else()
+    unset(CMAKE_WARN_DEPRECATED CACHE)
+endif()
 
 # Use SYSTEM to suppress warnings from third-party headers
 target_include_directories(sappp_common PUBLIC

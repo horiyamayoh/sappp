@@ -2,8 +2,8 @@
 #
 # 使い方:
 #   make help       # コマンド一覧を表示
-#   make quick      # 高速チェック（コミット前推奨）
-#   make ci         # フルCIチェック（プッシュ前推奨）
+#   make quick      # 高速チェック（作業中に推奨）
+#   make ci         # フルCIチェック（コミット前推奨）
 #   make docker-ci  # Docker環境でフルCIチェック
 #
 # このMakefileはCI/ローカルで共通のコマンドを提供します。
@@ -60,8 +60,8 @@ help:
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
 	@echo "$(BLUE)開発ワークフロー:$(NC)"
-	@echo "  make quick       高速チェック（30秒以内、コミット前推奨）"
-	@echo "  make ci          フルCIチェック（プッシュ前推奨）"
+	@echo "  make quick       高速チェック（30秒以内、作業中に推奨）"
+	@echo "  make ci          フルCIチェック（コミット前推奨）"
 	@echo "  make docker-ci   Docker環境でフルCIチェック（確実）"
 	@echo ""
 	@echo "$(BLUE)ビルド:$(NC)"
@@ -83,18 +83,18 @@ help:
 	@echo "  1. make check-env       # 環境確認"
 	@echo "  2. make install-hooks   # Git hooks インストール"
 	@echo "  3. （コーディング）"
-	@echo "  4. git commit           # pre-commit hookが自動実行"
-	@echo "  5. git push             # pre-push hookが自動実行"
+	@echo "  4. git commit           # pre-commit hookがフルチェック"
+	@echo "  5. git push             # pre-push hookがスタンプ確認"
 	@echo ""
 
 # ===========================================================================
-# 高速チェック（コミット前）
+# 高速チェック（作業中）
 # ===========================================================================
 quick:
 	@./scripts/quick-check.sh
 
 # ===========================================================================
-# フルCIチェック（プッシュ前）
+# フルCIチェック（コミット前）
 # ===========================================================================
 ci:
 	@./scripts/pre-commit-check.sh
@@ -153,8 +153,8 @@ test-determinism: build
 # ===========================================================================
 # コード品質
 # ===========================================================================
-CLANG_FORMAT := $(shell command -v clang-format-18 2>/dev/null || command -v clang-format 2>/dev/null || echo "")
-CLANG_TIDY := $(shell command -v clang-tidy-18 2>/dev/null || command -v clang-tidy 2>/dev/null || echo "")
+CLANG_FORMAT := $(shell command -v clang-format-19 2>/dev/null || command -v clang-format 2>/dev/null || echo "")
+CLANG_TIDY := $(shell command -v clang-tidy-19 2>/dev/null || command -v clang-tidy 2>/dev/null || echo "")
 
 CPP_FILES := $(shell find libs tools tests include -name '*.cpp' -o -name '*.hpp' -o -name '*.h' 2>/dev/null)
 

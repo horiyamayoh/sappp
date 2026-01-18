@@ -16,10 +16,10 @@
 ### 推奨: Docker CI（CI と完全同一環境）
 
 ```bash
-# 高速チェック（コミット前）
+# 高速チェック（作業中）
 ./scripts/docker-ci.sh --quick
 
-# フルチェック（プッシュ前）
+# フルチェック（コミット前）
 ./scripts/docker-ci.sh
 
 # デバッグ用シェル
@@ -120,6 +120,20 @@ clang-tidy -p build path/to/file.cpp
 ```
 
 > 例外で抑制が必要な場合は `NOLINTNEXTLINE(<check>)` + **理由コメント**を必須とする。
+
+### 1.5 Codex 完了ゲート（必須）
+AI エージェントは**完了判定前にフルチェックを実行し、失敗時は修正＋再実行してOKになるまで継続**すること。
+
+```bash
+# 推奨（DockerでCI完全再現）
+./scripts/docker-ci.sh
+
+# 代替（ローカル実行）
+./scripts/pre-commit-check.sh
+
+# Codex 自動リトライ用ヘルパー（必要なら）
+./scripts/agent-final-check.sh --until-ok
+```
 
 ---
 
@@ -320,7 +334,7 @@ diff -u /tmp/unk_j1.txt /tmp/unk_j8.txt
 
 **詳細規約は [`docs/CODING_STYLE_CPP23.md`](docs/CODING_STYLE_CPP23.md) を参照。**
 
-本プロジェクトは **C++23 を全面採用**（GCC 14+ / Clang 18+）。  
+本プロジェクトは **C++23 を全面採用**（GCC 14+ / Clang 19+）。  
 以下は最重要ポイントの要約。違反はレビューで即指摘対象。
 
 ### 8.1 C++23 必須機能（抜粋）

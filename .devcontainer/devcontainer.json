@@ -20,7 +20,7 @@
             "settings": {
                 "editor.formatOnSave": true,
                 "editor.defaultFormatter": "llvm-vs-code-extensions.vscode-clangd",
-                "clangd.path": "/usr/bin/clangd-18",
+                "clangd.path": "/usr/bin/clangd-19",
                 "clangd.arguments": [
                     "--background-index",
                     "--clang-tidy",
