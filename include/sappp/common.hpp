@@ -10,6 +10,7 @@
 #include <vector>
 #include <cstdint>
 #include <expected>
+#include <utility>
 
 namespace sappp {
 
@@ -50,14 +51,14 @@ namespace sappp::common {
  * @param data Input bytes
  * @return Hex-encoded hash string (64 characters)
  */
-std::string sha256(std::string_view data);
+[[nodiscard]] std::string sha256(std::string_view data);
 
 /**
  * Compute SHA-256 hash of data with prefix
  * @param data Input bytes
  * @return "sha256:" + hex-encoded hash
  */
-std::string sha256_prefixed(std::string_view data);
+[[nodiscard]] std::string sha256_prefixed(std::string_view data);
 
 // ============================================================================
 // Path Normalization
@@ -74,17 +75,17 @@ std::string sha256_prefixed(std::string_view data);
  * @param repo_root Optional repository root for relative paths
  * @return Normalized path
  */
-std::string normalize_path(std::string_view input, std::string_view repo_root = "");
+[[nodiscard]] std::string normalize_path(std::string_view input, std::string_view repo_root = "");
 
 /**
  * Check if path is absolute
  */
-bool is_absolute_path(std::string_view path);
+[[nodiscard]] bool is_absolute_path(std::string_view path);
 
 /**
  * Make path relative to base
  */
-std::string make_relative(std::string_view path, std::string_view base);
+[[nodiscard]] std::string make_relative(std::string_view path, std::string_view base);
 
 // ============================================================================
 // Stable Sort Comparators
@@ -93,7 +94,7 @@ std::string make_relative(std::string_view path, std::string_view base);
 /**
  * Compare two strings for stable sorting (lexicographic)
  */
-inline bool stable_string_less(const std::string& a, const std::string& b) {
+[[nodiscard]] inline bool stable_string_less(const std::string& a, const std::string& b) {
     return a < b;
 }
 

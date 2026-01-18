@@ -13,7 +13,7 @@
 
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iterator>
 
 namespace sappp::certstore {
 
@@ -35,51 +35,65 @@ CertStore::CertStore(std::string base_dir, std::string schema_dir)
       m_schema_dir(std::move(schema_dir)) {}
 
 sappp::Result<std::string> CertStore::put(const nlohmann::json& cert) {
-    std::string error;
-    if (!sappp::common::validate_json(cert, cert_schema_path(), error)) {
-        return std::unexpected(Error::make("SchemaValidationFailed", 
-            "Certificate schema validation failed: " + error));
+    if (auto result = sappp::common::validate_json(cert, cert_schema_path()); !result) {
+        return std::unexpected(Error::make(result.error().code,
+            "Certificate schema validation failed: " + result.error().message));
     }
 
-    std::string hash = canonical_hash(cert);
-    if (auto result = write_json_file(object_path_for_hash(hash), cert); !result) {
+    auto hash = canonical_hash(cert);
+    if (!hash) {
+        return std::unexpected(hash.error());
+    }
+    auto object_path = object_path_for_hash(*hash);
+    if (!object_path) {
+        return std::unexpected(object_path.error());
+    }
+    if (auto result = write_json_file(*object_path, cert); !result) {
         return std::unexpected(result.error());
     }
-    return hash;
+    return *hash;
 }
 
 sappp::Result<nlohmann::json> CertStore::get(const std::string& hash) const {
-    std::string path = object_path_for_hash(hash);
-    if (!fs::exists(path)) {
+    auto object_path = object_path_for_hash(hash);
+    if (!object_path) {
+        return std::unexpected(object_path.error());
+    }
+    if (!fs::exists(*object_path)) {
         return std::unexpected(Error::make("NotFound", 
             "Certificate not found: " + hash));
     }
 
-    auto cert_result = read_json_file(path);
+    auto cert_result = read_json_file(*object_path);
     if (!cert_result) {
         return std::unexpected(cert_result.error());
     }
 
     const nlohmann::json& cert = *cert_result;
 
-    std::string error;
-    if (!sappp::common::validate_json(cert, cert_schema_path(), error)) {
-        return std::unexpected(Error::make("SchemaValidationFailed", 
-            "Stored certificate schema validation failed: " + error));
+    if (auto result = sappp::common::validate_json(cert, cert_schema_path()); !result) {
+        return std::unexpected(Error::make(result.error().code,
+            "Stored certificate schema validation failed: " + result.error().message));
     }
 
-    std::string computed_hash = canonical_hash(cert);
-    if (computed_hash != hash) {
+    auto computed_hash = canonical_hash(cert);
+    if (!computed_hash) {
+        return std::unexpected(computed_hash.error());
+    }
+    if (*computed_hash != hash) {
         return std::unexpected(Error::make("HashMismatch", 
-            "Certificate hash mismatch: expected " + hash + ", got " + computed_hash));
+            "Certificate hash mismatch: expected " + hash + ", got " + *computed_hash));
     }
 
     return cert;
 }
 
 sappp::VoidResult CertStore::bind_po(const std::string& po_id, const std::string& cert_hash) {
-    std::string object_path = object_path_for_hash(cert_hash);
-    if (!fs::exists(object_path)) {
+    auto object_path = object_path_for_hash(cert_hash);
+    if (!object_path) {
+        return std::unexpected(object_path.error());
+    }
+    if (!fs::exists(*object_path)) {
         return std::unexpected(Error::make("NotFound", 
             "Certificate hash not found: " + cert_hash));
     }
@@ -90,10 +104,9 @@ sappp::VoidResult CertStore::bind_po(const std::string& po_id, const std::string
         {"root", cert_hash}
     };
 
-    std::string error;
-    if (!sappp::common::validate_json(index, index_schema_path(), error)) {
-        return std::unexpected(Error::make("SchemaValidationFailed", 
-            "Certificate index schema validation failed: " + error));
+    if (auto result = sappp::common::validate_json(index, index_schema_path()); !result) {
+        return std::unexpected(Error::make(result.error().code,
+            "Certificate index schema validation failed: " + result.error().message));
     }
 
     return write_json_file(index_path_for_po(po_id), index);
@@ -107,19 +120,19 @@ std::string CertStore::index_schema_path() const {
     return (fs::path(m_schema_dir) / "cert_index.v1.schema.json").string();
 }
 
-std::string CertStore::canonical_hash(const nlohmann::json& cert) const {
+sappp::Result<std::string> CertStore::canonical_hash(const nlohmann::json& cert) const {
     return sappp::canonical::hash_canonical(cert);
 }
 
-std::string CertStore::object_path_for_hash(const std::string& hash) const {
+sappp::Result<std::string> CertStore::object_path_for_hash(const std::string& hash) const {
     // Allow hashes with or without a "sha256:" prefix, but always shard based on
     // the first two hex characters of the digest portion.
     constexpr std::string_view prefix = "sha256:";
     std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0uz;
 
     if (hash.size() < digest_start + 2uz) {
-        // This is a programming error, not a runtime error
-        return "";
+        return std::unexpected(Error::make("InvalidHash",
+            "Hash is too short: " + hash));
     }
 
     std::string shard = hash.substr(digest_start, 2);
@@ -146,7 +159,11 @@ sappp::VoidResult CertStore::write_json_file(const std::string& path, const nloh
             "Failed to open file for write: " + out_path.string()));
     }
 
-    out << sappp::canonical::canonicalize(payload);
+    auto canonical = sappp::canonical::canonicalize(payload);
+    if (!canonical) {
+        return std::unexpected(canonical.error());
+    }
+    out << *canonical;
     if (!out) {
         return std::unexpected(Error::make("IOError", 
             "Failed to write file: " + out_path.string()));
@@ -162,11 +179,11 @@ sappp::Result<nlohmann::json> CertStore::read_json_file(const std::string& path)
             "Failed to open file for read: " + path));
     }
 
-    std::ostringstream buffer;
-    buffer << in.rdbuf();
+    std::string content{std::istreambuf_iterator<char>{in},
+                        std::istreambuf_iterator<char>{}};
 
     try {
-        return nlohmann::json::parse(buffer.str());
+        return nlohmann::json::parse(content);
     } catch (const std::exception& ex) {
         return std::unexpected(Error::make("ParseError", 
             "Failed to parse JSON from " + path + ": " + ex.what()));

@@ -155,9 +155,22 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
     return {po_id, tu_id, root_hash, bug_hash};
 }
 
-void write_json_file(const std::string& path, const nlohmann::json& payload) {
+sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) {
     std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out << sappp::canonical::canonicalize(payload);
+    if (!out) {
+        return std::unexpected(sappp::Error::make("IOError",
+            "Failed to open file for write: " + path));
+    }
+    auto canonical = sappp::canonical::canonicalize(payload);
+    if (!canonical) {
+        return std::unexpected(canonical.error());
+    }
+    out << *canonical;
+    if (!out) {
+        return std::unexpected(sappp::Error::make("IOError",
+            "Failed to write file: " + path));
+    }
+    return {};
 }
 
 } // namespace
@@ -169,10 +182,11 @@ TEST(ValidatorTest, ValidatesBugTrace) {
     CertBundle bundle = build_cert_store(temp_dir.path(), schema_dir);
 
     sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
-    nlohmann::json results = validator.validate(false);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
 
-    ASSERT_EQ(results.at("results").size(), 1u);
-    const nlohmann::json& entry = results.at("results").at(0);
+    ASSERT_EQ(results->at("results").size(), 1u);
+    const nlohmann::json& entry = results->at("results").at(0);
     EXPECT_EQ(entry.at("category"), "BUG");
     EXPECT_EQ(entry.at("validator_status"), "Validated");
     EXPECT_EQ(entry.at("certificate_root"), bundle.root_hash);
@@ -188,12 +202,14 @@ TEST(ValidatorTest, DowngradesOnHashMismatch) {
     std::ifstream bug_stream(bug_path);
     nlohmann::json bug_trace = nlohmann::json::parse(bug_stream);
     bug_trace.at("steps").at(0).at("ir")["block_id"] = "B2";
-    write_json_file(bug_path, bug_trace);
+    auto write_result = write_json_file(bug_path, bug_trace);
+    ASSERT_TRUE(write_result);
 
     sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
-    nlohmann::json results = validator.validate(false);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
 
-    const nlohmann::json& entry = results.at("results").at(0);
+    const nlohmann::json& entry = results->at("results").at(0);
     EXPECT_EQ(entry.at("category"), "UNKNOWN");
     EXPECT_EQ(entry.at("validator_status"), "HashMismatch");
     EXPECT_EQ(entry.at("downgrade_reason_code"), "HashMismatch");
@@ -209,9 +225,10 @@ TEST(ValidatorTest, DowngradesOnMissingDependency) {
     fs::remove(bug_path);
 
     sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
-    nlohmann::json results = validator.validate(false);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
 
-    const nlohmann::json& entry = results.at("results").at(0);
+    const nlohmann::json& entry = results->at("results").at(0);
     EXPECT_EQ(entry.at("category"), "UNKNOWN");
     EXPECT_EQ(entry.at("validator_status"), "MissingDependency");
     EXPECT_EQ(entry.at("downgrade_reason_code"), "MissingDependency");

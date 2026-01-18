@@ -5,6 +5,8 @@
  * @brief Proof Obligation (PO) generator from NIR
  */
 
+#include "sappp/common.hpp"
+
 #include <nlohmann/json.hpp>
 
 namespace sappp::po {
@@ -13,7 +15,7 @@ class PoGenerator {
 public:
     PoGenerator() = default;
 
-    nlohmann::json generate(const nlohmann::json& nir_json) const;
+    [[nodiscard]] sappp::Result<nlohmann::json> generate(const nlohmann::json& nir_json) const;
 };
 
 } // namespace sappp::po

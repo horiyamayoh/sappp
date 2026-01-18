@@ -175,11 +175,13 @@ std::string make_relative(std::string_view path, std::string_view base) {
     
     // Build relative path
     std::vector<std::string> result;
-    for (size_t i = common; i < base_parts.size(); ++i) {
+    const auto drop_count = static_cast<std::ranges::range_difference_t<decltype(base_parts)>>(common);
+    for (const auto& _ : base_parts | std::views::drop(drop_count)) {
+        (void)_;
         result.push_back("..");
     }
-    for (size_t i = common; i < path_parts.size(); ++i) {
-        result.push_back(path_parts[i]);
+    for (const auto& part : path_parts | std::views::drop(drop_count)) {
+        result.push_back(part);
     }
     
     return result.empty() ? "." : join_path(result);

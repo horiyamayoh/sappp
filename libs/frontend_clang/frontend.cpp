@@ -34,7 +34,6 @@
 #include <optional>
 #include <ranges>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -61,7 +60,7 @@ bool is_source_file(const std::string& path) {
         return false;
     }
     std::string ext = path.substr(pos + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+    std::ranges::transform(ext, ext.begin(), [](unsigned char c) noexcept {
         return static_cast<char>(std::tolower(c));
     });
     return ext == "c" || ext == "cc" || ext == "cpp" || ext == "cxx" || ext == "c++" || ext == "cp";
@@ -72,24 +71,26 @@ struct CompileUnitCommand {
     std::vector<std::string> args;
 };
 
-CompileUnitCommand extract_compile_command(const nlohmann::json& compile_unit) {
+sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& compile_unit) {
     CompileUnitCommand result;
     result.args = compile_unit.at("argv").get<std::vector<std::string>>();
 
-    std::optional<size_t> source_index;
-    for (size_t i = 0; i < result.args.size(); ++i) {
-        if (result.args[i] == "-c" && i + 1 < result.args.size() && is_source_file(result.args[i + 1])) {
-            source_index = i + 1;
+    std::optional<std::size_t> source_index;
+    for (auto [i, arg] : std::views::enumerate(result.args)) {
+        const auto idx = static_cast<std::size_t>(i);
+        if (arg == "-c" && idx + 1 < result.args.size() && is_source_file(result.args[idx + 1])) {
+            source_index = idx + 1;
             break;
         }
-        if (!result.args[i].empty() && result.args[i][0] != '-' && is_source_file(result.args[i])) {
-            source_index = i;
+        if (!arg.empty() && arg.front() != '-' && is_source_file(arg)) {
+            source_index = idx;
             break;
         }
     }
 
     if (!source_index.has_value()) {
-        throw std::runtime_error("Unable to locate source file in compile unit argv");
+        return std::unexpected(Error::make("CompileCommandMissingSource",
+            "Unable to locate source file in compile unit argv"));
     }
 
     result.file_path = result.args[*source_index];
@@ -213,8 +214,8 @@ public:
 
             std::unordered_map<const clang::CFGBlock*, std::string> block_ids;
             block_ids.reserve(blocks.size());
-            for (size_t i = 0; i < blocks.size(); ++i) {
-                block_ids[blocks[i]] = "B" + std::to_string(i);
+            for (auto [i, block] : std::views::enumerate(blocks)) {
+                block_ids[block] = "B" + std::to_string(i);
             }
 
             const clang::CFGBlock* entry_block = &cfg->getEntry();
@@ -384,13 +385,12 @@ private:
 FrontendClang::FrontendClang(std::string schema_dir)
     : m_schema_dir(std::move(schema_dir)) {}
 
-FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) const {
+sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build_snapshot) const {
     std::filesystem::path schema_dir(m_schema_dir);
-    std::string schema_error;
-    if (!sappp::common::validate_json(build_snapshot,
-                                      (schema_dir / "build_snapshot.v1.schema.json").string(),
-                                      schema_error)) {
-        throw std::runtime_error("build_snapshot schema validation failed: " + schema_error);
+    if (auto result = sappp::common::validate_json(build_snapshot,
+                                                   (schema_dir / "build_snapshot.v1.schema.json").string());
+        !result) {
+        return std::unexpected(result.error());
     }
 
     const auto& compile_units = build_snapshot.at("compile_units");
@@ -402,13 +402,18 @@ FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) cons
         std::string tu_id = unit.at("tu_id").get<std::string>();
         tu_ids.push_back(tu_id);
 
-        CompileUnitCommand command = extract_compile_command(unit);
+        auto command_result = extract_compile_command(unit);
+        if (!command_result) {
+            return std::unexpected(command_result.error());
+        }
+        CompileUnitCommand command = *command_result;
         std::string cwd = unit.at("cwd").get<std::string>();
         std::string file_path = normalize_file_path(cwd, command.file_path);
 
         std::filesystem::path file_fs(file_path);
         if (!std::filesystem::exists(file_fs)) {
-            throw std::runtime_error("Source file not found: " + file_path);
+            return std::unexpected(Error::make("SourceFileNotFound",
+                "Source file not found: " + file_path));
         }
 
         clang::tooling::FixedCompilationDatabase comp_db(cwd, command.args);
@@ -418,7 +423,8 @@ FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) cons
         NirFrontendActionFactory factory(builder);
 
         if (tool.run(&factory) != 0) {
-            throw std::runtime_error("ClangTool failed for source file: " + file_path);
+            return std::unexpected(Error::make("ClangToolFailed",
+                "ClangTool failed for source file: " + file_path));
         }
 
         auto unit_functions = builder.take_functions();
@@ -433,7 +439,8 @@ FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) cons
     }
 
     if (functions.empty()) {
-        throw std::runtime_error("No functions found to emit NIR");
+        return std::unexpected(Error::make("NirEmpty",
+            "No functions found to emit NIR"));
     }
 
     std::ranges::stable_sort(functions,
@@ -481,7 +488,11 @@ FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) cons
     } else {
         std::ranges::stable_sort(tu_ids);
         nlohmann::json tu_array = tu_ids;
-        tu_id = sappp::canonical::hash_canonical(tu_array);
+        auto tu_id_result = sappp::canonical::hash_canonical(tu_array);
+        if (!tu_id_result) {
+            return std::unexpected(tu_id_result.error());
+        }
+        tu_id = *tu_id_result;
     }
 
     ir::Nir nir;
@@ -524,19 +535,19 @@ FrontendResult FrontendClang::analyze(const nlohmann::json& build_snapshot) cons
         source_map_json["input_digest"] = build_snapshot.at("input_digest").get<std::string>();
     }
 
-    if (!sappp::common::validate_json(nir_json,
-                                      (schema_dir / "nir.v1.schema.json").string(),
-                                      schema_error)) {
-        throw std::runtime_error("nir schema validation failed: " + schema_error);
+    if (auto result = sappp::common::validate_json(nir_json,
+                                                   (schema_dir / "nir.v1.schema.json").string());
+        !result) {
+        return std::unexpected(result.error());
     }
 
-    if (!sappp::common::validate_json(source_map_json,
-                                      (schema_dir / "source_map.v1.schema.json").string(),
-                                      schema_error)) {
-        throw std::runtime_error("source_map schema validation failed: " + schema_error);
+    if (auto result = sappp::common::validate_json(source_map_json,
+                                                   (schema_dir / "source_map.v1.schema.json").string());
+        !result) {
+        return std::unexpected(result.error());
     }
 
-    return {nir_json, source_map_json};
+    return FrontendResult{nir_json, source_map_json};
 }
 
 } // namespace sappp::frontend_clang

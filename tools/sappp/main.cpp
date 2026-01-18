@@ -26,12 +26,15 @@
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
 #include "frontend_clang/frontend.hpp"
 #endif
-#include <cstring>
+#include <charconv>
 #include <filesystem>
 #include <fstream>
 #include <print>
+#include <ranges>
+#include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -161,16 +164,27 @@ int cmd_capture(int argc, char** argv) {
     std::string output = "./out";
     std::string repo_root;
 
-    for (int i = 0; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg = arg_ptr ? std::string_view(arg_ptr) : std::string_view();
+        if (arg == "--help" || arg == "-h") {
             print_capture_help();
             return 0;
-        } else if (std::strcmp(argv[i], "--compile-commands") == 0 && i + 1 < argc) {
-            compile_commands = argv[++i];
-        } else if ((std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
-            output = argv[++i];
-        } else if (std::strcmp(argv[i], "--repo-root") == 0 && i + 1 < argc) {
-            repo_root = argv[++i];
+        } else if (arg == "--compile-commands" && idx + 1 < args.size()) {
+            compile_commands = args[idx + 1];
+            skip_next = true;
+        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+            output = args[idx + 1];
+            skip_next = true;
+        } else if (arg == "--repo-root" && idx + 1 < args.size()) {
+            repo_root = args[idx + 1];
+            skip_next = true;
         }
     }
 
@@ -180,29 +194,37 @@ int cmd_capture(int argc, char** argv) {
         return 1;
     }
 
-    try {
-        sappp::build_capture::BuildCapture capture(repo_root);
-        sappp::build_capture::BuildSnapshot snapshot = capture.capture(compile_commands);
-
-        std::filesystem::path output_dir(output);
-        std::filesystem::create_directories(output_dir);
-        std::filesystem::path output_file = output_dir / "build_snapshot.json";
-
-        std::ofstream out(output_file);
-        if (!out) {
-            std::println(stderr, "Error: failed to open output file: {}", output_file.string());
-            return 1;
-        }
-        out << sappp::canonical::canonicalize(snapshot.json());
-        out << "\n";
-
-        std::println("[capture] Wrote build_snapshot.json");
-        std::println("  input: {}", compile_commands);
-        std::println("  output: {}", output_file.string());
-    } catch (const std::exception& ex) {
-        std::println(stderr, "Error: capture failed: {}", ex.what());
+    sappp::build_capture::BuildCapture capture(repo_root);
+    auto snapshot = capture.capture(compile_commands);
+    if (!snapshot) {
+        std::println(stderr, "Error: capture failed: {}", snapshot.error().message);
         return 1;
     }
+
+    std::filesystem::path output_dir(output);
+    std::error_code ec;
+    std::filesystem::create_directories(output_dir, ec);
+    if (ec) {
+        std::println(stderr, "Error: failed to create output directory: {}", ec.message());
+        return 1;
+    }
+    std::filesystem::path output_file = output_dir / "build_snapshot.json";
+
+    std::ofstream out(output_file);
+    if (!out) {
+        std::println(stderr, "Error: failed to open output file: {}", output_file.string());
+        return 1;
+    }
+    auto canonical = sappp::canonical::canonicalize(snapshot->json());
+    if (!canonical) {
+        std::println(stderr, "Error: failed to serialize build snapshot: {}", canonical.error().message);
+        return 1;
+    }
+    out << *canonical << "\n";
+
+    std::println("[capture] Wrote build_snapshot.json");
+    std::println("  input: {}", compile_commands);
+    std::println("  output: {}", output_file.string());
     return 0;
 }
 
@@ -212,18 +234,37 @@ int cmd_analyze(int argc, char** argv) {
     [[maybe_unused]] int jobs = 0;
     std::string schema_dir = "schemas";
 
-    for (int i = 0; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg = arg_ptr ? std::string_view(arg_ptr) : std::string_view();
+        if (arg == "--help" || arg == "-h") {
             print_analyze_help();
             return 0;
-        } else if (std::strcmp(argv[i], "--snapshot") == 0 && i + 1 < argc) {
-            snapshot = argv[++i];
-        } else if ((std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
-            output = argv[++i];
-        } else if ((std::strcmp(argv[i], "--jobs") == 0 || std::strcmp(argv[i], "-j") == 0) && i + 1 < argc) {
-            jobs = std::stoi(argv[++i]);
-        } else if (std::strcmp(argv[i], "--schema-dir") == 0 && i + 1 < argc) {
-            schema_dir = argv[++i];
+        } else if (arg == "--snapshot" && idx + 1 < args.size()) {
+            snapshot = args[idx + 1];
+            skip_next = true;
+        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+            output = args[idx + 1];
+            skip_next = true;
+        } else if ((arg == "--jobs" || arg == "-j") && idx + 1 < args.size()) {
+            std::string_view value = args[idx + 1] ? std::string_view(args[idx + 1]) : std::string_view();
+            int parsed = 0;
+            auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+            if (ec != std::errc{} || ptr != value.data() + value.size()) {
+                std::println(stderr, "Error: invalid --jobs value: {}", value);
+                return 1;
+            }
+            jobs = parsed;
+            skip_next = true;
+        } else if (arg == "--schema-dir" && idx + 1 < args.size()) {
+            schema_dir = args[idx + 1];
+            skip_next = true;
         }
     }
 
@@ -238,69 +279,101 @@ int cmd_analyze(int argc, char** argv) {
     return 1;
 #else
     (void)jobs;
-    try {
-        std::ifstream in(snapshot);
-        if (!in) {
-            std::println(stderr, "Error: failed to open snapshot file: {}", snapshot);
-            return 1;
-        }
-        nlohmann::json snapshot_json;
-        in >> snapshot_json;
-
-        sappp::frontend_clang::FrontendClang frontend(schema_dir);
-        sappp::frontend_clang::FrontendResult result = frontend.analyze(snapshot_json);
-
-        std::filesystem::path output_dir(output);
-        std::filesystem::path frontend_dir = output_dir / "frontend";
-        std::filesystem::path po_dir = output_dir / "po";
-        std::filesystem::create_directories(frontend_dir);
-        std::filesystem::create_directories(po_dir);
-
-        std::filesystem::path nir_path = frontend_dir / "nir.json";
-        std::filesystem::path source_map_path = frontend_dir / "source_map.json";
-
-        std::ofstream nir_out(nir_path);
-        if (!nir_out) {
-            std::println(stderr, "Error: failed to write NIR output: {}", nir_path.string());
-            return 1;
-        }
-        nir_out << sappp::canonical::canonicalize(result.nir) << "\n";
-
-        std::ofstream source_out(source_map_path);
-        if (!source_out) {
-            std::println(stderr, "Error: failed to write source map output: {}", source_map_path.string());
-            return 1;
-        }
-        source_out << sappp::canonical::canonicalize(result.source_map) << "\n";
-
-        sappp::po::PoGenerator po_generator;
-        nlohmann::json po_list = po_generator.generate(result.nir);
-
-        std::string schema_error;
-        const std::filesystem::path po_schema_path =
-            std::filesystem::path(schema_dir) / "po.v1.schema.json";
-        if (!sappp::common::validate_json(po_list, po_schema_path.string(), schema_error)) {
-            throw std::runtime_error("po schema validation failed: " + schema_error);
-        }
-
-        std::filesystem::path po_path = po_dir / "po_list.json";
-        std::ofstream po_out(po_path);
-        if (!po_out) {
-            std::println(stderr, "Error: failed to write PO output: {}", po_path.string());
-            return 1;
-        }
-        po_out << sappp::canonical::canonicalize(po_list) << "\n";
-
-        std::println("[analyze] Wrote frontend outputs");
-        std::println("  snapshot: {}", snapshot);
-        std::println("  output: {}", output_dir.string());
-        std::println("  nir: {}", nir_path.string());
-        std::println("  source_map: {}", source_map_path.string());
-        std::println("  po: {}", po_path.string());
-    } catch (const std::exception& ex) {
-        std::println(stderr, "Error: analyze failed: {}", ex.what());
+    std::ifstream in(snapshot);
+    if (!in) {
+        std::println(stderr, "Error: failed to open snapshot file: {}", snapshot);
         return 1;
     }
+    nlohmann::json snapshot_json;
+    try {
+        in >> snapshot_json;
+    } catch (const std::exception& ex) {
+        std::println(stderr, "Error: failed to parse snapshot JSON: {}", ex.what());
+        return 1;
+    }
+
+    sappp::frontend_clang::FrontendClang frontend(schema_dir);
+    auto result = frontend.analyze(snapshot_json);
+    if (!result) {
+        std::println(stderr, "Error: analyze failed: {}", result.error().message);
+        return 1;
+    }
+
+    std::filesystem::path output_dir(output);
+    std::filesystem::path frontend_dir = output_dir / "frontend";
+    std::filesystem::path po_dir = output_dir / "po";
+    std::error_code ec;
+    std::filesystem::create_directories(frontend_dir, ec);
+    if (ec) {
+        std::println(stderr, "Error: failed to create frontend output dir: {}", ec.message());
+        return 1;
+    }
+    std::filesystem::create_directories(po_dir, ec);
+    if (ec) {
+        std::println(stderr, "Error: failed to create PO output dir: {}", ec.message());
+        return 1;
+    }
+
+    std::filesystem::path nir_path = frontend_dir / "nir.json";
+    std::filesystem::path source_map_path = frontend_dir / "source_map.json";
+
+    std::ofstream nir_out(nir_path);
+    if (!nir_out) {
+        std::println(stderr, "Error: failed to write NIR output: {}", nir_path.string());
+        return 1;
+    }
+    auto nir_canonical = sappp::canonical::canonicalize(result->nir);
+    if (!nir_canonical) {
+        std::println(stderr, "Error: failed to serialize NIR: {}", nir_canonical.error().message);
+        return 1;
+    }
+    nir_out << *nir_canonical << "\n";
+
+    std::ofstream source_out(source_map_path);
+    if (!source_out) {
+        std::println(stderr, "Error: failed to write source map output: {}", source_map_path.string());
+        return 1;
+    }
+    auto source_canonical = sappp::canonical::canonicalize(result->source_map);
+    if (!source_canonical) {
+        std::println(stderr, "Error: failed to serialize source map: {}", source_canonical.error().message);
+        return 1;
+    }
+    source_out << *source_canonical << "\n";
+
+    sappp::po::PoGenerator po_generator;
+    auto po_list_result = po_generator.generate(result->nir);
+    if (!po_list_result) {
+        std::println(stderr, "Error: PO generation failed: {}", po_list_result.error().message);
+        return 1;
+    }
+
+    const std::filesystem::path po_schema_path =
+        std::filesystem::path(schema_dir) / "po.v1.schema.json";
+    if (auto validation = sappp::common::validate_json(*po_list_result, po_schema_path.string()); !validation) {
+        std::println(stderr, "Error: po schema validation failed: {}", validation.error().message);
+        return 1;
+    }
+
+    std::filesystem::path po_path = po_dir / "po_list.json";
+    std::ofstream po_out(po_path);
+    if (!po_out) {
+        std::println(stderr, "Error: failed to write PO output: {}", po_path.string());
+        return 1;
+    }
+    auto po_canonical = sappp::canonical::canonicalize(*po_list_result);
+    if (!po_canonical) {
+        std::println(stderr, "Error: failed to serialize PO list: {}", po_canonical.error().message);
+        return 1;
+    }
+    po_out << *po_canonical << "\n";
+
+    std::println("[analyze] Wrote frontend outputs");
+    std::println("  snapshot: {}", snapshot);
+    std::println("  output: {}", output_dir.string());
+    std::println("  nir: {}", nir_path.string());
+    std::println("  source_map: {}", source_map_path.string());
+    std::println("  po: {}", po_path.string());
     return 0;
 #endif
 }
@@ -311,18 +384,29 @@ int cmd_validate(int argc, char** argv) {
     bool strict = false;
     std::string schema_dir = "schemas";
 
-    for (int i = 0; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg = arg_ptr ? std::string_view(arg_ptr) : std::string_view();
+        if (arg == "--help" || arg == "-h") {
             print_validate_help();
             return 0;
-        } else if ((std::strcmp(argv[i], "--input") == 0 || std::strcmp(argv[i], "--in") == 0) && i + 1 < argc) {
-            input = argv[++i];
-        } else if ((std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
-            output = argv[++i];
-        } else if (std::strcmp(argv[i], "--strict") == 0) {
+        } else if ((arg == "--input" || arg == "--in") && idx + 1 < args.size()) {
+            input = args[idx + 1];
+            skip_next = true;
+        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+            output = args[idx + 1];
+            skip_next = true;
+        } else if (arg == "--strict") {
             strict = true;
-        } else if (std::strcmp(argv[i], "--schema-dir") == 0 && i + 1 < argc) {
-            schema_dir = argv[++i];
+        } else if (arg == "--schema-dir" && idx + 1 < args.size()) {
+            schema_dir = args[idx + 1];
+            skip_next = true;
         }
     }
 
@@ -332,19 +416,21 @@ int cmd_validate(int argc, char** argv) {
         return 1;
     }
 
-    try {
-        sappp::validator::Validator validator(input, schema_dir);
-        nlohmann::json results = validator.validate(strict);
-        validator.write_results(results, output);
-
-        std::println("[validate] Wrote validated_results.json");
-        std::println("  input: {}", input);
-        std::println("  output: {}", output);
-        std::println("  strict: {}", strict ? "yes" : "no");
-    } catch (const std::exception& ex) {
-        std::println(stderr, "Error: validate failed: {}", ex.what());
+    sappp::validator::Validator validator(input, schema_dir);
+    auto results = validator.validate(strict);
+    if (!results) {
+        std::println(stderr, "Error: validate failed: {}", results.error().message);
         return 1;
     }
+    if (auto write = validator.write_results(*results, output); !write) {
+        std::println(stderr, "Error: failed to write validated results: {}", write.error().message);
+        return 1;
+    }
+
+    std::println("[validate] Wrote validated_results.json");
+    std::println("  input: {}", input);
+    std::println("  output: {}", output);
+    std::println("  strict: {}", strict ? "yes" : "no");
     return 0;
 }
 
@@ -352,14 +438,24 @@ int cmd_pack(int argc, char** argv) {
     std::string input;
     std::string output = "pack.tar.gz";
 
-    for (int i = 0; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg = arg_ptr ? std::string_view(arg_ptr) : std::string_view();
+        if (arg == "--help" || arg == "-h") {
             print_pack_help();
             return 0;
-        } else if (std::strcmp(argv[i], "--input") == 0 && i + 1 < argc) {
-            input = argv[++i];
-        } else if ((std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
-            output = argv[++i];
+        } else if (arg == "--input" && idx + 1 < args.size()) {
+            input = args[idx + 1];
+            skip_next = true;
+        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+            output = args[idx + 1];
+            skip_next = true;
         }
     }
 
@@ -380,16 +476,27 @@ int cmd_diff(int argc, char** argv) {
     std::string after;
     std::string output = "diff.json";
 
-    for (int i = 0; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--help") == 0 || std::strcmp(argv[i], "-h") == 0) {
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg = arg_ptr ? std::string_view(arg_ptr) : std::string_view();
+        if (arg == "--help" || arg == "-h") {
             print_diff_help();
             return 0;
-        } else if (std::strcmp(argv[i], "--before") == 0 && i + 1 < argc) {
-            before = argv[++i];
-        } else if (std::strcmp(argv[i], "--after") == 0 && i + 1 < argc) {
-            after = argv[++i];
-        } else if ((std::strcmp(argv[i], "--output") == 0 || std::strcmp(argv[i], "-o") == 0) && i + 1 < argc) {
-            output = argv[++i];
+        } else if (arg == "--before" && idx + 1 < args.size()) {
+            before = args[idx + 1];
+            skip_next = true;
+        } else if (arg == "--after" && idx + 1 < args.size()) {
+            after = args[idx + 1];
+            skip_next = true;
+        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+            output = args[idx + 1];
+            skip_next = true;
         }
     }
 

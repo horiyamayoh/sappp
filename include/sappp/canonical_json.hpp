@@ -12,6 +12,8 @@
  * - Arrays sorted where semantically appropriate
  */
 
+#include "sappp/common.hpp"
+
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -30,16 +32,16 @@ enum class HashScope {
 /**
  * Serialize JSON to canonical form
  * @param j JSON value
- * @return Canonical byte string
+ * @return Canonical byte string or error
  */
-std::string canonicalize(const nlohmann::json& j);
+[[nodiscard]] sappp::Result<std::string> canonicalize(const nlohmann::json& j);
 
 /**
  * Compute SHA-256 hash of canonical JSON
  * @param j JSON value
- * @return "sha256:" + hex hash
+ * @return "sha256:" + hex hash or error
  */
-std::string hash_canonical(const nlohmann::json& j);
+[[nodiscard]] sappp::Result<std::string> hash_canonical(const nlohmann::json& j);
 
 /**
  * Sort JSON object keys recursively
@@ -52,8 +54,8 @@ void sort_keys_recursive(nlohmann::json& j);
  * - No floating point numbers
  * - No duplicate keys
  * @param j JSON value
- * @return true if valid for canonicalization
+ * @return Empty on success, error on failure
  */
-bool validate_for_canonical(const nlohmann::json& j);
+[[nodiscard]] sappp::VoidResult validate_for_canonical(const nlohmann::json& j);
 
 } // namespace sappp::canonical

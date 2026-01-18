@@ -14,26 +14,33 @@
 #include <algorithm>
 #include <format>
 #include <ranges>
-#include <stdexcept>
 
 namespace sappp::canonical {
 
 namespace {
 
-void validate_no_float(const nlohmann::json& j, const std::string& path) {
+sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view path) {
     if (j.is_number_float()) {
-        throw std::runtime_error("Floating point numbers not allowed in canonical JSON at: " + path);
+        return std::unexpected(Error::make("FloatingPointNotAllowed",
+            std::format("Floating point numbers not allowed in canonical JSON at: {}", path)));
     }
     if (j.is_object()) {
         for (const auto& [key, val] : j.items()) {
-            validate_no_float(val, path + "." + key);
+            std::string next_path = std::string(path) + "." + key;
+            if (auto result = validate_no_float(val, next_path); !result) {
+                return result;
+            }
         }
     } else if (j.is_array()) {
         // Use views::enumerate for cleaner indexed iteration
         for (auto [i, elem] : std::views::enumerate(j)) {
-            validate_no_float(elem, std::format("{}[{}]", path, i));
+            const auto idx = static_cast<std::size_t>(i);
+            if (auto result = validate_no_float(elem, std::format("{}[{}]", path, idx)); !result) {
+                return result;
+            }
         }
     }
+    return {};
 }
 
 /**
@@ -68,9 +75,11 @@ void validate_no_float(const nlohmann::json& j, const std::string& path) {
 
 } // namespace
 
-std::string canonicalize(const nlohmann::json& j) {
+sappp::Result<std::string> canonicalize(const nlohmann::json& j) {
     // Validate: no floating point
-    validate_no_float(j, "$");
+    if (auto result = validate_no_float(j, "$"); !result) {
+        return std::unexpected(result.error());
+    }
     
     // Sort keys recursively
     nlohmann::json sorted = make_sorted_copy(j);
@@ -79,9 +88,12 @@ std::string canonicalize(const nlohmann::json& j) {
     return sorted.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
 }
 
-std::string hash_canonical(const nlohmann::json& j) {
-    std::string canonical = canonicalize(j);
-    return common::sha256_prefixed(canonical);
+sappp::Result<std::string> hash_canonical(const nlohmann::json& j) {
+    auto canonical = canonicalize(j);
+    if (!canonical) {
+        return std::unexpected(canonical.error());
+    }
+    return common::sha256_prefixed(*canonical);
 }
 
 void sort_keys_recursive(nlohmann::json& j) {
@@ -107,13 +119,8 @@ void sort_keys_recursive(nlohmann::json& j) {
     }
 }
 
-bool validate_for_canonical(const nlohmann::json& j) {
-    try {
-        validate_no_float(j, "$");
-        return true;
-    } catch (...) {
-        return false;
-    }
+sappp::VoidResult validate_for_canonical(const nlohmann::json& j) {
+    return validate_no_float(j, "$");
 }
 
 } // namespace sappp::canonical

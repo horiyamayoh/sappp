@@ -5,6 +5,8 @@
  * @brief JSON Schema validation utilities
  */
 
+#include "sappp/common.hpp"
+
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -15,9 +17,8 @@ namespace sappp::common {
  *
  * @param j JSON document to validate
  * @param schema_path Path to JSON Schema file
- * @param error_out Error message output on failure
- * @return true if valid, false otherwise
+ * @return Empty on success, error on failure
  */
-bool validate_json(const nlohmann::json& j, const std::string& schema_path, std::string& error_out);
+[[nodiscard]] sappp::VoidResult validate_json(const nlohmann::json& j, const std::string& schema_path);
 
 } // namespace sappp::common

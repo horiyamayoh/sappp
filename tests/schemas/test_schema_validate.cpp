@@ -49,29 +49,24 @@ nlohmann::json make_valid_unknown_json() {
 
 TEST(SchemaValidateTest, ValidUnknownSchemaPasses) {
     nlohmann::json valid = make_valid_unknown_json();
-    std::string error;
-
-    bool ok = sappp::common::validate_json(
+    auto result = sappp::common::validate_json(
         valid,
-        schema_path("unknown.v1.schema.json"),
-        error);
+        schema_path("unknown.v1.schema.json"));
 
-    EXPECT_TRUE(ok);
-    EXPECT_TRUE(error.empty());
+    EXPECT_TRUE(result);
 }
 
 TEST(SchemaValidateTest, InvalidUnknownSchemaFails) {
     nlohmann::json invalid = make_valid_unknown_json();
     invalid["schema_version"] = "unknown.v2";
 
-    std::string error;
-    bool ok = sappp::common::validate_json(
+    auto result = sappp::common::validate_json(
         invalid,
-        schema_path("unknown.v1.schema.json"),
-        error);
+        schema_path("unknown.v1.schema.json"));
 
-    EXPECT_FALSE(ok);
-    EXPECT_FALSE(error.empty());
+    EXPECT_FALSE(result);
+    ASSERT_FALSE(result);
+    EXPECT_FALSE(result.error().message.empty());
 }
 
 } // namespace sappp::common::test

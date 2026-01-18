@@ -43,9 +43,9 @@ private:
     [[nodiscard]] std::string cert_schema_path() const;
     [[nodiscard]] std::string index_schema_path() const;
 
-    [[nodiscard]] std::string canonical_hash(const nlohmann::json& cert) const;
+    [[nodiscard]] sappp::Result<std::string> canonical_hash(const nlohmann::json& cert) const;
 
-    [[nodiscard]] std::string object_path_for_hash(const std::string& hash) const;
+    [[nodiscard]] sappp::Result<std::string> object_path_for_hash(const std::string& hash) const;
     [[nodiscard]] std::string index_path_for_po(const std::string& po_id) const;
 
     [[nodiscard]] sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) const;

@@ -8,6 +8,8 @@
  * - Using [[nodiscard]] consistently
  */
 
+#include "sappp/common.hpp"
+
 #include <nlohmann/json.hpp>
 #include <string>
 
@@ -37,7 +39,7 @@ class BuildCapture {
 public:
     explicit BuildCapture(std::string repo_root = {}, std::string schema_dir = "schemas");
 
-    [[nodiscard]] BuildSnapshot capture(const std::string& compile_commands_path);
+    [[nodiscard]] sappp::Result<BuildSnapshot> capture(const std::string& compile_commands_path);
 
 private:
     std::string m_repo_root;

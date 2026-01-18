@@ -5,6 +5,8 @@
  * @brief Clang frontend integration for NIR and source map generation
  */
 
+#include "sappp/common.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <string>
@@ -20,7 +22,7 @@ class FrontendClang {
 public:
     explicit FrontendClang(std::string schema_dir = "schemas");
 
-    FrontendResult analyze(const nlohmann::json& build_snapshot) const;
+    [[nodiscard]] sappp::Result<FrontendResult> analyze(const nlohmann::json& build_snapshot) const;
 
 private:
     std::string m_schema_dir;

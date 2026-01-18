@@ -13,7 +13,7 @@
 
 #include <filesystem>
 #include <fstream>
-#include <sstream>
+#include <iterator>
 
 namespace sappp::po::tests {
 
@@ -30,9 +30,8 @@ std::filesystem::path write_temp_source(const std::string& contents = "int main(
 
 std::string read_file_contents(const std::filesystem::path& path) {
     std::ifstream in(path, std::ios::binary);
-    std::ostringstream oss;
-    oss << in.rdbuf();
-    return oss.str();
+    return std::string{std::istreambuf_iterator<char>{in},
+                       std::istreambuf_iterator<char>{}};
 }
 
 nlohmann::json build_minimal_nir(const std::filesystem::path& source_path,
@@ -91,7 +90,9 @@ TEST(PoGeneratorTest, GeneratesPoAndValidatesSchema) {
     nlohmann::json nir = build_minimal_nir(source_path);
 
     PoGenerator generator;
-    nlohmann::json po_list = generator.generate(nir);
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
 
     ASSERT_TRUE(po_list.contains("pos"));
     EXPECT_GE(po_list.at("pos").size(), 1U);
@@ -108,11 +109,10 @@ TEST(PoGeneratorTest, GeneratesPoAndValidatesSchema) {
     EXPECT_EQ(args.at(0).get<std::string>(), "UB.DivZero");
     EXPECT_EQ(args.at(1).get<bool>(), true);
 
-    std::string schema_error;
-    EXPECT_TRUE(common::validate_json(po_list,
-                                      std::string(SAPPP_SCHEMA_DIR) + "/po.v1.schema.json",
-                                      schema_error))
-        << schema_error;
+    auto schema_result = common::validate_json(
+        po_list,
+        std::string(SAPPP_SCHEMA_DIR) + "/po.v1.schema.json");
+    EXPECT_TRUE(schema_result) << (schema_result ? "" : schema_result.error().message);
 }
 
 TEST(PoGeneratorTest, PoIdIsDeterministic) {
@@ -120,8 +120,12 @@ TEST(PoGeneratorTest, PoIdIsDeterministic) {
     nlohmann::json nir = build_minimal_nir(source_path);
 
     PoGenerator generator;
-    nlohmann::json first = generator.generate(nir);
-    nlohmann::json second = generator.generate(nir);
+    auto first_result = generator.generate(nir);
+    auto second_result = generator.generate(nir);
+    ASSERT_TRUE(first_result);
+    ASSERT_TRUE(second_result);
+    const auto& first = *first_result;
+    const auto& second = *second_result;
 
     ASSERT_FALSE(first.at("pos").empty());
     ASSERT_FALSE(second.at("pos").empty());
@@ -138,7 +142,9 @@ TEST(PoGeneratorTest, PoIdMatchesSpec) {
     nlohmann::json nir = build_minimal_nir(source_path);
 
     PoGenerator generator;
-    nlohmann::json po_list = generator.generate(nir);
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
 
     const auto& po = po_list.at("pos").at(0);
     nlohmann::json repo_identity = {
@@ -158,9 +164,10 @@ TEST(PoGeneratorTest, PoIdMatchesSpec) {
         {"proof_system_version", sappp::PROOF_SYSTEM_VERSION},
         {"profile_version", sappp::PROFILE_VERSION}
     };
-    std::string expected_id = sappp::canonical::hash_canonical(po_id_input);
+    auto expected_id = sappp::canonical::hash_canonical(po_id_input);
+    ASSERT_TRUE(expected_id);
 
-    EXPECT_EQ(po.at("po_id").get<std::string>(), expected_id);
+    EXPECT_EQ(po.at("po_id").get<std::string>(), *expected_id);
 }
 
 TEST(PoGeneratorTest, SinkMarkerGeneratesPo) {
@@ -169,7 +176,9 @@ TEST(PoGeneratorTest, SinkMarkerGeneratesPo) {
                                            nlohmann::json::array({"OOB"}));
 
     PoGenerator generator;
-    nlohmann::json po_list = generator.generate(nir);
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
 
     ASSERT_FALSE(po_list.at("pos").empty());
     const auto& po = po_list.at("pos").at(0);

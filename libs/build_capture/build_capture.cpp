@@ -18,9 +18,8 @@
 #include <format>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <ranges>
-#include <sstream>
-#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -28,14 +27,14 @@ namespace sappp::build_capture {
 
 namespace {
 
-std::string read_file(const std::string& path) {
+sappp::Result<std::string> read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        throw std::runtime_error("Failed to open compile_commands.json: " + path);
+        return std::unexpected(Error::make("CompileCommandsOpenFailed",
+            "Failed to open compile_commands.json: " + path));
     }
-    std::ostringstream oss;
-    oss << in.rdbuf();
-    return oss.str();
+    return std::string{std::istreambuf_iterator<char>{in},
+                       std::istreambuf_iterator<char>{}};
 }
 
 std::string current_time_utc() {
@@ -104,8 +103,8 @@ nlohmann::json default_frontend(const std::vector<std::string>& argv) {
     std::string kind = "clang";
     if (!argv.empty()) {
         std::string lower = argv.front();
-        std::transform(lower.begin(), lower.end(), lower.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::ranges::transform(lower, lower.begin(),
+                               [](unsigned char c) noexcept { return static_cast<char>(std::tolower(c)); });
         if (lower.contains("clang-cl")) {
             kind = "clang-cl";
         }
@@ -165,8 +164,8 @@ std::string detect_lang_from_file(const std::string& file_path) {
         return "c++";
     }
     std::string ext = file_path.substr(pos + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    std::ranges::transform(ext, ext.begin(),
+                           [](unsigned char c) noexcept { return static_cast<char>(std::tolower(c)); });
     if (ext == "c") {
         return "c";
     }
@@ -177,13 +176,13 @@ std::string detect_lang_from_file(const std::string& file_path) {
 }
 
 std::string extract_std(const std::vector<std::string>& argv, const std::string& lang) {
-    for (size_t i = 0; i < argv.size(); ++i) {
-        const std::string& arg = argv[i];
+    for (auto [i, arg] : std::views::enumerate(argv)) {
+        const auto idx = static_cast<std::size_t>(i);
         if (arg.starts_with("-std=")) {
             return arg.substr(5);
         }
-        if (arg == "-std" && i + 1 < argv.size()) {
-            return argv[i + 1];
+        if (arg == "-std" && idx + 1 < argv.size()) {
+            return argv[idx + 1];
         }
     }
     return lang == "c" ? "c23" : "c++23";
@@ -211,11 +210,22 @@ BuildCapture::BuildCapture(std::string repo_root, std::string schema_dir)
     : m_repo_root(std::move(repo_root)),
       m_schema_dir(std::move(schema_dir)) {}
 
-BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
-    std::string raw = read_file(compile_commands_path);
-    nlohmann::json compile_db = nlohmann::json::parse(raw);
+sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_commands_path) {
+    auto raw = read_file(compile_commands_path);
+    if (!raw) {
+        return std::unexpected(raw.error());
+    }
+
+    nlohmann::json compile_db;
+    try {
+        compile_db = nlohmann::json::parse(*raw);
+    } catch (const std::exception& ex) {
+        return std::unexpected(Error::make("CompileCommandsParseFailed",
+            std::string("Failed to parse compile_commands.json: ") + ex.what()));
+    }
     if (!compile_db.is_array() || compile_db.empty()) {
-        throw std::runtime_error("compile_commands.json must be a non-empty array");
+        return std::unexpected(Error::make("CompileCommandsInvalid",
+            "compile_commands.json must be a non-empty array"));
     }
 
     nlohmann::json target = default_target();
@@ -223,12 +233,15 @@ BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
     std::vector<nlohmann::json> units;
     units.reserve(compile_db.size());
 
-    for (const auto& entry : compile_db) {
+    for (auto [index, entry] : std::views::enumerate(compile_db)) {
+        const auto idx = static_cast<std::size_t>(index);
         if (!entry.is_object()) {
-            throw std::runtime_error("compile_commands entry is not an object");
+            return std::unexpected(Error::make("CompileCommandsEntryInvalid",
+                std::format("compile_commands entry {} is not an object", idx)));
         }
         if (!entry.contains("directory") || !entry.contains("file")) {
-            throw std::runtime_error("compile_commands entry missing directory or file");
+            return std::unexpected(Error::make("CompileCommandsEntryInvalid",
+                std::format("compile_commands entry {} missing directory or file", idx)));
         }
 
         std::string directory = entry.at("directory").get<std::string>();
@@ -238,7 +251,8 @@ BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
         if (entry.contains("arguments")) {
             const auto& args_json = entry.at("arguments");
             if (!args_json.is_array()) {
-                throw std::runtime_error("compile_commands arguments must be an array");
+                return std::unexpected(Error::make("CompileCommandsEntryInvalid",
+                    std::format("compile_commands entry {} arguments must be an array", idx)));
             }
             for (const auto& arg : args_json) {
                 argv.push_back(arg.get<std::string>());
@@ -246,11 +260,13 @@ BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
         } else if (entry.contains("command")) {
             argv = parse_command_line(entry.at("command").get<std::string>());
         } else {
-            throw std::runtime_error("compile_commands entry missing arguments/command");
+            return std::unexpected(Error::make("CompileCommandsEntryInvalid",
+                std::format("compile_commands entry {} missing arguments/command", idx)));
         }
 
         if (argv.empty()) {
-            throw std::runtime_error("compile_commands entry has empty argv");
+            return std::unexpected(Error::make("CompileCommandsEntryInvalid",
+                std::format("compile_commands entry {} has empty argv", idx)));
         }
 
         std::string cwd = common::normalize_path(directory, m_repo_root);
@@ -271,7 +287,11 @@ BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
         };
 
         nlohmann::json hash_input = build_hash_input(unit);
-        std::string tu_id = canonical::hash_canonical(hash_input);
+        auto tu_id_result = canonical::hash_canonical(hash_input);
+        if (!tu_id_result) {
+            return std::unexpected(tu_id_result.error());
+        }
+        std::string tu_id = *tu_id_result;
         unit["tu_id"] = tu_id;
 
         units.push_back(std::move(unit));
@@ -289,12 +309,11 @@ BuildSnapshot BuildCapture::capture(const std::string& compile_commands_path) {
         {"host", {{"os", detect_os()}, {"arch", detect_arch()}}},
         {"compile_units", units}
     };
-    snapshot["input_digest"] = common::sha256_prefixed(raw);
+    snapshot["input_digest"] = common::sha256_prefixed(*raw);
 
     std::filesystem::path schema_path = std::filesystem::path(m_schema_dir) / "build_snapshot.v1.schema.json";
-    std::string schema_error;
-    if (!common::validate_json(snapshot, schema_path.string(), schema_error)) {
-        throw std::runtime_error("build_snapshot schema validation failed: " + schema_error);
+    if (auto result = common::validate_json(snapshot, schema_path.string()); !result) {
+        return std::unexpected(result.error());
     }
 
     return BuildSnapshot(std::move(snapshot));

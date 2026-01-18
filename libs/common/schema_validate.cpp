@@ -5,8 +5,8 @@
 
 #include "sappp/schema_validate.hpp"
 
+#include <format>
 #include <fstream>
-#include <sstream>
 
 #include <valijson/adapters/nlohmann_json_adapter.hpp>
 #include <valijson/schema.hpp>
@@ -42,9 +42,8 @@ void normalize_schema_defs(nlohmann::json& schema) {
 }
 
 std::string format_validation_errors(valijson::ValidationResults& results) {
-    std::ostringstream oss;
+    std::string result;
     valijson::ValidationResults::Error error;
-    bool first = true;
 
     while (results.popError(error)) {
         std::string context;
@@ -55,33 +54,30 @@ std::string format_validation_errors(valijson::ValidationResults& results) {
             context = "/";
         }
 
-        if (!first) {
-            oss << "\n";
+        if (!result.empty()) {
+            result += '\n';
         }
-        first = false;
-        oss << context << ": " << error.description;
+        result += std::format("{}: {}", context, error.description);
     }
 
-    return oss.str();
+    return result;
 }
 
 } // namespace
 
-bool validate_json(const nlohmann::json& j, const std::string& schema_path, std::string& error_out) {
-    error_out.clear();
-
+sappp::VoidResult validate_json(const nlohmann::json& j, const std::string& schema_path) {
     std::ifstream schema_stream(schema_path);
     if (!schema_stream) {
-        error_out = "Failed to open schema file: " + schema_path;
-        return false;
+        return std::unexpected(Error::make("SchemaFileOpenFailed",
+            "Failed to open schema file: " + schema_path));
     }
 
     nlohmann::json schema_json;
     try {
         schema_stream >> schema_json;
     } catch (const std::exception& ex) {
-        error_out = std::string("Failed to parse schema JSON: ") + ex.what();
-        return false;
+        return std::unexpected(Error::make("SchemaParseFailed",
+            std::string("Failed to parse schema JSON: ") + ex.what()));
     }
 
     normalize_schema_defs(schema_json);
@@ -93,8 +89,8 @@ bool validate_json(const nlohmann::json& j, const std::string& schema_path, std:
         valijson::adapters::NlohmannJsonAdapter schema_adapter(schema_json);
         parser.populateSchema(schema_adapter, schema);
     } catch (const std::exception& ex) {
-        error_out = std::string("Failed to build schema: ") + ex.what();
-        return false;
+        return std::unexpected(Error::make("SchemaBuildFailed",
+            std::string("Failed to build schema: ") + ex.what()));
     }
 
     valijson::Validator validator;
@@ -102,14 +98,14 @@ bool validate_json(const nlohmann::json& j, const std::string& schema_path, std:
     valijson::adapters::NlohmannJsonAdapter target_adapter(j);
 
     if (!validator.validate(schema, target_adapter, &results)) {
-        error_out = format_validation_errors(results);
-        if (error_out.empty()) {
-            error_out = "Schema validation failed.";
+        std::string error = format_validation_errors(results);
+        if (error.empty()) {
+            error = "Schema validation failed.";
         }
-        return false;
+        return std::unexpected(Error::make("SchemaValidationFailed", std::move(error)));
     }
 
-    return true;
+    return {};
 }
 
 } // namespace sappp::common

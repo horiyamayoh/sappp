@@ -11,6 +11,7 @@
 
 #include <filesystem>
 #include <fstream>
+#include <ranges>
 
 namespace sappp::build_capture::tests {
 
@@ -52,7 +53,9 @@ TEST(BuildCaptureTest, GeneratesSnapshotFromCompileCommands) {
     std::filesystem::path compile_commands = write_compile_commands(repo_root);
 
     BuildCapture capture(repo_root.string(), SAPPP_SCHEMA_DIR);
-    BuildSnapshot snapshot = capture.capture(compile_commands.string());
+    auto snapshot_result = capture.capture(compile_commands.string());
+    ASSERT_TRUE(snapshot_result);
+    BuildSnapshot snapshot = std::move(*snapshot_result);
 
     const nlohmann::json& json = snapshot.json();
     ASSERT_EQ(json.at("schema_version"), "build_snapshot.v1");
@@ -89,19 +92,23 @@ TEST(BuildCaptureTest, GeneratesSnapshotFromCompileCommands) {
             {"std", unit.at("std")},
             {"target", unit.at("target")}
         };
-        std::string expected = canonical::hash_canonical(hash_input);
-        EXPECT_EQ(unit.at("tu_id"), expected);
+        auto expected = canonical::hash_canonical(hash_input);
+        ASSERT_TRUE(expected);
+        EXPECT_EQ(unit.at("tu_id"), *expected);
     }
 
-    for (size_t i = 1; i < units.size(); ++i) {
-        EXPECT_LE(units.at(i - 1).at("tu_id").get<std::string>(),
-                  units.at(i).at("tu_id").get<std::string>());
+    for (auto [i, unit] : std::views::enumerate(units)) {
+        const auto idx = static_cast<std::size_t>(i);
+        if (idx == 0) {
+            continue;
+        }
+        EXPECT_LE(units.at(idx - 1).at("tu_id").get<std::string>(),
+                  unit.at("tu_id").get<std::string>());
     }
 
-    std::string schema_error;
-    EXPECT_TRUE(common::validate_json(json, std::string(SAPPP_SCHEMA_DIR) + "/build_snapshot.v1.schema.json",
-                                      schema_error))
-        << schema_error;
+    auto schema_result = common::validate_json(
+        json, std::string(SAPPP_SCHEMA_DIR) + "/build_snapshot.v1.schema.json");
+    EXPECT_TRUE(schema_result) << (schema_result ? "" : schema_result.error().message);
 }
 
 } // namespace sappp::build_capture::tests

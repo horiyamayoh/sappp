@@ -70,20 +70,22 @@ TEST(FrontendClangTest, GeneratesValidNirAndSourceMap) {
     nlohmann::json build_snapshot = make_build_snapshot(temp_dir.string(), source_path.string());
 
     FrontendClang frontend(SAPPP_SCHEMA_DIR);
-    FrontendResult result = frontend.analyze(build_snapshot);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
 
-    std::string error;
-    EXPECT_TRUE(sappp::common::validate_json(result.nir, schema_path("nir.v1.schema.json"), error));
-    EXPECT_TRUE(error.empty());
+    auto nir_validation = sappp::common::validate_json(
+        result->nir, schema_path("nir.v1.schema.json"));
+    EXPECT_TRUE(nir_validation) << (nir_validation ? "" : nir_validation.error().message);
 
-    EXPECT_TRUE(sappp::common::validate_json(result.source_map, schema_path("source_map.v1.schema.json"), error));
-    EXPECT_TRUE(error.empty());
+    auto source_validation = sappp::common::validate_json(
+        result->source_map, schema_path("source_map.v1.schema.json"));
+    EXPECT_TRUE(source_validation) << (source_validation ? "" : source_validation.error().message);
 
-    EXPECT_TRUE(result.nir.contains("functions"));
-    EXPECT_FALSE(result.nir.at("functions").empty());
+    EXPECT_TRUE(result->nir.contains("functions"));
+    EXPECT_FALSE(result->nir.at("functions").empty());
 
-    EXPECT_TRUE(result.source_map.contains("entries"));
-    EXPECT_FALSE(result.source_map.at("entries").empty());
+    EXPECT_TRUE(result->source_map.contains("entries"));
+    EXPECT_FALSE(result->source_map.at("entries").empty());
 
     std::filesystem::remove_all(temp_dir);
 }

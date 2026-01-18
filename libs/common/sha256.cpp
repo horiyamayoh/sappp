@@ -17,6 +17,7 @@
 #include <cstring>
 #include <format>
 #include <ranges>
+#include <span>
 
 namespace sappp::common {
 
@@ -84,9 +85,9 @@ public:
         buffer_len_ = 0;
     }
 
-    void update(const uint8_t* data, size_t len) {
-        for (size_t i = 0; i < len; ++i) {
-            buffer_[buffer_len_++] = data[i];
+    void update(std::span<const uint8_t> data) {
+        for (auto byte : data) {
+            buffer_[buffer_len_++] = byte;
             if (buffer_len_ == 64) {
                 transform();
                 count_ += 512;
@@ -96,7 +97,8 @@ public:
     }
 
     void update(std::string_view data) {
-        update(reinterpret_cast<const uint8_t*>(data.data()), data.size());
+        update(std::span<const uint8_t>(
+            reinterpret_cast<const uint8_t*>(data.data()), data.size()));
     }
 
     std::array<uint8_t, 32> finalize() {
@@ -112,8 +114,9 @@ public:
         while (buffer_len_ < 56) buffer_[buffer_len_++] = 0;
 
         // Length (big-endian)
-        for (int i = 7; i >= 0; --i) {
-            buffer_[buffer_len_++] = static_cast<uint8_t>(total_bits >> (i * 8));
+        for (auto i : std::views::iota(0, 8) | std::views::reverse) {
+            const auto shift = static_cast<uint64_t>(i) * 8U;
+            buffer_[buffer_len_++] = static_cast<uint8_t>(total_bits >> shift);
         }
         transform();
 
@@ -134,18 +137,21 @@ private:
         std::array<uint32_t, 64> w;
 
         // Prepare message schedule using std::byteswap for big-endian conversion
-        for (std::size_t i = 0uz; i < 16uz; ++i) {
+        std::span<uint32_t, 64> schedule(w);
+        for (auto [i, slot] : std::views::enumerate(schedule.first(16))) {
+            const auto idx = static_cast<std::size_t>(i);
             uint32_t val{};
-            std::memcpy(&val, &buffer_[i * 4uz], sizeof(val));
+            std::memcpy(&val, &buffer_[idx * 4uz], sizeof(val));
             // Convert from big-endian to native
             if constexpr (std::endian::native == std::endian::little) {
-                w[i] = std::byteswap(val);
+                slot = std::byteswap(val);
             } else {
-                w[i] = val;
+                slot = val;
             }
         }
-        for (std::size_t i = 16uz; i < 64uz; ++i) {
-            w[i] = gamma1(w[i - 2]) + w[i - 7] + gamma0(w[i - 15]) + w[i - 16];
+        for (auto [i, slot] : std::views::enumerate(schedule.subspan(16))) {
+            const auto idx = static_cast<std::size_t>(i) + 16uz;
+            slot = gamma1(schedule[idx - 2]) + schedule[idx - 7] + gamma0(schedule[idx - 15]) + schedule[idx - 16];
         }
 
         // Working variables
@@ -153,8 +159,9 @@ private:
         uint32_t e = state_[4], f = state_[5], g = state_[6], h = state_[7];
 
         // Compression
-        for (size_t i = 0; i < 64; ++i) {
-            uint32_t t1 = h + sigma1(e) + ch(e, f, g) + K[i] + w[i];
+        for (auto [i, w_val] : std::views::enumerate(schedule)) {
+            const auto idx = static_cast<std::size_t>(i);
+            uint32_t t1 = h + sigma1(e) + ch(e, f, g) + K[idx] + w_val;
             uint32_t t2 = sigma0(a) + maj(a, b, c);
             h = g; g = f; f = e; e = d + t1;
             d = c; c = b; b = a; a = t1 + t2;
