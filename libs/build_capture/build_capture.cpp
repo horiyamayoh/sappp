@@ -11,6 +11,7 @@
 #include "sappp/version.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstddef>
@@ -69,31 +70,34 @@ namespace {
 #endif
 }
 
-[[nodiscard]] std::string default_triple(const std::string& os, const std::string& arch)
+struct TripleEntry
 {
-    if (os == "linux") {
-        if (arch == "x86_64")
-            return "x86_64-unknown-linux-gnu";
-        if (arch == "aarch64")
-            return "aarch64-unknown-linux-gnu";
-        if (arch == "arm")
-            return "arm-unknown-linux-gnueabihf";
-        if (arch == "x86")
-            return "i386-unknown-linux-gnu";
-    } else if (os == "macos") {
-        if (arch == "x86_64")
-            return "x86_64-apple-darwin";
-        if (arch == "aarch64")
-            return "arm64-apple-darwin";
-    } else if (os == "windows") {
-        if (arch == "x86_64")
-            return "x86_64-pc-windows-msvc";
-        if (arch == "x86")
-            return "i386-pc-windows-msvc";
-        if (arch == "arm")
-            return "arm-pc-windows-msvc";
-        if (arch == "aarch64")
-            return "aarch64-pc-windows-msvc";
+    std::string_view os;
+    std::string_view arch;
+    std::string_view triple;
+};
+
+constexpr std::array<TripleEntry, 10> kDefaultTriples = {
+    {
+     {"linux", "x86_64", "x86_64-unknown-linux-gnu"},
+     {"linux", "aarch64", "aarch64-unknown-linux-gnu"},
+     {"linux", "arm", "arm-unknown-linux-gnueabihf"},
+     {"linux", "x86", "i386-unknown-linux-gnu"},
+     {"macos", "x86_64", "x86_64-apple-darwin"},
+     {"macos", "aarch64", "arm64-apple-darwin"},
+     {"windows", "x86_64", "x86_64-pc-windows-msvc"},
+     {"windows", "x86", "i386-pc-windows-msvc"},
+     {"windows", "arm", "arm-pc-windows-msvc"},
+     {"windows", "aarch64", "aarch64-pc-windows-msvc"},
+     }
+};
+
+[[nodiscard]] std::string default_triple(std::string_view os, std::string_view arch)
+{
+    for (const auto& entry : kDefaultTriples) {
+        if (entry.os == os && entry.arch == arch) {
+            return std::string(entry.triple);
+        }
     }
     return "unknown-unknown-unknown";
 }
@@ -158,7 +162,7 @@ namespace {
             in_single = !in_single;
             continue;
         }
-        if (std::isspace(static_cast<unsigned char>(c)) && !in_single && !in_double) {
+        if (std::isspace(static_cast<unsigned char>(c)) != 0 && !in_single && !in_double) {
             if (!current.empty()) {
                 args.push_back(current);
                 current.clear();
@@ -222,6 +226,121 @@ namespace {
     return hash_input;
 }
 
+[[nodiscard]] sappp::Result<nlohmann::json> parse_compile_database(const std::string& raw)
+{
+    nlohmann::json compile_db;
+    try {
+        compile_db = nlohmann::json::parse(raw);
+    } catch (const std::exception& ex) {
+        return std::unexpected(
+            Error::make("CompileCommandsParseFailed",
+                        std::string("Failed to parse compile_commands.json: ") + ex.what()));
+    }
+    if (!compile_db.is_array() || compile_db.empty()) {
+        return std::unexpected(Error::make("CompileCommandsInvalid",
+                                           "compile_commands.json must be a non-empty array"));
+    }
+    return compile_db;
+}
+
+[[nodiscard]] sappp::Result<std::vector<std::string>> extract_argv(const nlohmann::json& entry,
+                                                                   std::size_t index)
+{
+    if (entry.contains("arguments")) {
+        const auto& args_json = entry.at("arguments");
+        if (!args_json.is_array()) {
+            return std::unexpected(Error::make(
+                "CompileCommandsEntryInvalid",
+                std::format("compile_commands entry {} arguments must be an array", index)));
+        }
+        std::vector<std::string> argv;
+        argv.reserve(args_json.size());
+        for (const auto& arg : args_json) {
+            argv.push_back(arg.get<std::string>());
+        }
+        return argv;
+    }
+    if (entry.contains("command")) {
+        return parse_command_line(entry.at("command").get<std::string>());
+    }
+    return std::unexpected(
+        Error::make("CompileCommandsEntryInvalid",
+                    std::format("compile_commands entry {} missing arguments/command", index)));
+}
+
+[[nodiscard]] sappp::Result<nlohmann::json> build_compile_unit(const nlohmann::json& entry,
+                                                               std::string_view repo_root,
+                                                               const nlohmann::json& target,
+                                                               std::size_t index)
+{
+    if (!entry.is_object()) {
+        return std::unexpected(
+            Error::make("CompileCommandsEntryInvalid",
+                        std::format("compile_commands entry {} is not an object", index)));
+    }
+    if (!entry.contains("directory") || !entry.contains("file")) {
+        return std::unexpected(
+            Error::make("CompileCommandsEntryInvalid",
+                        std::format("compile_commands entry {} missing directory or file", index)));
+    }
+
+    std::string directory = entry.at("directory").get<std::string>();
+    std::string file_path = entry.at("file").get<std::string>();
+
+    auto argv = extract_argv(entry, index);
+    if (!argv) {
+        return std::unexpected(argv.error());
+    }
+    if (argv->empty()) {
+        return std::unexpected(
+            Error::make("CompileCommandsEntryInvalid",
+                        std::format("compile_commands entry {} has empty argv", index)));
+    }
+
+    std::string cwd = common::normalize_path(directory, repo_root);
+    std::string normalized_file = common::normalize_path(file_path, repo_root);
+    std::string lang = detect_lang_from_file(normalized_file);
+    std::string std_value = extract_std(*argv, lang);
+    nlohmann::json frontend = default_frontend(*argv);
+
+    nlohmann::json unit = {
+        {           "cwd",                      cwd},
+        {          "argv",                    *argv},
+        {     "env_delta", nlohmann::json::object()},
+        {"response_files",  nlohmann::json::array()},
+        {          "lang",                     lang},
+        {           "std",                std_value},
+        {        "target",                   target},
+        {      "frontend",                 frontend}
+    };
+
+    nlohmann::json hash_input = build_hash_input(unit);
+    auto tu_id_result = canonical::hash_canonical(hash_input);
+    if (!tu_id_result) {
+        return std::unexpected(tu_id_result.error());
+    }
+    unit["tu_id"] = *tu_id_result;
+
+    return unit;
+}
+
+[[nodiscard]] sappp::Result<std::vector<nlohmann::json>>
+build_compile_units(const nlohmann::json& compile_db,
+                    std::string_view repo_root,
+                    const nlohmann::json& target)
+{
+    std::vector<nlohmann::json> units;
+    units.reserve(compile_db.size());
+    for (auto [index, entry] : std::views::enumerate(compile_db)) {
+        auto unit = build_compile_unit(entry, repo_root, target, static_cast<std::size_t>(index));
+        if (!unit) {
+            return std::unexpected(unit.error());
+        }
+        units.push_back(std::move(*unit));
+    }
+    return units;
+}
+
 }  // namespace
 
 BuildSnapshot::BuildSnapshot(nlohmann::json json)
@@ -239,94 +358,19 @@ sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_co
     if (!raw) {
         return std::unexpected(raw.error());
     }
-
-    nlohmann::json compile_db;
-    try {
-        compile_db = nlohmann::json::parse(*raw);
-    } catch (const std::exception& ex) {
-        return std::unexpected(
-            Error::make("CompileCommandsParseFailed",
-                        std::string("Failed to parse compile_commands.json: ") + ex.what()));
-    }
-    if (!compile_db.is_array() || compile_db.empty()) {
-        return std::unexpected(Error::make("CompileCommandsInvalid",
-                                           "compile_commands.json must be a non-empty array"));
+    auto compile_db = parse_compile_database(*raw);
+    if (!compile_db) {
+        return std::unexpected(compile_db.error());
     }
 
     nlohmann::json target = default_target();
 
-    std::vector<nlohmann::json> units;
-    units.reserve(compile_db.size());
-
-    for (auto [index, entry] : std::views::enumerate(compile_db)) {
-        if (!entry.is_object()) {
-            return std::unexpected(
-                Error::make("CompileCommandsEntryInvalid",
-                            std::format("compile_commands entry {} is not an object", index)));
-        }
-        if (!entry.contains("directory") || !entry.contains("file")) {
-            return std::unexpected(Error::make(
-                "CompileCommandsEntryInvalid",
-                std::format("compile_commands entry {} missing directory or file", index)));
-        }
-
-        std::string directory = entry.at("directory").get<std::string>();
-        std::string file_path = entry.at("file").get<std::string>();
-
-        std::vector<std::string> argv;
-        if (entry.contains("arguments")) {
-            const auto& args_json = entry.at("arguments");
-            if (!args_json.is_array()) {
-                return std::unexpected(Error::make(
-                    "CompileCommandsEntryInvalid",
-                    std::format("compile_commands entry {} arguments must be an array", index)));
-            }
-            for (const auto& arg : args_json) {
-                argv.push_back(arg.get<std::string>());
-            }
-        } else if (entry.contains("command")) {
-            argv = parse_command_line(entry.at("command").get<std::string>());
-        } else {
-            return std::unexpected(Error::make(
-                "CompileCommandsEntryInvalid",
-                std::format("compile_commands entry {} missing arguments/command", index)));
-        }
-
-        if (argv.empty()) {
-            return std::unexpected(
-                Error::make("CompileCommandsEntryInvalid",
-                            std::format("compile_commands entry {} has empty argv", index)));
-        }
-
-        std::string cwd = common::normalize_path(directory, m_repo_root);
-        std::string normalized_file = common::normalize_path(file_path, m_repo_root);
-        std::string lang = detect_lang_from_file(normalized_file);
-        std::string std_value = extract_std(argv, lang);
-        nlohmann::json frontend = default_frontend(argv);
-
-        nlohmann::json unit = {
-            {           "cwd",                      cwd},
-            {          "argv",                     argv},
-            {     "env_delta", nlohmann::json::object()},
-            {"response_files",  nlohmann::json::array()},
-            {          "lang",                     lang},
-            {           "std",                std_value},
-            {        "target",                   target},
-            {      "frontend",                 frontend}
-        };
-
-        nlohmann::json hash_input = build_hash_input(unit);
-        auto tu_id_result = canonical::hash_canonical(hash_input);
-        if (!tu_id_result) {
-            return std::unexpected(tu_id_result.error());
-        }
-        std::string tu_id = *tu_id_result;
-        unit["tu_id"] = tu_id;
-
-        units.push_back(std::move(unit));
+    auto units = build_compile_units(*compile_db, m_repo_root, target);
+    if (!units) {
+        return std::unexpected(units.error());
     }
 
-    std::ranges::stable_sort(units, [](const nlohmann::json& a, const nlohmann::json& b) {
+    std::ranges::stable_sort(*units, [](const nlohmann::json& a, const nlohmann::json& b) {
         return a.at("tu_id").get<std::string>() < b.at("tu_id").get<std::string>();
     });
 
@@ -335,7 +379,7 @@ sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_co
         {          "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
         {  "generated_at",                                                               current_time_utc()},
         {          "host",                                   {{"os", detect_os()}, {"arch", detect_arch()}}},
-        { "compile_units",                                                                            units}
+        { "compile_units",                                                                           *units}
     };
     snapshot["input_digest"] = common::sha256_prefixed(*raw);
 

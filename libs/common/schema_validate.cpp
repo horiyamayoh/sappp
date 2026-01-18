@@ -17,6 +17,18 @@ namespace sappp::common {
 
 namespace {
 
+void normalize_ref(nlohmann::json& value)
+{
+    if (!value.is_string()) {
+        return;
+    }
+    std::string ref = value.get<std::string>();
+    constexpr std::string_view kPrefix = "#/$defs/";
+    if (ref.starts_with(kPrefix)) {
+        value = "#/definitions/" + ref.substr(kPrefix.size());
+    }
+}
+
 void normalize_schema_defs(nlohmann::json& schema)
 {
     if (schema.is_object()) {
@@ -24,18 +36,22 @@ void normalize_schema_defs(nlohmann::json& schema)
             schema["definitions"] = schema["$defs"];
         }
 
-        for (auto& [key, value] : schema.items()) {
-            if (key == "$ref" && value.is_string()) {
-                std::string ref = value.get<std::string>();
-                constexpr std::string_view prefix = "#/$defs/";
-                if (ref.starts_with(prefix)) {
-                    value = "#/definitions/" + ref.substr(prefix.size());
-                }
-            } else {
-                normalize_schema_defs(value);
-            }
+        std::vector<std::string> keys;
+        keys.reserve(schema.size());
+        for (const auto& item : schema.items()) {
+            keys.push_back(item.key());
         }
-    } else if (schema.is_array()) {
+        for (const auto& key : keys) {
+            nlohmann::json& value = schema.at(key);
+            if (key == "$ref") {
+                normalize_ref(value);
+                continue;
+            }
+            normalize_schema_defs(value);
+        }
+        return;
+    }
+    if (schema.is_array()) {
         for (auto& value : schema) {
             normalize_schema_defs(value);
         }

@@ -87,7 +87,13 @@ namespace sappp::common {
 /**
  * Make path relative to base
  */
-[[nodiscard]] std::string make_relative(std::string_view path, std::string_view base);
+struct RelativePathSpec
+{
+    std::string_view path;
+    std::string_view base;
+};
+
+[[nodiscard]] std::string make_relative(RelativePathSpec spec);
 
 // ============================================================================
 // Stable Sort Comparators

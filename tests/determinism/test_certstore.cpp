@@ -14,13 +14,13 @@
 #include <gtest/gtest.h>
 
 using sappp::certstore::CertStore;
-using json = nlohmann::json;
+using Json = nlohmann::json;
 
 namespace {
 
-json make_ir_ref_cert()
+Json make_ir_ref_cert()
 {
-    return json{
+    return Json{
         {"schema_version",                                                                 "cert.v1"},
         {          "kind",                                                                   "IrRef"},
         {         "tu_id", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -47,6 +47,8 @@ public:
     }
     TempDir(const TempDir&) = delete;
     TempDir& operator=(const TempDir&) = delete;
+    TempDir(TempDir&&) = delete;
+    TempDir& operator=(TempDir&&) = delete;
 
     [[nodiscard]] const std::filesystem::path& path() const { return m_path; }
 
@@ -61,7 +63,7 @@ TEST(CertStore, PutGetDeterminism)
     TempDir temp_dir("sappp_certstore_test");
 
     CertStore store(temp_dir.path().string(), SAPPP_SCHEMA_DIR);
-    json cert = make_ir_ref_cert();
+    Json cert = make_ir_ref_cert();
 
     auto result1 = store.put(cert);
     ASSERT_TRUE(result1.has_value()) << "put() failed: " << result1.error().message;
@@ -76,9 +78,9 @@ TEST(CertStore, PutGetDeterminism)
     // Verify file is stored at correct sharded path: objects/<first2_hex>/<hash>.json
     // hash_canonical returns "sha256:<hex>", so the shard should be the first two
     // characters of the hex digest (after the "sha256:" prefix).
-    constexpr std::string_view prefix = "sha256:";
-    ASSERT_TRUE(hash1.starts_with(prefix)) << "Expected sha256: prefix in hash";
-    std::string digest = hash1.substr(prefix.size());
+    constexpr std::string_view kPrefix = "sha256:";
+    ASSERT_TRUE(hash1.starts_with(kPrefix)) << "Expected sha256: prefix in hash";
+    std::string digest = hash1.substr(kPrefix.size());
     std::string shard = digest.substr(0, 2);
     std::filesystem::path expected_object_path =
         temp_dir.path() / "objects" / shard / (hash1 + ".json");
@@ -99,7 +101,7 @@ TEST(CertStore, PutGetDeterminism)
     std::ifstream in(index_path);
     ASSERT_TRUE(in.is_open());
 
-    json index = json::parse(in);
+    Json index = Json::parse(in);
     EXPECT_EQ(index.at("schema_version"), "cert_index.v1");
     EXPECT_EQ(index.at("po_id"), po_id);
     EXPECT_EQ(index.at("root"), hash1);

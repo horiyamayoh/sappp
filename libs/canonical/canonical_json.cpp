@@ -66,7 +66,8 @@ sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view pa
             result[key] = make_sorted_copy(j[key]);
         }
         return result;
-    } else if (j.is_array()) {
+    }
+    if (j.is_array()) {
         nlohmann::json result = nlohmann::json::array();
         result.get_ref<nlohmann::json::array_t&>().reserve(j.size());
         for (const auto& elem : j) {
@@ -107,7 +108,7 @@ void sort_keys_recursive(nlohmann::json& j)
     if (j.is_object()) {
         // Get keys and sort
         std::vector<std::string> keys;
-        for (auto& [key, _] : j.items()) {
+        for (const auto& [key, _] : j.items()) {
             keys.push_back(key);
         }
         std::ranges::sort(keys);

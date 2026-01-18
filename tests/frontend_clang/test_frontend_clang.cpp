@@ -20,21 +20,29 @@ std::string schema_path(const std::string& name)
     return std::string(SAPPP_SCHEMA_DIR) + "/" + name;
 }
 
-nlohmann::json make_build_snapshot(const std::string& cwd, const std::string& source_path)
+struct BuildSnapshotInput
+{
+    std::string_view cwd;
+    std::string_view source_path;
+};
+
+nlohmann::json make_build_snapshot(const BuildSnapshotInput& input)
 {
     nlohmann::json compile_unit = {
-        {         "tu_id",               sappp::common::sha256_prefixed("tu")                          },
-        {           "cwd",                                           sappp::common::normalize_path(cwd)},
-        {          "argv", nlohmann::json::array({SAPPP_CXX_COMPILER, "-std=c++23", "-c", source_path})},
-        {     "env_delta",                                                     nlohmann::json::object()},
-        {"response_files",                                                      nlohmann::json::array()},
-        {          "lang",                                                                        "c++"},
-        {           "std",                                                                      "c++23"},
+        {         "tu_id",   sappp::common::sha256_prefixed("tu")                          },
+        {           "cwd",                         sappp::common::normalize_path(input.cwd)},
+        {          "argv",
+         nlohmann::json::array(
+         {SAPPP_CXX_COMPILER, "-std=c++23", "-c", std::string(input.source_path)})         },
+        {     "env_delta",                                         nlohmann::json::object()},
+        {"response_files",                                          nlohmann::json::array()},
+        {          "lang",                                                            "c++"},
+        {           "std",                                                          "c++23"},
         {        "target",
          {{"triple", "x86_64-unknown-linux-gnu"},
          {"abi", "sysv"},
-         {"data_layout", {{"ptr_bits", 64}, {"long_bits", 64}, {"align", {{"max", 16}}}}}}             },
-        {      "frontend",                                     {{"kind", "clang"}, {"version", "test"}}}
+         {"data_layout", {{"ptr_bits", 64}, {"long_bits", 64}, {"align", {{"max", 16}}}}}} },
+        {      "frontend",                         {{"kind", "clang"}, {"version", "test"}}}
     };
 
     return nlohmann::json{
@@ -62,7 +70,7 @@ TEST(FrontendClangTest, GeneratesValidNirAndSourceMap)
     source_file << "int main() { return add(1, 2); }\n";
     source_file.close();
 
-    nlohmann::json build_snapshot = make_build_snapshot(temp_dir.string(), source_path.string());
+    nlohmann::json build_snapshot = make_build_snapshot({temp_dir.string(), source_path.string()});
 
     FrontendClang frontend(SAPPP_SCHEMA_DIR);
     auto result = frontend.analyze(build_snapshot);

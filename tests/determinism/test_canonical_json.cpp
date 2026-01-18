@@ -10,12 +10,12 @@
 #include <nlohmann/json.hpp>
 
 using namespace sappp::canonical;
-using json = nlohmann::json;
+using Json = nlohmann::json;
 
 TEST(CanonicalJSON, KeyOrder)
 {
     // Keys must be sorted lexicographically
-    json j = {
+    Json j = {
         {"z", 1},
         {"a", 2},
         {"m", 3}
@@ -27,7 +27,7 @@ TEST(CanonicalJSON, KeyOrder)
 
 TEST(CanonicalJSON, NestedKeyOrder)
 {
-    json j = {
+    Json j = {
         {  "outer", {{"z", 1}, {"a", 2}}},
         {"another",                    3}
     };
@@ -38,7 +38,7 @@ TEST(CanonicalJSON, NestedKeyOrder)
 
 TEST(CanonicalJSON, NoWhitespace)
 {
-    json j = {
+    Json j = {
         {"key",   "value"},
         {"arr", {1, 2, 3}}
     };
@@ -51,7 +51,7 @@ TEST(CanonicalJSON, NoWhitespace)
 
 TEST(CanonicalJSON, FloatRejection)
 {
-    json j = {
+    Json j = {
         {"value", 3.14}
     };
     auto canonical = canonicalize(j);
@@ -60,7 +60,7 @@ TEST(CanonicalJSON, FloatRejection)
 
 TEST(CanonicalJSON, IntegerAllowed)
 {
-    json j = {
+    Json j = {
         {"value", 42}
     };
     auto canonical = canonicalize(j);
@@ -70,7 +70,7 @@ TEST(CanonicalJSON, IntegerAllowed)
 
 TEST(CanonicalJSON, NegativeInteger)
 {
-    json j = {
+    Json j = {
         {"value", -123}
     };
     auto canonical = canonicalize(j);
@@ -80,7 +80,7 @@ TEST(CanonicalJSON, NegativeInteger)
 
 TEST(CanonicalJSON, Determinism)
 {
-    json j = {
+    Json j = {
         {    "id",           "test-123"},
         {"values",            {3, 1, 2}},
         {"nested", {{"b", 2}, {"a", 1}}}
@@ -99,7 +99,7 @@ TEST(CanonicalJSON, Determinism)
 
 TEST(CanonicalJSON, HashDeterminism)
 {
-    json j = {
+    Json j = {
         {"key", "value"}
     };
 
@@ -115,11 +115,11 @@ TEST(CanonicalJSON, HashDeterminism)
 TEST(CanonicalJSON, DifferentOrderSameHash)
 {
     // Same content, different insertion order
-    json j1;
+    Json j1;
     j1["a"] = 1;
     j1["b"] = 2;
 
-    json j2;
+    Json j2;
     j2["b"] = 2;
     j2["a"] = 1;
 
@@ -132,16 +132,16 @@ TEST(CanonicalJSON, DifferentOrderSameHash)
 
 TEST(CanonicalJSON, ValidateForCanonical)
 {
-    EXPECT_TRUE(validate_for_canonical(json{
+    EXPECT_TRUE(validate_for_canonical(Json{
         {"int", 42}
     }));
-    EXPECT_FALSE(validate_for_canonical(json{
+    EXPECT_FALSE(validate_for_canonical(Json{
         {"float", 3.14}
     }));
-    EXPECT_TRUE(validate_for_canonical(json{
+    EXPECT_TRUE(validate_for_canonical(Json{
         {"str", "hello"}
     }));
-    EXPECT_TRUE(validate_for_canonical(json{
+    EXPECT_TRUE(validate_for_canonical(Json{
         {"arr", {1, 2, 3}}
     }));
 }

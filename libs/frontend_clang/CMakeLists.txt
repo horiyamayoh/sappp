@@ -9,6 +9,11 @@ if (LLVM_FOUND)
         option
         irreader
     )
+
+    target_include_directories(sappp_frontend_clang SYSTEM PRIVATE
+        ${LLVM_INCLUDE_DIRS}
+        ${CLANG_INCLUDE_DIRS}
+    )
 endif()
 
 target_include_directories(sappp_frontend_clang PUBLIC

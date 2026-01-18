@@ -130,7 +130,7 @@ std::string CertStore::index_schema_path() const
     return (fs::path(m_schema_dir) / "cert_index.v1.schema.json").string();
 }
 
-sappp::Result<std::string> CertStore::canonical_hash(const nlohmann::json& cert) const
+sappp::Result<std::string> CertStore::canonical_hash(const nlohmann::json& cert)
 {
     return sappp::canonical::hash_canonical(cert);
 }
@@ -139,10 +139,10 @@ sappp::Result<std::string> CertStore::object_path_for_hash(const std::string& ha
 {
     // Allow hashes with or without a "sha256:" prefix, but always shard based on
     // the first two hex characters of the digest portion.
-    constexpr std::string_view prefix = "sha256:";
-    std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0uz;
+    constexpr std::string_view kPrefix = "sha256:";
+    std::size_t digest_start = hash.starts_with(kPrefix) ? kPrefix.size() : 0UZ;
 
-    if (hash.size() < digest_start + 2uz) {
+    if (hash.size() < digest_start + 2UZ) {
         return std::unexpected(Error::make("InvalidHash", "Hash is too short: " + hash));
     }
 
@@ -161,8 +161,7 @@ std::string CertStore::index_path_for_po(const std::string& po_id) const
     return index_path.string();
 }
 
-sappp::VoidResult CertStore::write_json_file(const std::string& path,
-                                             const nlohmann::json& payload) const
+sappp::VoidResult CertStore::write_json_file(const std::string& path, const nlohmann::json& payload)
 {
     fs::path out_path(path);
     ensure_parent_dir(out_path);
@@ -186,7 +185,7 @@ sappp::VoidResult CertStore::write_json_file(const std::string& path,
     return {};
 }
 
-sappp::Result<nlohmann::json> CertStore::read_json_file(const std::string& path) const
+sappp::Result<nlohmann::json> CertStore::read_json_file(const std::string& path)
 {
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {

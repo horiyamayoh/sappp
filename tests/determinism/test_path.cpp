@@ -62,7 +62,7 @@ TEST(PathNormalization, IsAbsolute)
 
 TEST(PathNormalization, MakeRelative)
 {
-    EXPECT_EQ(make_relative("/a/b/c", "/a/b"), "c");
-    EXPECT_EQ(make_relative("/a/b/c", "/a/d"), "../b/c");
-    EXPECT_EQ(make_relative("/a/b", "/a/b"), ".");
+    EXPECT_EQ(make_relative({"/a/b/c", "/a/b"}), "c");
+    EXPECT_EQ(make_relative({"/a/b/c", "/a/d"}), "../b/c");
+    EXPECT_EQ(make_relative({"/a/b", "/a/b"}), ".");
 }

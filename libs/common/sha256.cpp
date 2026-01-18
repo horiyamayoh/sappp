@@ -25,7 +25,7 @@ namespace sappp::common {
 namespace {
 
 // SHA-256 constants (constexpr)
-constexpr std::array<uint32_t, 64> K = {
+constexpr std::array<uint32_t, 64> kRoundConstants = {
     {0x42'8a'2f'98, 0x71'37'44'91, 0xb5'c0'fb'cf, 0xe9'b5'db'a5, 0x39'56'c2'5b, 0x59'f1'11'f1,
      0x92'3f'82'a4, 0xab'1c'5e'd5, 0xd8'07'aa'98, 0x12'83'5b'01, 0x24'31'85'be, 0x55'0c'7d'c3,
      0x72'be'5d'74, 0x80'de'b1'fe, 0x9b'dc'06'a7, 0xc1'9b'f1'74, 0xe4'9b'69'c1, 0xef'be'47'86,
@@ -73,37 +73,30 @@ constexpr std::array<uint32_t, 64> K = {
 class SHA256
 {
 public:
-    SHA256()
-        : state_{}
-        , buffer_{}
-        , buffer_len_{0}
-        , count_{0}
-    {
-        reset();
-    }
+    SHA256() { reset(); }
 
     void reset()
     {
-        state_[0] = 0x6a'09'e6'67;
-        state_[1] = 0xbb'67'ae'85;
-        state_[2] = 0x3c'6e'f3'72;
-        state_[3] = 0xa5'4f'f5'3a;
-        state_[4] = 0x51'0e'52'7f;
-        state_[5] = 0x9b'05'68'8c;
-        state_[6] = 0x1f'83'd9'ab;
-        state_[7] = 0x5b'e0'cd'19;
-        count_ = 0;
-        buffer_len_ = 0;
+        m_state = std::array<uint32_t, 8>{
+            {0x6a'09'e6'67,
+             0xbb'67'ae'85, 0x3c'6e'f3'72,
+             0xa5'4f'f5'3a, 0x51'0e'52'7f,
+             0x9b'05'68'8c, 0x1f'83'd9'ab,
+             0x5b'e0'cd'19}
+        };
+        m_count = 0;
+        m_buffer_len = 0;
     }
 
     void update(std::span<const std::byte> data)
     {
         for (auto byte : data) {
-            buffer_[buffer_len_++] = std::to_integer<uint8_t>(byte);
-            if (buffer_len_ == 64) {
+            m_buffer.at(m_buffer_len) = std::to_integer<uint8_t>(byte);
+            ++m_buffer_len;
+            if (m_buffer_len == m_buffer.size()) {
                 transform();
-                count_ += 512;
-                buffer_len_ = 0;
+                m_count += 512;
+                m_buffer_len = 0;
             }
         }
     }
@@ -114,34 +107,40 @@ public:
 
     std::array<uint8_t, 32> finalize()
     {
-        uint64_t total_bits = count_ + buffer_len_ * 8;
+        uint64_t total_bits = m_count + m_buffer_len * 8;
 
         // Padding
-        buffer_[buffer_len_++] = 0x80;
-        if (buffer_len_ > 56) {
-            while (buffer_len_ < 64)
-                buffer_[buffer_len_++] = 0;
+        m_buffer.at(m_buffer_len) = 0x80;
+        ++m_buffer_len;
+        if (m_buffer_len > 56) {
+            while (m_buffer_len < 64) {
+                m_buffer.at(m_buffer_len) = 0;
+                ++m_buffer_len;
+            }
             transform();
-            buffer_len_ = 0;
+            m_buffer_len = 0;
         }
-        while (buffer_len_ < 56)
-            buffer_[buffer_len_++] = 0;
+        while (m_buffer_len < 56) {
+            m_buffer.at(m_buffer_len) = 0;
+            ++m_buffer_len;
+        }
 
         // Length (big-endian)
         for (auto i : std::views::iota(0, 8) | std::views::reverse) {
             const auto shift = static_cast<uint64_t>(i) * 8U;
-            buffer_[buffer_len_++] = static_cast<uint8_t>(total_bits >> shift);
+            m_buffer.at(m_buffer_len) = static_cast<uint8_t>(total_bits >> shift);
+            ++m_buffer_len;
         }
         transform();
 
         // Output (big-endian) using views::enumerate
-        std::array<uint8_t, 32> hash;
-        for (auto [i, state] : std::views::enumerate(state_)) {
-            const auto idx = static_cast<std::size_t>(i) * 4uz;
-            hash[idx + 0uz] = static_cast<uint8_t>(state >> 24);
-            hash[idx + 1uz] = static_cast<uint8_t>(state >> 16);
-            hash[idx + 2uz] = static_cast<uint8_t>(state >> 8);
-            hash[idx + 3uz] = static_cast<uint8_t>(state);
+        std::array<uint8_t, 32> hash{};
+        for (auto [i, state] : std::views::enumerate(m_state)) {
+            const std::size_t idx = static_cast<std::size_t>(i) * std::size_t{4};
+            hash.at(idx) = static_cast<uint8_t>(state >> 24);
+            hash.at(idx + std::size_t{1}) = static_cast<uint8_t>(state >> 16);
+            hash.at(idx + std::size_t{2}) = static_cast<uint8_t>(state >> 8);
+            hash.at(idx + std::size_t{3}) = static_cast<uint8_t>(state);
         }
         return hash;
     }
@@ -149,35 +148,36 @@ public:
 private:
     void transform()
     {
-        std::array<uint32_t, 64> w;
+        std::array<uint32_t, 64> schedule{};
 
         // Prepare message schedule using std::byteswap for big-endian conversion
-        std::span<uint32_t, 64> schedule(w);
-        for (auto [i, slot] : std::views::enumerate(schedule.first(16))) {
-            const auto idx = static_cast<std::size_t>(i);
+        for (std::size_t i = 0; i < 16; ++i) {
+            const std::size_t buffer_index = i * std::size_t{4};
             uint32_t val{};
-            std::memcpy(&val, &buffer_[idx * 4uz], sizeof(val));
-            // Convert from big-endian to native
+            std::memcpy(&val, &m_buffer.at(buffer_index), sizeof(val));
             if constexpr (std::endian::native == std::endian::little) {
-                slot = std::byteswap(val);
+                schedule.at(i) = std::byteswap(val);
             } else {
-                slot = val;
+                schedule.at(i) = val;
             }
         }
-        for (auto [i, slot] : std::views::enumerate(schedule.subspan(16))) {
-            const auto idx = static_cast<std::size_t>(i) + 16uz;
-            slot = gamma1(schedule[idx - 2]) + schedule[idx - 7] + gamma0(schedule[idx - 15])
-                   + schedule[idx - 16];
+        for (std::size_t i = 16; i < schedule.size(); ++i) {
+            schedule.at(i) = gamma1(schedule.at(i - 2)) + schedule.at(i - 7)
+                             + gamma0(schedule.at(i - 15)) + schedule.at(i - 16);
         }
 
-        // Working variables
-        uint32_t a = state_[0], b = state_[1], c = state_[2], d = state_[3];
-        uint32_t e = state_[4], f = state_[5], g = state_[6], h = state_[7];
+        uint32_t a = m_state.at(0);
+        uint32_t b = m_state.at(1);
+        uint32_t c = m_state.at(2);
+        uint32_t d = m_state.at(3);
+        uint32_t e = m_state.at(4);
+        uint32_t f = m_state.at(5);
+        uint32_t g = m_state.at(6);
+        uint32_t h = m_state.at(7);
 
-        // Compression
         for (auto [i, w_val] : std::views::enumerate(schedule)) {
             const auto idx = static_cast<std::size_t>(i);
-            uint32_t t1 = h + sigma1(e) + ch(e, f, g) + K[idx] + w_val;
+            uint32_t t1 = h + sigma1(e) + ch(e, f, g) + kRoundConstants.at(idx) + w_val;
             uint32_t t2 = sigma0(a) + maj(a, b, c);
             h = g;
             g = f;
@@ -189,20 +189,20 @@ private:
             a = t1 + t2;
         }
 
-        state_[0] += a;
-        state_[1] += b;
-        state_[2] += c;
-        state_[3] += d;
-        state_[4] += e;
-        state_[5] += f;
-        state_[6] += g;
-        state_[7] += h;
+        m_state.at(0) += a;
+        m_state.at(1) += b;
+        m_state.at(2) += c;
+        m_state.at(3) += d;
+        m_state.at(4) += e;
+        m_state.at(5) += f;
+        m_state.at(6) += g;
+        m_state.at(7) += h;
     }
 
-    std::array<uint32_t, 8> state_;
-    std::array<uint8_t, 64> buffer_;
-    size_t buffer_len_;
-    uint64_t count_;
+    std::array<uint32_t, 8> m_state{};
+    std::array<uint8_t, 64> m_buffer{};
+    std::size_t m_buffer_len = 0;
+    uint64_t m_count = 0;
 };
 
 [[nodiscard]] std::string to_hex(const std::array<uint8_t, 32>& hash)

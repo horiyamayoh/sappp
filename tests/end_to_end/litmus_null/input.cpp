@@ -1,7 +1,7 @@
 // Litmus test: Null pointer dereference
 // Expected: BUG (null deref is reachable)
 
-int deref(int* ptr)
+int deref(const int* ptr)
 {
     return *ptr;  // PO: ptr != nullptr
 }
