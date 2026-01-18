@@ -9,7 +9,7 @@
 
 ---
 Language: Cpp
-Standard: c++23
+Standard: Latest  # C++23 を使用（clang-format 18 では "Latest" を指定）
 
 # ベーススタイル
 BasedOnStyle: LLVM
