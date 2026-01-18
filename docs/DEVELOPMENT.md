@@ -51,11 +51,23 @@ Dev Container を使わない場合でも、Docker で CI 同等の環境を利�
 # フルチェック
 ./scripts/docker-ci.sh
 
+# 変更内容に応じて最小化
+./scripts/docker-ci.sh --smart
+
+# CI互換の厳格チェック
+./scripts/docker-ci.sh --ci
+
 # 高速チェック
 ./scripts/docker-ci.sh --quick
 
 # インタラクティブシェル
 ./scripts/docker-ci.sh --shell
+
+# スタンプを書き込む（pre-push 連携用）
+./scripts/docker-ci.sh --stamp
+
+# ビルドキャッシュを使う（ローカル高速化）
+./scripts/docker-ci.sh --cache
 ```
 
 ### ローカル環境構築（Ubuntu 24.04）
@@ -167,6 +179,7 @@ make clean          # クリーン
 make format         # フォーマット適用
 make format-check   # フォーマットチェック
 make tidy           # clang-tidy 実行
+make smart          # 変更内容に応じたチェック
 ```
 
 ---
@@ -224,6 +237,12 @@ ctest --test-dir build -j$(nproc) --output-on-failure
     作業中           pre-commit         push後
 ```
 
+推奨するローカルゲート:
+
+- L0: `./scripts/quick-check.sh`（最速）
+- L1: `./scripts/pre-commit-check.sh --smart`（変更内容に応じて最小化）
+- L2: `./scripts/pre-commit-check.sh --ci` or `./scripts/docker-ci.sh --ci`（CI互換）
+
 ### GitHub Actions ジョブ
 
 | ジョブ | 内容 |
@@ -238,13 +257,22 @@ ctest --test-dir build -j$(nproc) --output-on-failure
 
 ```bash
 # Docker で完全再現（推奨）
-./scripts/docker-ci.sh
+./scripts/docker-ci.sh --ci
 
 # ローカル環境で実行（コミット前フルチェック）
-./scripts/pre-commit-check.sh
+./scripts/pre-commit-check.sh --ci
 
 # pre-push のスタンプ確認（高速）
 ./scripts/pre-push-check.sh
+```
+
+pre-commit hook はデフォルトで `smart` モードを使用します。必要に応じて環境変数で切り替え可能です:
+
+```bash
+SAPPP_PRE_COMMIT_MODE=quick  # 高速
+SAPPP_PRE_COMMIT_MODE=smart  # 変更内容に応じて最小化（デフォルト）
+SAPPP_PRE_COMMIT_MODE=full   # フルチェック
+SAPPP_PRE_COMMIT_MODE=ci     # CI互換の厳格モード
 ```
 
 ---

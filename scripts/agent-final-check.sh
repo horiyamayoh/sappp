@@ -72,8 +72,8 @@ if [ "$MODE" = "quick" ]; then
     LOCAL_CMD="./scripts/quick-check.sh"
     DOCKER_CMD="./scripts/docker-ci.sh --quick"
 else
-    LOCAL_CMD="./scripts/pre-commit-check.sh"
-    DOCKER_CMD="./scripts/docker-ci.sh"
+    LOCAL_CMD="./scripts/pre-commit-check.sh --ci"
+    DOCKER_CMD="./scripts/docker-ci.sh --ci"
 fi
 
 select_command() {

@@ -6,7 +6,7 @@
 #   ./scripts/install-hooks.sh --remove  # hooks を削除
 #
 # インストールされるフック:
-#   pre-commit: フルチェック（Docker優先）
+#   pre-commit: 変更内容に応じた smart チェック（Docker優先）
 #   pre-push:   フルチェック済みスタンプ確認（高速）
 
 set -euo pipefail
@@ -88,17 +88,26 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 export SAPPP_CI_STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$REPO_ROOT/.git/sappp/ci-stamp.json}"
 cd "$REPO_ROOT"
 
-# 実行モード（full/quick）
-PRE_COMMIT_MODE="${SAPPP_PRE_COMMIT_MODE:-full}"
+# 実行モード（smart/full/quick/ci）
+PRE_COMMIT_MODE="${SAPPP_PRE_COMMIT_MODE:-smart}"
 
 # Docker環境内かどうかを検出
 if [ -n "${SAPPP_CI_ENV:-}" ]; then
     # Docker/DevContainer内 - 直接実行
-    if [ "$PRE_COMMIT_MODE" = "quick" ]; then
-        CHECK_CMD="./scripts/quick-check.sh"
-    else
-        CHECK_CMD="./scripts/pre-commit-check.sh"
-    fi
+    case "$PRE_COMMIT_MODE" in
+        quick)
+            CHECK_CMD="./scripts/quick-check.sh"
+            ;;
+        smart)
+            CHECK_CMD="./scripts/pre-commit-check.sh --smart"
+            ;;
+        ci)
+            CHECK_CMD="./scripts/pre-commit-check.sh --ci"
+            ;;
+        *)
+            CHECK_CMD="./scripts/pre-commit-check.sh"
+            ;;
+    esac
     if $CHECK_CMD; then
         echo -e "${GREEN}✓ Pre-commit check passed${NC}"
         exit 0
@@ -115,11 +124,20 @@ if command -v docker &> /dev/null && docker info &> /dev/null; then
     # Dockerイメージがあるか確認
     if docker image inspect sappp-ci &> /dev/null; then
         echo -e "${BLUE}Docker環境で実行中...${NC}"
-        if [ "$PRE_COMMIT_MODE" = "quick" ]; then
-            DOCKER_CMD="./scripts/docker-ci.sh --quick"
-        else
-            DOCKER_CMD="./scripts/docker-ci.sh"
-        fi
+        case "$PRE_COMMIT_MODE" in
+            quick)
+                DOCKER_CMD="./scripts/docker-ci.sh --quick --stamp"
+                ;;
+            smart)
+                DOCKER_CMD="./scripts/docker-ci.sh --smart --stamp"
+                ;;
+            ci)
+                DOCKER_CMD="./scripts/docker-ci.sh --ci --stamp"
+                ;;
+            *)
+                DOCKER_CMD="./scripts/docker-ci.sh --stamp"
+                ;;
+        esac
         if $DOCKER_CMD; then
             echo -e "${GREEN}✓ Pre-commit check passed${NC}"
             exit 0
@@ -132,11 +150,20 @@ if command -v docker &> /dev/null && docker info &> /dev/null; then
 fi
 
 # フォールバック: ローカルで実行
-if [ "$PRE_COMMIT_MODE" = "quick" ]; then
-    CHECK_CMD="./scripts/quick-check.sh"
-else
-    CHECK_CMD="./scripts/pre-commit-check.sh"
-fi
+case "$PRE_COMMIT_MODE" in
+    quick)
+        CHECK_CMD="./scripts/quick-check.sh"
+        ;;
+    smart)
+        CHECK_CMD="./scripts/pre-commit-check.sh --smart"
+        ;;
+    ci)
+        CHECK_CMD="./scripts/pre-commit-check.sh --ci"
+        ;;
+    *)
+        CHECK_CMD="./scripts/pre-commit-check.sh"
+        ;;
+esac
 if $CHECK_CMD; then
     echo -e "${GREEN}✓ Pre-commit check passed${NC}"
     exit 0
@@ -196,6 +223,9 @@ case "$PRE_PUSH_MODE" in
     quick)
         ./scripts/quick-check.sh
         ;;
+    ci)
+        ./scripts/pre-commit-check.sh --ci
+        ;;
     full)
         ./scripts/pre-commit-check.sh
         ;;
@@ -217,7 +247,7 @@ echo -e "${GREEN}✓ pre-push hook をインストールしました${NC}"
 echo -e "\n${GREEN}━━━ Git Hooks インストール完了 ━━━${NC}"
 echo ""
 echo "インストールされたフック:"
-echo "  • pre-commit: コミット前にフルチェックを実行（Docker優先）"
+echo "  • pre-commit: コミット前に smart チェックを実行（Docker優先）"
 echo "  • pre-push:   プッシュ前にフルチェック済みスタンプを確認（高速）"
 echo ""
 echo "使い方:"
@@ -226,5 +256,7 @@ echo "  • 通常のプッシュ: git push"
 echo "  • コミットスキップ: SKIP_PRE_COMMIT=1 git commit -m '...'"
 echo "  • プッシュスキップ: SKIP_PRE_PUSH=1 git push"
 echo "  • pre-commit 速度優先: SAPPP_PRE_COMMIT_MODE=quick git commit -m '...'"
-echo "  • pre-push モード指定: SAPPP_PRE_PUSH_MODE=stamp|quick|full|off git push"
+echo "  • pre-commit 変更最適: SAPPP_PRE_COMMIT_MODE=smart git commit -m '...'"
+echo "  • pre-commit CI互換:   SAPPP_PRE_COMMIT_MODE=ci git commit -m '...'"
+echo "  • pre-push モード指定: SAPPP_PRE_PUSH_MODE=stamp|quick|ci|full|off git push"
 echo "  • フック削除: ./scripts/install-hooks.sh --remove"

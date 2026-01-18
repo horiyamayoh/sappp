@@ -8,7 +8,7 @@
 #
 # このMakefileはCI/ローカルで共通のコマンドを提供します。
 
-.PHONY: help quick ci docker-ci build test clean format tidy install-hooks check-env
+.PHONY: help quick smart ci docker-ci build test clean format tidy install-hooks check-env
 
 # デフォルトターゲット
 .DEFAULT_GOAL := help
@@ -61,6 +61,7 @@ help:
 	@echo ""
 	@echo "$(BLUE)開発ワークフロー:$(NC)"
 	@echo "  make quick       高速チェック（30秒以内、作業中に推奨）"
+	@echo "  make smart       変更内容に応じて最小化したチェック"
 	@echo "  make ci          フルCIチェック（コミット前推奨）"
 	@echo "  make docker-ci   Docker環境でフルCIチェック（確実）"
 	@echo ""
@@ -94,16 +95,22 @@ quick:
 	@./scripts/quick-check.sh
 
 # ===========================================================================
+# 変更内容に応じたチェック
+# ===========================================================================
+smart:
+	@./scripts/pre-commit-check.sh --smart
+
+# ===========================================================================
 # フルCIチェック（コミット前）
 # ===========================================================================
 ci:
-	@./scripts/pre-commit-check.sh
+	@./scripts/pre-commit-check.sh --ci
 
 # ===========================================================================
 # Docker CIチェック（確実）
 # ===========================================================================
 docker-ci:
-	@./scripts/docker-ci.sh
+	@./scripts/docker-ci.sh --ci
 
 docker-quick:
 	@./scripts/docker-ci.sh --quick

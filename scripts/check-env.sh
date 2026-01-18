@@ -288,8 +288,9 @@ echo ""
 echo -e "${BLUE}推奨ワークフロー:${NC}"
 echo "  1. make install-hooks    # Git hooks インストール"
 echo "  2. make quick            # 任意の高速チェック"
-echo "  3. git commit            # フルチェックが自動実行"
-echo "  4. git push              # スタンプ確認のみ（高速）"
+echo "  3. make smart            # 変更内容に応じたチェック"
+echo "  4. git commit            # pre-commit hook が実行"
+echo "  5. git push              # スタンプ確認のみ（高速）"
 
 if [ $ERRORS -gt 0 ]; then
     exit 1

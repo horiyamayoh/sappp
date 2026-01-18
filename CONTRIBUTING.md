@@ -34,10 +34,13 @@ Docker だけで CI と同等のチェックを実行できます。
 
 ```bash
 # フルチェック（コミット前 / CI再現）
-./scripts/docker-ci.sh
+./scripts/docker-ci.sh --ci
 
 # 高速チェック（作業中）
 ./scripts/docker-ci.sh --quick
+
+# 変更内容に応じて最小化
+./scripts/docker-ci.sh --smart
 
 # デバッグ用シェル
 ./scripts/docker-ci.sh --shell
@@ -93,10 +96,13 @@ make install-hooks
 # 高速チェック（30秒以内、任意）
 make quick
 
-# コミット（pre-commit hook がフルチェック + スタンプ保存）
+# 変更内容に応じたチェック（任意）
+make smart
+
+# コミット（pre-commit hook が smart チェック + スタンプ保存）
 git commit -m "変更内容"
 
-# 必要ならDockerでフルチェック（CI再現）
+# 必要ならDockerでCI互換チェック（CI再現）
 make docker-ci
 
 # プッシュ（pre-push hook はスタンプ確認のみ）
@@ -115,6 +121,7 @@ SAPPP_BUILD_JOBS=8 SAPPP_USE_CCACHE=1 make quick
 ```bash
 make help           # コマンド一覧
 make quick          # 高速チェック（作業中）
+make smart          # 変更内容に応じたチェック
 make ci             # フルCIチェック（コミット前）
 make docker-ci      # Docker環境でフルCIチェック
 make build          # ビルドのみ
@@ -132,8 +139,8 @@ make tidy           # clang-tidy 実行
 | ゲート | タイミング | 内容 |
 |-------|----------|------|
 | **L0: Quick** | 任意（作業中） | format + build + quick test（30秒以内） |
-| **L1: Commit Gate** | pre-commit | 全 build + 全 test + determinism + tidy + スキーマ検証 |
-| **L2: Remote CI** | push後 | GCC/Clang マトリクス + スキーマ検証 |
+| **L1: Commit Gate** | pre-commit | 変更内容に応じた build/test/tidy/スキーマ検証 |
+| **L2: Remote CI** | push後 | GCC/Clang マトリクス + determinism + tidy + スキーマ検証 |
 
 ### 必須要件
 

@@ -237,5 +237,6 @@ if [ $ELAPSED -gt 30 ]; then
     echo -e "${YELLOW}⚠ 目標の30秒を超えました。フルビルドが必要かもしれません。${NC}"
 fi
 
-echo -e "${BLUE}フルチェック: ./scripts/pre-commit-check.sh${NC}"
-echo -e "${BLUE}Docker CI:    ./scripts/docker-ci.sh${NC}"
+echo -e "${BLUE}smart チェック: ./scripts/pre-commit-check.sh --smart${NC}"
+echo -e "${BLUE}CI互換チェック: ./scripts/pre-commit-check.sh --ci${NC}"
+echo -e "${BLUE}Docker CI:      ./scripts/docker-ci.sh --ci${NC}"

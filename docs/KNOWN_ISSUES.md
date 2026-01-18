@@ -107,6 +107,7 @@ cd /home/dhuru/04_SAP++ && ./build/bin/test_po_generator --gtest_filter=PoGenera
 ### 対応
 - Clang 19 を前提に clang-tidy を実行。
 - `pre-commit-check.sh` で Clang ビルドの `compile_commands.json` を優先使用。
+- CI の clang-tidy も Clang ビルド由来の `compile_commands.json` を使用する。
 
 ### 関連ファイル
 - `/home/dhuru/04_SAP++/.clang-tidy`

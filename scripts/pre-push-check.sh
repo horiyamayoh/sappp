@@ -2,9 +2,10 @@
 # pre-push-check.sh - pre-push 時の軽量チェック（フルチェック済みの確認）
 #
 # 使い方:
-#   ./scripts/pre-push-check.sh           # スタンプ確認のみ（デフォルト）
-#   ./scripts/pre-push-check.sh --strict  # スタンプ不一致をエラー扱い
-#   ./scripts/pre-push-check.sh --help    # ヘルプ表示
+#   ./scripts/pre-push-check.sh                 # スタンプ確認のみ（デフォルト）
+#   ./scripts/pre-push-check.sh --strict        # スタンプ不一致をエラー扱い
+#   ./scripts/pre-push-check.sh --require=full  # 受け入れるモードを指定
+#   ./scripts/pre-push-check.sh --help          # ヘルプ表示
 
 set -euo pipefail
 
@@ -22,6 +23,7 @@ cd "$PROJECT_ROOT"
 
 STRICT_MODE=false
 STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$PROJECT_ROOT/.git/sappp/ci-stamp.json}"
+REQUIRED_MODES="${SAPPP_PRE_PUSH_REQUIRE:-full,ci}"
 
 for arg in "$@"; do
     case $arg in
@@ -31,6 +33,9 @@ for arg in "$@"; do
         --stamp-file=*)
             STAMP_FILE="${arg#*=}"
             ;;
+        --require=*)
+            REQUIRED_MODES="${arg#*=}"
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -39,6 +44,7 @@ for arg in "$@"; do
             echo "Options:"
             echo "  --strict        スタンプ不一致をエラー扱い"
             echo "  --stamp-file=   スタンプファイルのパスを指定"
+            echo "  --require=      受け入れる check_mode（例: full,ci,smart）"
             echo "  --help, -h      このヘルプを表示"
             exit 0
             ;;
@@ -84,7 +90,7 @@ fi
 
 if [ ! -f "$STAMP_FILE" ]; then
     echo -e "${YELLOW}⚠ スタンプが見つかりません: $STAMP_FILE${NC}"
-    echo -e "${YELLOW}  推奨: ./scripts/pre-commit-check.sh${NC}"
+    echo -e "${YELLOW}  推奨: ./scripts/pre-commit-check.sh --ci${NC}"
     if [ "$STRICT_MODE" = true ]; then
         exit 1
     fi
@@ -93,16 +99,38 @@ fi
 
 CHECK_MODE="$(extract_json_value "check_mode")"
 TREE_HASH="$(extract_json_value "tree_hash")"
+SKIPPED_STEPS="$(extract_json_value "skipped_steps")"
+TIDY_SCOPE="$(extract_json_value "tidy_scope")"
 
 HEAD_TREE=""
 if git rev-parse --verify HEAD > /dev/null 2>&1; then
     HEAD_TREE="$(git rev-parse HEAD^{tree})"
 fi
 
+mode_allowed() {
+    local mode="$1"
+    local IFS=,
+    for allowed in $REQUIRED_MODES; do
+        if [ "$allowed" = "$mode" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 OK=true
-if [ "$CHECK_MODE" != "full" ]; then
-    echo -e "${YELLOW}⚠ スタンプはフルチェックではありません (mode=$CHECK_MODE)${NC}"
+if ! mode_allowed "$CHECK_MODE"; then
+    echo -e "${YELLOW}⚠ スタンプのモードが要件を満たしていません (mode=$CHECK_MODE)${NC}"
+    echo -e "${YELLOW}  required: $REQUIRED_MODES${NC}"
     OK=false
+fi
+
+if [ -n "$SKIPPED_STEPS" ]; then
+    echo -e "${YELLOW}⚠ スタンプにスキップ済みチェックがあります: $SKIPPED_STEPS${NC}"
+fi
+
+if [ -n "$TIDY_SCOPE" ]; then
+    echo -e "${BLUE}ℹ clang-tidy scope: $TIDY_SCOPE${NC}"
 fi
 
 if [ -z "$TREE_HASH" ] || [ -z "$HEAD_TREE" ]; then
@@ -121,7 +149,7 @@ if [ "$OK" = true ]; then
 fi
 
 echo -e "${YELLOW}⚠ フルチェック済みの確認に失敗しました${NC}"
-echo -e "${YELLOW}  推奨: ./scripts/pre-commit-check.sh${NC}"
+echo -e "${YELLOW}  推奨: ./scripts/pre-commit-check.sh --ci${NC}"
 if [ "$STRICT_MODE" = true ]; then
     exit 1
 fi

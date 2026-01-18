@@ -90,7 +90,8 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-19 \
             -DSAPPP_BUILD_TESTS=ON \
             -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
-            -DSAPPP_WERROR=ON
+            -DSAPPP_WERROR=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -101,6 +102,11 @@ jobs:
       - name: Run Determinism Tests
         run: ctest --test-dir build -R determinism --output-on-failure
 
+      - name: Upload compile_commands.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands-clang
+          path: build/compile_commands.json
   # ===========================================================================
   # Code Format Check (clang-format)
   # ===========================================================================
@@ -129,7 +135,7 @@ jobs:
   tidy-check:
     name: Static Analysis (clang-tidy)
     runs-on: ubuntu-24.04
-    needs: build-gcc  # Need compile_commands.json
+    needs: build-clang  # Need compile_commands.json
 
     steps:
       - name: Checkout
@@ -138,12 +144,12 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-14 g++-14 clang-tidy-19 cmake ninja-build
+          sudo apt-get install -y clang-19 clang-tidy-19 libstdc++-14-dev cmake ninja-build
 
       - name: Download compile_commands.json
         uses: actions/download-artifact@v4
         with:
-          name: compile-commands-gcc
+          name: compile-commands-clang
           path: build/
 
       - name: Configure (for headers)
@@ -151,8 +157,8 @@ jobs:
           cmake -S . -B build \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
-            -DCMAKE_C_COMPILER=gcc-14 \
-            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DCMAKE_C_COMPILER=clang-19 \
+            -DCMAKE_CXX_COMPILER=clang++-19 \
             -DSAPPP_BUILD_TESTS=ON \
             -DSAPPP_BUILD_CLANG_FRONTEND=OFF
 

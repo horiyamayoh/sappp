@@ -28,12 +28,21 @@ cd "$PROJECT_ROOT"
 IMAGE_NAME="sappp-ci"
 COMMAND="./scripts/pre-commit-check.sh"
 INTERACTIVE=false
+WRITE_STAMP=false
+USE_TMPFS=true
+ENABLE_CCACHE=false
 
 # オプション解析
 for arg in "$@"; do
     case $arg in
         --quick)
             COMMAND="./scripts/quick-check.sh"
+            ;;
+        --smart)
+            COMMAND="./scripts/pre-commit-check.sh --smart"
+            ;;
+        --ci)
+            COMMAND="./scripts/pre-commit-check.sh --ci"
             ;;
         --build-only)
             COMMAND="cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DSAPPP_BUILD_TESTS=ON -DSAPPP_WERROR=ON && cmake --build build --parallel"
@@ -42,6 +51,19 @@ for arg in "$@"; do
             COMMAND="/bin/bash"
             INTERACTIVE=true
             ;;
+        --stamp)
+            WRITE_STAMP=true
+            ;;
+        --cache-build)
+            USE_TMPFS=false
+            ;;
+        --ccache)
+            ENABLE_CCACHE=true
+            ;;
+        --cache)
+            USE_TMPFS=false
+            ENABLE_CCACHE=true
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -49,8 +71,14 @@ for arg in "$@"; do
             echo ""
             echo "Options:"
             echo "  --quick       高速チェックのみ（format + build + test）"
+            echo "  --smart       変更内容に応じて最小化したチェック"
+            echo "  --ci          CIと同一の厳格モード"
             echo "  --build-only  ビルドのみ実行"
             echo "  --shell       コンテナ内でシェルを起動（デバッグ用）"
+            echo "  --stamp       成功時にスタンプを保存（ホスト側に出力）"
+            echo "  --cache-build build/ を tmpfs ではなくホストに保存"
+            echo "  --ccache      ccache を永続化して高速化"
+            echo "  --cache       --cache-build + --ccache"
             echo "  --help, -h    このヘルプを表示"
             echo ""
             echo "Examples:"
@@ -115,22 +143,46 @@ main() {
     HOST_UID=$(id -u)
     HOST_GID=$(id -g)
     
-    # Docker内ではスタンプファイルを無効化（ホストの.gitへの書き込みを避ける）
-    # スタンプはpre-commit hook側でDocker実行後に書く
+    STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$PROJECT_ROOT/.git/sappp/ci-stamp.json}"
+
+    if [ "$ENABLE_CCACHE" = true ]; then
+        mkdir -p "$PROJECT_ROOT/.cache/ccache"
+    fi
+
     DOCKER_OPTS=(
         --rm
         --user "$HOST_UID:$HOST_GID"
         -v "$PROJECT_ROOT:/workspace"
-        --tmpfs "/workspace/build:exec,uid=$HOST_UID,gid=$HOST_GID"
-        --tmpfs "/workspace/build-clang:exec,uid=$HOST_UID,gid=$HOST_GID"
         -w /workspace
         -e "TERM=xterm-256color"
         -e "SAPPP_CI_ENV=docker"
-        -e "SAPPP_CI_STAMP_FILE="
         -e "SAPPP_BUILD_JOBS=${SAPPP_BUILD_JOBS:-}"
-        -e "SAPPP_USE_CCACHE=${SAPPP_USE_CCACHE:-0}"
         -e "HOME=/tmp"
     )
+
+    if [ "$WRITE_STAMP" = true ]; then
+        DOCKER_OPTS+=(-e "SAPPP_CI_STAMP_FILE=$STAMP_FILE")
+    else
+        DOCKER_OPTS+=(-e "SAPPP_CI_STAMP_FILE=")
+    fi
+
+    if [ "$USE_TMPFS" = true ]; then
+        DOCKER_OPTS+=(
+            --tmpfs "/workspace/build:exec,uid=$HOST_UID,gid=$HOST_GID"
+            --tmpfs "/workspace/build-clang:exec,uid=$HOST_UID,gid=$HOST_GID"
+        )
+    fi
+
+    if [ "$ENABLE_CCACHE" = true ]; then
+        DOCKER_OPTS+=(
+            -e "SAPPP_USE_CCACHE=1"
+            -e "CCACHE_DIR=/ccache"
+            -e "CCACHE_BASEDIR=/workspace"
+            -v "$PROJECT_ROOT/.cache/ccache:/ccache"
+        )
+    else
+        DOCKER_OPTS+=(-e "SAPPP_USE_CCACHE=${SAPPP_USE_CCACHE:-0}")
+    fi
     
     if [ "$INTERACTIVE" = true ]; then
         DOCKER_OPTS+=(-it)
