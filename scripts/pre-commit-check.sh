@@ -159,17 +159,23 @@ fi
 
 collect_tidy_files() {
     local files=""
+    # テストファイルと frontend_clang は clang-tidy 対象外
+    # - tests: テストは何でもありにする
+    # - frontend_clang: Clang AST API の制約で警告対応が困難
+    local target_dirs="libs tools include"
+    local exclude_pattern="libs/frontend_clang/"
+    
     if [ "$TIDY_ALL" = true ]; then
-        find libs tools tests include -name "*.cpp" -print
+        find $target_dirs -name "*.cpp" -print | grep -v "$exclude_pattern"
         return 0
     fi
 
     if git rev-parse --git-dir > /dev/null 2>&1; then
         if git rev-parse --verify HEAD > /dev/null 2>&1; then
-            files=$( { git diff --name-only --diff-filter=ACMR HEAD -- libs tools tests include; \
-                git diff --name-only --cached --diff-filter=ACMR HEAD -- libs tools tests include; } | sort -u )
+            files=$( { git diff --name-only --diff-filter=ACMR HEAD -- $target_dirs; \
+                git diff --name-only --cached --diff-filter=ACMR HEAD -- $target_dirs; } | sort -u | grep -v "$exclude_pattern" || true )
         else
-            files=$(git ls-files -- libs tools tests include 2>/dev/null || true)
+            files=$(git ls-files -- $target_dirs 2>/dev/null | grep -v "$exclude_pattern" || true)
         fi
     fi
 
@@ -182,7 +188,7 @@ collect_tidy_files() {
     fi
 
     if [ -z "$files" ]; then
-        find libs tools tests include -name "*.cpp" -print
+        find $target_dirs -name "*.cpp" -print | grep -v "$exclude_pattern"
         return 0
     fi
 

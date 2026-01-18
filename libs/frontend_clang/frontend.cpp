@@ -44,10 +44,10 @@ namespace {
 
 struct SourceMapEntryKey
 {
-    std::string function_uid;
-    std::string block_id;
-    std::string inst_id;
-    nlohmann::json entry;
+    std::string function_uid{};
+    std::string block_id{};
+    std::string inst_id{};
+    nlohmann::json entry{};
 };
 
 std::string current_time_utc()
@@ -106,8 +106,8 @@ sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& 
 
 struct FilePathContext
 {
-    std::string_view cwd;
-    std::string_view file_path;
+    std::string_view cwd{};
+    std::string_view file_path{};
 };
 
 struct LocationContext

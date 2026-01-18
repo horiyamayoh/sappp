@@ -72,6 +72,7 @@ set -euo pipefail
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
 
 echo -e "${YELLOW}━━━ SAP++ Pre-commit Check ━━━${NC}"
@@ -85,6 +86,7 @@ fi
 # スタンプ保存先
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 export SAPPP_CI_STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$REPO_ROOT/.git/sappp/ci-stamp.json}"
+cd "$REPO_ROOT"
 
 # 実行モード（full/quick）
 PRE_COMMIT_MODE="${SAPPP_PRE_COMMIT_MODE:-full}"
@@ -182,6 +184,7 @@ fi
 # スタンプ保存先
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 export SAPPP_CI_STAMP_FILE="${SAPPP_CI_STAMP_FILE:-$REPO_ROOT/.git/sappp/ci-stamp.json}"
+cd "$REPO_ROOT"
 
 PRE_PUSH_MODE="${SAPPP_PRE_PUSH_MODE:-stamp}"
 

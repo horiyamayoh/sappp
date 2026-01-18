@@ -67,13 +67,43 @@ extract_version() {
     echo "$input" | grep -Eo '[0-9]+(\.[0-9]+)+' | head -1
 }
 
+hook_has_any_marker() {
+    local hook_path="$1"
+    shift
+
+    local marker
+    for marker in "$@"; do
+        if command -v rg &> /dev/null; then
+            if rg -F -q "$marker" "$hook_path"; then
+                return 0
+            fi
+        else
+            if grep -F -q "$marker" "$hook_path"; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 # ===========================================================================
 # 1. Git hooks チェック
 # ===========================================================================
 echo -e "${BLUE}▶ Git Hooks${NC}"
 
 if [ -f ".git/hooks/pre-commit" ] && grep -q "SAP++" ".git/hooks/pre-commit" 2>/dev/null; then
-    echo -e "  ${GREEN}✓ pre-commit hook: インストール済み${NC}"
+    if hook_has_any_marker ".git/hooks/pre-commit" "SAPPP_CI_STAMP_FILE" "PRE_COMMIT_MODE"; then
+        echo -e "  ${GREEN}✓ pre-commit hook: インストール済み${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ pre-commit hook: 旧形式の可能性（更新推奨）${NC}"
+        WARNINGS=$((WARNINGS + 1))
+        if [ "$FIX_MODE" = true ]; then
+            echo -e "  ${BLUE}→ 更新中...${NC}"
+            ./scripts/install-hooks.sh
+        else
+            echo -e "  ${YELLOW}  修正: ./scripts/install-hooks.sh${NC}"
+        fi
+    fi
 else
     echo -e "  ${RED}✗ pre-commit hook: 未インストール${NC}"
     WARNINGS=$((WARNINGS + 1))
@@ -86,7 +116,18 @@ else
 fi
 
 if [ -f ".git/hooks/pre-push" ] && grep -q "SAP++" ".git/hooks/pre-push" 2>/dev/null; then
-    echo -e "  ${GREEN}✓ pre-push hook: インストール済み${NC}"
+    if hook_has_any_marker ".git/hooks/pre-push" "SAPPP_PRE_PUSH_MODE" "pre-push-check.sh"; then
+        echo -e "  ${GREEN}✓ pre-push hook: インストール済み${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ pre-push hook: 旧形式の可能性（スタンプ確認推奨）${NC}"
+        WARNINGS=$((WARNINGS + 1))
+        if [ "$FIX_MODE" = true ]; then
+            echo -e "  ${BLUE}→ 更新中...${NC}"
+            ./scripts/install-hooks.sh
+        else
+            echo -e "  ${YELLOW}  修正: ./scripts/install-hooks.sh${NC}"
+        fi
+    fi
 else
     echo -e "  ${YELLOW}⚠ pre-push hook: 未インストール（スタンプ確認に推奨）${NC}"
     if [ "$FIX_MODE" = true ]; then

@@ -79,16 +79,16 @@ struct TripleEntry
 
 constexpr std::array<TripleEntry, 10> kDefaultTriples = {
     {
-     {"linux", "x86_64", "x86_64-unknown-linux-gnu"},
-     {"linux", "aarch64", "aarch64-unknown-linux-gnu"},
-     {"linux", "arm", "arm-unknown-linux-gnueabihf"},
-     {"linux", "x86", "i386-unknown-linux-gnu"},
-     {"macos", "x86_64", "x86_64-apple-darwin"},
-     {"macos", "aarch64", "arm64-apple-darwin"},
-     {"windows", "x86_64", "x86_64-pc-windows-msvc"},
-     {"windows", "x86", "i386-pc-windows-msvc"},
-     {"windows", "arm", "arm-pc-windows-msvc"},
-     {"windows", "aarch64", "aarch64-pc-windows-msvc"},
+     {.os = "linux", .arch = "x86_64", .triple = "x86_64-unknown-linux-gnu"},
+     {.os = "linux", .arch = "aarch64", .triple = "aarch64-unknown-linux-gnu"},
+     {.os = "linux", .arch = "arm", .triple = "arm-unknown-linux-gnueabihf"},
+     {.os = "linux", .arch = "x86", .triple = "i386-unknown-linux-gnu"},
+     {.os = "macos", .arch = "x86_64", .triple = "x86_64-apple-darwin"},
+     {.os = "macos", .arch = "aarch64", .triple = "arm64-apple-darwin"},
+     {.os = "windows", .arch = "x86_64", .triple = "x86_64-pc-windows-msvc"},
+     {.os = "windows", .arch = "x86", .triple = "i386-pc-windows-msvc"},
+     {.os = "windows", .arch = "arm", .triple = "arm-pc-windows-msvc"},
+     {.os = "windows", .arch = "aarch64", .triple = "aarch64-pc-windows-msvc"},
      }
 };
 

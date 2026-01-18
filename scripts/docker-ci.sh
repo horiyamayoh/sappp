@@ -115,6 +115,8 @@ main() {
     HOST_UID=$(id -u)
     HOST_GID=$(id -g)
     
+    # Docker内ではスタンプファイルを無効化（ホストの.gitへの書き込みを避ける）
+    # スタンプはpre-commit hook側でDocker実行後に書く
     DOCKER_OPTS=(
         --rm
         --user "$HOST_UID:$HOST_GID"
@@ -124,7 +126,7 @@ main() {
         -w /workspace
         -e "TERM=xterm-256color"
         -e "SAPPP_CI_ENV=docker"
-        -e "SAPPP_CI_STAMP_FILE=${SAPPP_CI_STAMP_FILE:-}"
+        -e "SAPPP_CI_STAMP_FILE="
         -e "SAPPP_BUILD_JOBS=${SAPPP_BUILD_JOBS:-}"
         -e "SAPPP_USE_CCACHE=${SAPPP_USE_CCACHE:-0}"
         -e "HOME=/tmp"

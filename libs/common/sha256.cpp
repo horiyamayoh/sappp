@@ -107,7 +107,7 @@ public:
 
     std::array<uint8_t, 32> finalize()
     {
-        uint64_t total_bits = m_count + m_buffer_len * 8;
+        uint64_t total_bits = m_count + (m_buffer_len * 8);
 
         // Padding
         m_buffer.at(m_buffer_len) = 0x80;

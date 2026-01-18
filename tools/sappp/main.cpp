@@ -38,8 +38,6 @@
 #include <system_error>
 #include <vector>
 
-[[nodiscard]] int run_cli(int argc, char** argv);
-
 namespace {
 
 void print_version()
@@ -867,6 +865,8 @@ int cmd_explain(int argc, char** argv)
 
 }  // namespace
 
+namespace {
+
 [[nodiscard]] int run_cli(int argc, char** argv)
 {
     try {
@@ -927,6 +927,8 @@ int cmd_explain(int argc, char** argv)
         return 1;
     }
 }
+
+}  // namespace
 
 int main(int argc, char** argv)
 {

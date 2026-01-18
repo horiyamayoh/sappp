@@ -49,13 +49,13 @@ struct PrefixInfo
 [[nodiscard]] std::string normalize_separators(std::string_view input)
 {
     std::string path(input);
-    std::replace(path.begin(), path.end(), '\\', '/');
+    std::ranges::replace(path, '\\', '/');
     return path;
 }
 
 [[nodiscard]] PrefixInfo extract_prefix(std::string_view path)
 {
-    PrefixInfo info{std::string{}, 0};
+    PrefixInfo info{.prefix = std::string{}, .start = 0};
     if (path.size() >= 2 && path[1] == ':') {
         info.prefix = std::string(1, static_cast<char>(std::tolower(path[0]))) + ":";
         info.start = 2;

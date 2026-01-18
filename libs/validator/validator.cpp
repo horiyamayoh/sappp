@@ -149,7 +149,7 @@ struct ValidationContext
 
 [[nodiscard]] ValidationError make_error(const std::string& status, const std::string& message)
 {
-    return {status, status, message};
+    return {.status = status, .reason = status, .message = message};
 }
 
 [[nodiscard]] nlohmann::json make_unknown_result(const std::string& po_id,
@@ -382,7 +382,8 @@ struct PointPredicateInput
     if (!point.contains("state")) {
         return false;
     }
-    return predicate_in_state({&point.at("state"), input.predicate_expr});
+    return predicate_in_state(
+        {.state = &point.at("state"), .predicate_expr = input.predicate_expr});
 }
 
 [[nodiscard]] PredicateCheck check_predicate_implied(const nlohmann::json& evidence,
@@ -404,7 +405,8 @@ struct PointPredicateInput
             continue;
         }
         result.anchor_found = true;
-        result.predicate_implied = point_implies_predicate({&point, &predicate_expr});
+        result.predicate_implied =
+            point_implies_predicate({.point = &point, .predicate_expr = &predicate_expr});
 
         if (result.predicate_implied) {
             break;
@@ -473,11 +475,11 @@ struct RootRefs
 
 [[nodiscard]] RootRefs extract_root_refs(const nlohmann::json& root)
 {
-    return RootRefs{&root.at("depends"),
-                    root.at("po").at("ref").get<std::string>(),
-                    root.at("ir").at("ref").get<std::string>(),
-                    root.at("evidence").at("ref").get<std::string>(),
-                    root.at("result").get<std::string>()};
+    return RootRefs{.depends = &root.at("depends"),
+                    .po_ref = root.at("po").at("ref").get<std::string>(),
+                    .ir_ref = root.at("ir").at("ref").get<std::string>(),
+                    .evidence_ref = root.at("evidence").at("ref").get<std::string>(),
+                    .result_kind = root.at("result").get<std::string>()};
 }
 
 struct ResultValidationInputs
@@ -502,10 +504,10 @@ validate_result_kind(const ResultValidationInputs& inputs)
         return make_validated_result(*inputs.po_id, "BUG", *inputs.root_hash);
     }
     if (*inputs.result_kind == "SAFE") {
-        auto safe_inputs = SafeEvidenceInputs{inputs.depends,
-                                              inputs.po_cert,
-                                              inputs.ir_cert,
-                                              inputs.evidence_cert};
+        auto safe_inputs = SafeEvidenceInputs{.depends = inputs.depends,
+                                              .po_cert = inputs.po_cert,
+                                              .ir_cert = inputs.ir_cert,
+                                              .evidence = inputs.evidence_cert};
         if (auto error = validate_safe_evidence(*inputs.context, safe_inputs)) {
             return finish_or_unknown(*inputs.po_id, *error, *inputs.context);
         }
@@ -615,35 +617,37 @@ validate_result_kind(const ResultValidationInputs& inputs)
         return finish_or_unknown(po_id, make_error_from_result(evidence_cert.error()), context);
     }
 
-    auto result_inputs = ResultValidationInputs{&context,
-                                                &po_id,
-                                                &root_hash,
-                                                &root_refs.result_kind,
-                                                root_refs.depends,
-                                                &(*po_cert),
-                                                &(*ir_cert),
-                                                &(*evidence_cert)};
+    auto result_inputs = ResultValidationInputs{.context = &context,
+                                                .po_id = &po_id,
+                                                .root_hash = &root_hash,
+                                                .result_kind = &root_refs.result_kind,
+                                                .depends = root_refs.depends,
+                                                .po_cert = &(*po_cert),
+                                                .ir_cert = &(*ir_cert),
+                                                .evidence_cert = &(*evidence_cert)};
     return validate_result_kind(result_inputs);
 }
 
 ValidationError version_mismatch_error(const std::string& message)
 {
-    return {"VersionMismatch", "VersionMismatch", message};
+    return {.status = "VersionMismatch", .reason = "VersionMismatch", .message = message};
 }
 
 ValidationError unsupported_error(const std::string& message)
 {
-    return {"UnsupportedProofFeature", "UnsupportedProofFeature", message};
+    return {.status = "UnsupportedProofFeature",
+            .reason = "UnsupportedProofFeature",
+            .message = message};
 }
 
 ValidationError proof_failed_error(const std::string& message)
 {
-    return {"ProofCheckFailed", "ProofCheckFailed", message};
+    return {.status = "ProofCheckFailed", .reason = "ProofCheckFailed", .message = message};
 }
 
 ValidationError rule_violation_error(const std::string& message)
 {
-    return {"RuleViolation", "RuleViolation", message};
+    return {.status = "RuleViolation", .reason = "RuleViolation", .message = message};
 }
 
 [[nodiscard]] bool is_supported_safety_domain(std::string_view domain)
@@ -667,7 +671,9 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
     }
 
     fs::path input_dir(m_input_dir);
-    ValidationContext context{&input_dir, &m_schema_dir, strict};
+    ValidationContext context{.input_dir = &input_dir,
+                              .schema_dir = &m_schema_dir,
+                              .strict = strict};
     std::vector<nlohmann::json> results;
     results.reserve(index_files->size());
     std::string tu_id;
