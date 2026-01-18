@@ -255,8 +255,10 @@ int cmd_analyze(int argc, char** argv) {
         } else if ((arg == "--jobs" || arg == "-j") && i + 1 < std::ssize(args)) {
             std::string_view value = args[idx + 1] ? std::string_view(args[idx + 1]) : std::string_view();
             int parsed = 0;
-            auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
-            if (ec != std::errc{} || ptr != value.data() + value.size()) {
+            auto* begin = value.begin();
+            auto* end = value.end();
+            auto [ptr, ec] = std::from_chars(begin, end, parsed);
+            if (ec != std::errc{} || ptr != end) {
                 std::println(stderr, "Error: invalid --jobs value: {}", value);
                 return 1;
             }

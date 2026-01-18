@@ -85,9 +85,9 @@ public:
         buffer_len_ = 0;
     }
 
-    void update(std::span<const uint8_t> data) {
+    void update(std::span<const std::byte> data) {
         for (auto byte : data) {
-            buffer_[buffer_len_++] = byte;
+            buffer_[buffer_len_++] = std::to_integer<uint8_t>(byte);
             if (buffer_len_ == 64) {
                 transform();
                 count_ += 512;
@@ -96,9 +96,12 @@ public:
         }
     }
 
+    void update(std::span<const uint8_t> data) {
+        update(std::as_bytes(data));
+    }
+
     void update(std::string_view data) {
-        update(std::span<const uint8_t>(
-            reinterpret_cast<const uint8_t*>(data.data()), data.size()));
+        update(std::as_bytes(std::span(data)));
     }
 
     std::array<uint8_t, 32> finalize() {

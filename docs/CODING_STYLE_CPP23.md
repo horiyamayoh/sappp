@@ -201,7 +201,7 @@ Google C++ Style Guide に準拠し、以下を採用。
 | 種別 | スタイル | 例 |
 |-----|---------|-----|
 | namespace | `snake_case` | `sappp::validator` |
-| 型（class/struct/enum） | `PascalCase` | `PoGenerator`, `ErrorCode` |
+| 型（class/struct/enum） | `PascalCase` | `PoGenerator`, `ErrorInfo` |
 | 関数/メソッド | `snake_case` | `validate_certificate()` |
 | 変数 | `snake_case` | `po_count`, `file_path` |
 | メンバ変数 | `m_` + `snake_case` | `m_config`, `m_items` |
@@ -341,7 +341,7 @@ const std::string &ref;
 
 特に Validator / schema / hash 周りは **TCB（Trusted Computing Base）近傍**であり、依存追加には慎重を期すこと。
 
-### 5.3 `auto` の使用指針（MUST/SHOULD）
+### 5.4 `auto` の使用指針（MUST/SHOULD）
 
 `auto` は適切に使えばコードを簡潔にするが、型の意味が重要な場面では避ける。
 
@@ -460,31 +460,20 @@ public:
 - エラーは `std::expected<T, Error>` で返す
 - CLI の `main()` は最上位で catch して終了コードへ変換
 
-### 7.2 Error 型
+### 7.2 Error 型（実装に合わせて固定）
+
+`Error.code` は **安定した文字列**（PascalCase推奨）とし、無秩序な追加を避ける。
+新しいコードを増やす場合は、共通ヘッダへ集約するか ADR でルール化すること。
 
 ```cpp
 namespace sappp {
 
-enum class ErrorCode {
-    kSuccess = 0,
-    kIoError,
-    kSchemaInvalid,
-    kVersionMismatch,
-    kBudgetExceeded,
-    kInternalError,
-};
-
 struct Error {
-    ErrorCode code;
-    std::string message;
-    std::string context;  // path, po_id など
+    std::string code;     // Machine-readable error code
+    std::string message;  // Human-readable error message
 
-    static Error make(ErrorCode code, std::string_view msg) {
-        return Error{code, std::string(msg), {}};
-    }
-
-    static Error make(ErrorCode code, std::string_view msg, std::string_view ctx) {
-        return Error{code, std::string(msg), std::string(ctx)};
+    [[nodiscard]] static Error make(std::string code, std::string message) {
+        return Error{std::move(code), std::move(message)};
     }
 };
 
@@ -503,7 +492,7 @@ Result<Config> load_config(const std::filesystem::path& path) {
     std::ifstream file(path);
     if (!file) {
         return std::unexpected(Error::make(
-            ErrorCode::kIoError,
+            "IoError",
             std::format("Failed to open: {}", path.string())
         ));
     }
@@ -547,14 +536,16 @@ for (const auto& [key, value] : sorted) {
 
 | 出力 | ソートキー |
 |-----|----------|
-| `po.v1.items[]` | `po_id` 昇順 |
-| `unknown.v1.items[]` | `unknown_stable_id` 昇順 |
+| `po.v1.pos[]` | `po_id` 昇順 |
+| `unknown.v1.unknowns[]` | `unknown_stable_id` 昇順 |
 | `validated_results.v1.results[]` | `po_id` 昇順 |
 | `nir.v1.functions[]` | `function_uid` 昇順 |
 
 ```cpp
 std::ranges::stable_sort(items, {}, &Item::id);
 ```
+
+`cert_index.v1` は 1ファイル=1PO。**列挙時は `po_id` 昇順**で安定化すること。
 
 ### 8.3 ハッシュの決定性
 
@@ -601,8 +592,9 @@ if (static_cast<std::size_t>(signed_val) < unsigned_val) { ... }
 
 ### 9.3 禁止事項
 
-- `reinterpret_cast`（必要なら `std::bit_cast` を使用）
-- ポインタ演算（`std::span` を使用）
+- `reinterpret_cast`（`std::bit_cast` / `std::as_bytes` / `std::to_integer` を使用）
+- ポインタ演算（`std::span` を使用。`from_chars` など pointer ペア必須APIは
+  `std::to_address(container.end())` で回避する）
 - C スタイルキャスト
 
 ---
@@ -661,6 +653,9 @@ std::ranges::stable_sort(merged, {}, &Item::id);
 | 配列 | 仕様キーで安定ソート |
 | 数値 | **整数のみ**（浮動小数禁止） |
 | 空白 | 最小表現（ハッシュ対象） |
+
+ハッシュ対象の JSON は **必ず** `sappp::canonical::canonicalize()` でバイト列化し、
+`sappp::canonical::hash_canonical()` でハッシュすること（`dump()` を直接使わない）。
 
 ---
 
@@ -727,7 +722,13 @@ Result<Config> load_config(const std::filesystem::path& path);
 - 既存の ID 生成規則を黙って変更する（ADR/バージョン更新必須）
 - "ついで変更"（1 PR = 1 目的）
 
-### 14.3 完了条件
+### 14.3 Lint 抑制（MUST）
+
+- `NOLINTNEXTLINE(<check>)` + **理由コメント**のみ許可
+- `NOLINTBEGIN/END` は最小範囲で使用し、必ず理由を書く
+- `NOLINT` だけの抑制・無理由の抑制は禁止
+
+### 14.4 完了条件
 
 ```bash
 # ビルド（警告ゼロ）
@@ -785,7 +786,7 @@ Result<std::string> read_file_contents(const std::filesystem::path& path) {
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         return std::unexpected(Error::make(
-            ErrorCode::kIoError,
+            "IoError",
             std::format("Failed to open file: {}", path.string())
         ));
     }
@@ -797,7 +798,7 @@ Result<std::string> read_file_contents(const std::filesystem::path& path) {
     
     if (file.bad()) {
         return std::unexpected(Error::make(
-            ErrorCode::kIoError,
+            "IoError",
             std::format("Failed to read file: {}", path.string())
         ));
     }
@@ -811,6 +812,8 @@ Result<std::string> read_file_contents(const std::filesystem::path& path) {
 ```cpp
 #include <nlohmann/json.hpp>
 
+#include <sappp/canonical_json.hpp>
+
 Result<nlohmann::json> load_json(const std::filesystem::path& path) {
     auto contents = read_file_contents(path);
     if (!contents) {
@@ -821,9 +824,8 @@ Result<nlohmann::json> load_json(const std::filesystem::path& path) {
         return nlohmann::json::parse(*contents);
     } catch (const nlohmann::json::parse_error& e) {
         return std::unexpected(Error::make(
-            ErrorCode::kSchemaInvalid,
-            std::format("JSON parse error: {}", e.what()),
-            path.string()
+            "SchemaInvalid",
+            std::format("JSON parse error ({}): {}", path.string(), e.what())
         ));
     }
 }
@@ -832,17 +834,20 @@ VoidResult save_json(const std::filesystem::path& path, const nlohmann::json& j)
     std::ofstream file(path, std::ios::binary);
     if (!file) {
         return std::unexpected(Error::make(
-            ErrorCode::kIoError,
+            "IoError",
             std::format("Failed to create file: {}", path.string())
         ));
     }
     
-    // Canonical JSON: ソート済み、インデントなし
-    file << j.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
+    auto canonical = sappp::canonical::canonicalize(j);
+    if (!canonical) {
+        return std::unexpected(canonical.error());
+    }
+    file << *canonical;
     
     if (!file) {
         return std::unexpected(Error::make(
-            ErrorCode::kIoError,
+            "IoError",
             std::format("Failed to write file: {}", path.string())
         ));
     }
@@ -931,7 +936,7 @@ Config load_config(const Path& p) {
 // ✅ 正しい
 Result<Config> load_config(const Path& p) {
     if (!exists(p)) {
-        return std::unexpected(Error::make(ErrorCode::kIoError, "not found"));
+        return std::unexpected(Error::make("IoError", "not found"));
     }
     // ...
 }
@@ -1095,7 +1100,7 @@ Result<Output> Component::process(const Input& input) const
     // 入力検証
     if (input.empty()) {
         return std::unexpected(Error::make(
-            ErrorCode::kInvalidInput,
+            "InvalidInput",
             "Input cannot be empty"
         ));
     }
@@ -1162,7 +1167,7 @@ TEST_F(ComponentTest, RejectsEmptyInput)
     auto result = m_component->process(input);
     
     ASSERT_FALSE(result.has_value());
-    EXPECT_EQ(result.error().code, ErrorCode::kInvalidInput);
+    EXPECT_EQ(result.error().code, "InvalidInput");
 }
 
 TEST_F(ComponentTest, OutputIsDeterministic)
@@ -1292,7 +1297,7 @@ jobs:
 ### エラー処理
 
 - [ ] 失敗は `std::expected<T, Error>` で返す
-- [ ] `Error` に `ErrorCode` と `message` を含める
+- [ ] `Error` に `code` と `message` を含める
 - [ ] 例外はモジュール境界で捕捉して `expected` に変換
 
 ### テスト

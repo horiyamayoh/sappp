@@ -125,8 +125,8 @@ repo/
 
 ### 3.2 出力の安定ソート規約（v1）
 
-- `po.v1` の `items[]` は `po_id` 昇順
-- `unknown.v1` の `items[]` は `unknown_stable_id` 昇順
+- `po.v1` の `pos[]` は `po_id` 昇順
+- `unknown.v1` の `unknowns[]` は `unknown_stable_id` 昇順
 - `validated_results.v1` の `results[]` は `po_id` 昇順
 - `cert_index.v1` の `entries[]` は `po_id` 昇順
 - `nir.v1` の `functions[]` は `function_uid` 昇順

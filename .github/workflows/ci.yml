@@ -1,0 +1,183 @@
+# SAP++ Continuous Integration
+#
+# This workflow runs on every push and pull request to ensure code quality.
+# It enforces the quality gates defined in AGENTS.md:
+# - Build with warnings as errors
+# - All tests pass
+# - Determinism tests pass
+# - clang-format check
+# - clang-tidy check
+
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+env:
+  BUILD_TYPE: Debug
+
+jobs:
+  # ===========================================================================
+  # Build and Test (GCC 14)
+  # ===========================================================================
+  build-gcc:
+    name: Build & Test (GCC 14)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 cmake ninja-build
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DSAPPP_BUILD_TESTS=ON \
+            -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
+            -DSAPPP_WERROR=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run Tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run Determinism Tests
+        run: ctest --test-dir build -R determinism --output-on-failure
+
+      - name: Upload compile_commands.json
+        uses: actions/upload-artifact@v4
+        with:
+          name: compile-commands-gcc
+          path: build/compile_commands.json
+
+  # ===========================================================================
+  # Build and Test (Clang 18)
+  # ===========================================================================
+  build-clang:
+    name: Build & Test (Clang 18)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-18 libc++-18-dev libc++abi-18-dev cmake ninja-build
+
+      - name: Configure CMake
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_CXX_COMPILER=clang++-18 \
+            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
+            -DSAPPP_BUILD_TESTS=ON \
+            -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
+            -DSAPPP_WERROR=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Run Tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Run Determinism Tests
+        run: ctest --test-dir build -R determinism --output-on-failure
+
+  # ===========================================================================
+  # Code Format Check (clang-format)
+  # ===========================================================================
+  format-check:
+    name: Format Check (clang-format)
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install clang-format
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format-18
+
+      - name: Check formatting
+        run: |
+          find libs tools tests include \
+            \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
+            -print0 | xargs -0 clang-format-18 --dry-run --Werror
+
+  # ===========================================================================
+  # Static Analysis (clang-tidy)
+  # ===========================================================================
+  tidy-check:
+    name: Static Analysis (clang-tidy)
+    runs-on: ubuntu-24.04
+    needs: build-gcc  # Need compile_commands.json
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 clang-tidy-18 cmake ninja-build
+
+      - name: Download compile_commands.json
+        uses: actions/download-artifact@v4
+        with:
+          name: compile-commands-gcc
+          path: build/
+
+      - name: Configure (for headers)
+        run: |
+          cmake -S . -B build \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} \
+            -DCMAKE_C_COMPILER=gcc-14 \
+            -DCMAKE_CXX_COMPILER=g++-14 \
+            -DSAPPP_BUILD_TESTS=ON \
+            -DSAPPP_BUILD_CLANG_FRONTEND=OFF
+
+      - name: Run clang-tidy
+        run: |
+          find libs -name '*.cpp' -print0 | \
+            xargs -0 -P$(nproc) -I{} \
+            clang-tidy-18 -p build --warnings-as-errors='*' {}
+
+  # ===========================================================================
+  # Schema Validation
+  # ===========================================================================
+  schema-check:
+    name: Schema Validation
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ajv-cli
+        run: npm install -g ajv-cli ajv-formats
+
+      - name: Validate schemas are valid JSON Schema
+        run: |
+          for schema in schemas/*.schema.json; do
+            echo "Validating: $schema"
+            ajv compile -s "$schema" --spec=draft2020 || exit 1
+          done

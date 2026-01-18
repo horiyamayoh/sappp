@@ -3,6 +3,7 @@ add_executable(test_determinism
     test_path.cpp
     test_canonical_json.cpp
     test_certstore.cpp
+    test_po_determinism.cpp
 )
 
 sappp_target_strict_warnings(test_determinism)

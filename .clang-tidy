@@ -22,18 +22,13 @@ Checks: >
   -readability-magic-numbers,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
-  -cppcoreguidelines-pro-type-reinterpret-cast,
   -cppcoreguidelines-avoid-non-const-global-variables,
   -misc-non-private-member-variables-in-classes,
   -misc-no-recursion
 
-WarningsAsErrors: >
-  bugprone-use-after-move,
-  bugprone-dangling-handle,
-  modernize-use-nullptr,
-  modernize-use-override
+WarningsAsErrors: '*'
 
-HeaderFilterRegex: '.*/(include|libs)/sappp/.*'
+HeaderFilterRegex: '.*/(include|libs|tools|tests)/.*'
 
 CheckOptions:
   # Naming conventions (Google C++ Style Guide based)

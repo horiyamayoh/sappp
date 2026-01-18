@@ -78,6 +78,16 @@ Determinism系テストが存在するなら必ず実行する。
 ctest --test-dir build -R determinism --output-on-failure
 ```
 
+### 1.4 Lint/Format（必須）
+C++ を変更したら **clang-format / clang-tidy を実行**すること（ツールが無い場合は完了報告で理由を明記）。
+
+```bash
+clang-format -i path/to/file.cpp
+clang-tidy -p build path/to/file.cpp
+```
+
+> 例外で抑制が必要な場合は `NOLINTNEXTLINE(<check>)` + **理由コメント**を必須とする。
+
 ---
 
 ## 2) Milestone A（器の完成）: Definition of Done（E2E）
@@ -132,10 +142,10 @@ Milestone A は「器の完成」。Analyzer の精度は二の次でよい（UN
 ### 4.1 安定ソート規約（v1）
 少なくとも以下は **保存直前に stable sort** を適用すること:
 
-- `po.v1` の `items[]` は `po_id` 昇順
-- `unknown.v1` の `items[]` は `unknown_stable_id` 昇順
+- `po.v1` の `pos[]` は `po_id` 昇順
+- `unknown.v1` の `unknowns[]` は `unknown_stable_id` 昇順
 - `validated_results.v1` の `results[]` は `po_id` 昇順
-- `cert_index.v1` の `entries[]` は `po_id` 昇順
+- `cert_index.v1` は **1ファイル=1PO**。列挙時は `po_id` 昇順で安定化
 - `nir.v1` の `functions[]` は `function_uid` 昇順
   - `blocks[]` は `block_id` 昇順
   - `insts[]` は `inst_id` 昇順
@@ -175,7 +185,11 @@ out << j.dump(2); // pretty をハッシュ対象に混ぜるのは危険
 std::stable_sort(items.begin(), items.end(),
   [](const Item& a, const Item& b){ return a.id < b.id; });
 
-out << sappp::canonical::canonicalize(j); // canonical bytes を出力
+auto canonical = sappp::canonical::canonicalize(j);
+if (!canonical) {
+    return std::unexpected(canonical.error());
+}
+out << *canonical; // canonical bytes を出力
 ```
 
 ---
@@ -234,10 +248,16 @@ sappp validate --in out_j1
 sappp validate --in out_j8
 
 # po_id / unknown_stable_id / results の集合一致を確認（jq想定）
-jq -r '.items[].po_id' out_j1/po/po_list.json | sort > /tmp/po_j1.txt
-jq -r '.items[].po_id' out_j8/po/po_list.json | sort > /tmp/po_j8.txt
+jq -r '.pos[].po_id' out_j1/po/po_list.json | sort > /tmp/po_j1.txt
+jq -r '.pos[].po_id' out_j8/po/po_list.json | sort > /tmp/po_j8.txt
+
+jq -r '.unknowns[].unknown_stable_id' out_j1/analyzer/unknown_ledger.json | \
+  sort > /tmp/unk_j1.txt
+jq -r '.unknowns[].unknown_stable_id' out_j8/analyzer/unknown_ledger.json | \
+  sort > /tmp/unk_j8.txt
 
 diff -u /tmp/po_j1.txt /tmp/po_j8.txt
+diff -u /tmp/unk_j1.txt /tmp/unk_j8.txt
 ```
 
 > jq が無い場合は、同等の抽出を C++ テスト or 最小スクリプトで用意すること。
