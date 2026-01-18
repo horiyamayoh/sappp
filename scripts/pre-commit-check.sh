@@ -143,6 +143,7 @@ run_check "Determinism Tests" '
 
 # ===========================================================================
 # 5. Clang 18 ビルド（オプション）
+#    NOTE: libc++ 18 は std::views::enumerate 未実装のため libstdc++ を使用
 # ===========================================================================
 if [ "$SKIP_CLANG_BUILD" = false ]; then
     run_check "Build (Clang 18)" '
@@ -156,7 +157,6 @@ if [ "$SKIP_CLANG_BUILD" = false ]; then
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER=clang-18 \
             -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DCMAKE_CXX_FLAGS="-stdlib=libc++" \
             -DSAPPP_BUILD_TESTS=ON \
             -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
             -DSAPPP_WERROR=ON \
@@ -213,9 +213,10 @@ if [ "$SKIP_SCHEMA" = false ]; then
             fi
         fi
         
+        # NOTE: ajv-formats is required for date-time format validation
         for schema in schemas/*.schema.json; do
             echo "Validating: $schema"
-            ajv compile -s "$schema" --spec=draft2020 || exit 1
+            ajv compile -s "$schema" --spec=draft2020 -c ajv-formats || exit 1
         done
     '
 fi
