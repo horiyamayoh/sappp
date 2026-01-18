@@ -27,116 +27,187 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Compiler warnings - strict settings for code quality
 # Note: These flags are applied globally but third-party libraries are compiled
 # with SYSTEM includes to suppress warnings from them.
+#
+# AI Agent Note: These warnings enforce better C++ coding practices.
+# Violations will be flagged during compilation. Fix all warnings before commit.
+
 set(SAPPP_CXX_FLAGS "")
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     list(APPEND SAPPP_CXX_FLAGS
         -Wall
         -Wextra
         -Wpedantic
-        -Werror=return-type
-        # Additional strict warnings
-        -Wshadow                    # Warn when a variable shadows another
-        -Wnon-virtual-dtor          # Warn if a class with virtual functions has non-virtual dtor
-        -Wold-style-cast            # Warn on C-style casts
-        -Wcast-align                # Warn on potential alignment issues
-        -Wunused                    # Warn on anything unused
-        -Woverloaded-virtual        # Warn if a virtual function is hidden
-        -Wconversion                # Warn on implicit type conversions
-        -Wsign-conversion           # Warn on sign conversions
-        -Wnull-dereference          # Warn on null pointer dereference
-        -Wdouble-promotion          # Warn when float is implicitly promoted to double
-        -Wformat=2                  # Strict printf/scanf format checking
-        -Wimplicit-fallthrough      # Warn on fallthrough in switch without annotation
-        # Even stricter warnings
-        -Wcast-qual                 # Warn on cast removing qualifiers (const, volatile)
-        -Wzero-as-null-pointer-constant  # Warn on using 0 instead of nullptr
-        -Wextra-semi                # Warn on redundant semicolons
-        -Wmissing-declarations      # Warn if global function defined without declaration
-        -Wswitch-enum               # Warn if switch on enum doesn't handle all values
-        -Wundef                     # Warn if undefined macro is used in #if
-        -Wfloat-equal               # Warn on direct float equality comparison
-        -Wpointer-arith             # Warn on suspicious pointer arithmetic
-        -Wwrite-strings             # Warn on deprecated conversion from string literal
-        -Wdisabled-optimization     # Warn when optimization is disabled due to code complexity
-        -Winit-self                 # Warn on uninitialized self-assignment
-        -Wstrict-overflow=2         # Warn on strict overflow (level 2)
-        # Maximum strictness warnings
-        -Wredundant-decls           # Warn on redundant declarations
-        -Wswitch-default            # Warn if switch has no default case
-        -Wuninitialized             # Warn on uninitialized variables
-        -Wmaybe-uninitialized       # Warn on possibly uninitialized (GCC, ignored by Clang)
-        -Wpacked                    # Warn if packed attribute causes problems
-        -Winline                    # Warn if inline function cannot be inlined
-        -Wstack-protector           # Warn when stack protector fails
-        -Wdate-time                 # Warn on __DATE__ __TIME__ (reproducible builds)
-        -Wvla                       # Warn on variable length arrays
-        -Walloca                    # Warn on alloca usage
-        -Wtype-limits               # Warn on type limits (comparison always true/false)
-        -Wshift-overflow=2          # Warn on shift overflow
-        -Wstringop-overflow=4       # Warn on string operation overflow (GCC)
-        -Warith-conversion          # Warn on arithmetic conversion issues
-        -Wdangling-else             # Warn on dangling else
-        -Wmissing-field-initializers # Warn on missing field initializers
-        -Wmissing-braces            # Warn on missing braces in initializers
-        -Wparentheses               # Warn on suspicious use of parentheses
-        -Wsequence-point            # Warn on undefined sequence point behavior
-        -Wreturn-type               # Warn on missing return type
-        -Wunused-result             # Warn when ignoring return value
-        -Wsizeof-pointer-memaccess  # Warn on sizeof(ptr) in memset/memcpy
+        
+        # =========================================================================
+        # Critical warnings (always errors) - prevents common bugs
+        # =========================================================================
+        -Werror=return-type             # Missing return statement
+        -Werror=uninitialized           # Use of uninitialized variable
+        -Werror=init-self               # Self-initialization (int x = x)
+        -Werror=switch                  # Missing case in switch
+        -Werror=implicit-fallthrough    # Fallthrough without annotation
+        -Werror=delete-non-virtual-dtor # Delete through non-virtual dtor
+        -Werror=odr                     # One Definition Rule violation
+        
+        # =========================================================================
+        # Type safety warnings - prevent implicit conversions that lose data
+        # =========================================================================
+        -Wconversion                    # Implicit type conversions
+        -Wsign-conversion               # Sign conversions
+        -Wfloat-conversion              # Float to int conversion
+        -Wnarrowing                     # Narrowing conversions in initializers
+        -Warith-conversion              # Arithmetic conversion issues
+        -Wdouble-promotion              # Float implicitly promoted to double
+        -Wfloat-equal                   # Direct float equality comparison
+        
+        # =========================================================================
+        # Memory safety warnings - prevent buffer overflows and leaks
+        # =========================================================================
+        -Wnull-dereference              # Null pointer dereference
+        -Warray-bounds                  # Array bounds checking
+        -Wsizeof-pointer-memaccess      # sizeof(ptr) in memset/memcpy
+        -Wvla                           # Variable length arrays (stack overflow risk)
+        -Walloca                        # alloca usage (stack overflow risk)
+        
+        # =========================================================================
+        # C++ best practices - enforce modern C++ idioms
+        # =========================================================================
+        -Wshadow                        # Variable shadows another
+        -Wnon-virtual-dtor              # Class with virtual functions has non-virtual dtor
+        -Wold-style-cast                # C-style casts
+        -Wcast-align                    # Potential alignment issues
+        -Wcast-qual                     # Cast removes qualifiers (const, volatile)
+        -Woverloaded-virtual            # Virtual function is hidden
+        -Wzero-as-null-pointer-constant # Using 0 instead of nullptr
+        -Wmissing-declarations          # Global function without declaration
+        -Wredundant-decls               # Redundant declarations
+        
+        # =========================================================================
+        # Code quality warnings - improve readability and maintainability
+        # =========================================================================
+        -Wunused                        # Anything unused
+        -Wunused-result                 # Ignoring return value (important for Result<T>)
+        -Wextra-semi                    # Redundant semicolons
+        -Wmissing-field-initializers    # Missing field initializers
+        -Wmissing-braces                # Missing braces in initializers
+        -Wformat=2                      # Strict printf/scanf format checking
+        -Wswitch-enum                   # Switch doesn't handle all enum values
+        -Wswitch-default                # Switch has no default case
+        -Wundef                         # Undefined macro in #if
+        
+        # =========================================================================
+        # Reproducibility warnings - for deterministic builds
+        # =========================================================================
+        -Wdate-time                     # __DATE__ __TIME__ usage (breaks reproducibility)
+        
+        # =========================================================================
+        # Additional strictness
+        # =========================================================================
+        -Wpointer-arith                 # Suspicious pointer arithmetic
+        -Wwrite-strings                 # Deprecated string literal conversion
+        -Wdisabled-optimization         # Optimization disabled due to complexity
+        -Wstrict-overflow=2             # Strict overflow
+        -Wpacked                        # Packed attribute problems
+        -Winline                        # Inline function cannot be inlined
+        -Wtype-limits                   # Type limits (comparison always true/false)
+        -Wshift-overflow=2              # Shift overflow
+        -Wparentheses                   # Suspicious parentheses
+        -Wsequence-point                # Undefined sequence point behavior
+        -Wdangling-else                 # Dangling else
     )
+    
     # GCC-specific warnings
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
         list(APPEND SAPPP_CXX_FLAGS
-            -Wduplicated-cond           # Warn on duplicated conditions
-            -Wduplicated-branches       # Warn on duplicated branches
-            -Wlogical-op                # Warn on suspicious logical operations
-            -Wuseless-cast              # Warn on useless casts
-            -Wsuggest-attribute=pure    # Suggest pure attribute
-            -Wsuggest-attribute=const   # Suggest const attribute
-            -Wsuggest-attribute=noreturn # Suggest noreturn attribute
-            -Wsuggest-override          # Suggest override specifier
-            -Warray-bounds=2            # Stricter array bounds checking
-            -Wattribute-alias=2         # Warn on attribute alias issues
-            -Wtrampolines               # Warn on trampoline generation (security)
-            -Wstringop-truncation       # Warn on string truncation
-            -Wformat-overflow=2         # Warn on format string overflow
-            -Wformat-truncation=2       # Warn on format string truncation
-            -Walloc-zero                # Warn on zero-size allocation
-            -Wnonnull                   # Warn on NULL passed to nonnull param
-            -Wnonnull-compare           # Warn on nonnull comparison
-            -Wclass-memaccess           # Warn on memset/memcpy on non-trivial class
-            -Wsuggest-final-types       # Suggest final on types
-            -Wsuggest-final-methods     # Suggest final on methods
-            -Wnoexcept                  # Warn on missing noexcept
-            -Wstrict-null-sentinel      # Warn on strict null sentinel
-            -Wctor-dtor-privacy         # Warn on useless ctor/dtor
-            -Wdelete-non-virtual-dtor   # Warn on delete non-virtual dtor
-            -Weffc++                    # Warn on Effective C++ violations
+            # Logic errors
+            -Wduplicated-cond               # Duplicated conditions
+            -Wduplicated-branches           # Duplicated branches
+            -Wlogical-op                    # Suspicious logical operations
+            
+            # C++ best practices (GCC)
+            -Wuseless-cast                  # Useless casts
+            -Wsuggest-override              # Suggest override specifier
+            -Wnoexcept                      # Missing noexcept
+            -Weffc++                        # Effective C++ violations
+            -Wctor-dtor-privacy             # Useless ctor/dtor
+            -Wstrict-null-sentinel          # Strict null sentinel
+            
+            # Memory safety (GCC)
+            -Warray-bounds=2                # Stricter array bounds
+            -Wstringop-overflow=4           # String operation overflow
+            -Wstringop-truncation           # String truncation
+            -Wclass-memaccess               # memset/memcpy on non-trivial class
+            
+            # Format safety (GCC)
+            -Wformat-overflow=2             # Format string overflow
+            -Wformat-truncation=2           # Format string truncation
+            -Wnonnull                       # NULL passed to nonnull param
+            -Wnonnull-compare               # nonnull comparison
+            -Walloc-zero                    # Zero-size allocation
+            
+            # Optimization hints
+            -Wsuggest-attribute=pure        # Suggest pure attribute
+            -Wsuggest-attribute=const       # Suggest const attribute
+            -Wsuggest-attribute=noreturn    # Suggest noreturn attribute
+            -Wsuggest-final-types           # Suggest final on types
+            -Wsuggest-final-methods         # Suggest final on methods
+            
+            # Security
+            -Wtrampolines                   # Trampoline generation
+            -Wattribute-alias=2             # Attribute alias issues
+            
+            # Possibly uninitialized (GCC only, ignored by Clang)
+            -Wmaybe-uninitialized
         )
     endif()
+    
     # Clang-specific warnings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         list(APPEND SAPPP_CXX_FLAGS
-            -Wmost                      # Most warnings
-            -Wthread-safety             # Thread safety analysis
-            -Wunreachable-code-aggressive # Aggressive unreachable code detection
-            -Wno-c++98-compat           # Disable C++98 compatibility warnings
-            -Wno-c++98-compat-pedantic  # Disable C++98 pedantic warnings
-            -Wloop-analysis             # Loop analysis warnings
-            -Wmove                      # Warn on suspicious move operations
-            -Wrange-loop-analysis       # Range loop analysis
-            -Wredundant-move            # Warn on redundant std::move
-            -Wself-move                 # Warn on self-move
-            -Wconsumed                  # Consumed analysis (uniqueness checking)
-            -Watomic-implicit-seq-cst   # Warn on implicit sequential consistency
-            -Wextra-semi-stmt           # Warn on extra semicolons in statements
-            -Wgnu                       # Warn on GNU extensions
-            -Wheader-hygiene            # Warn on header hygiene issues
-            -Widiomatic-parentheses     # Warn on non-idiomatic parentheses
-            -Wnewline-eof               # Warn on missing newline at end of file
-            -Wreturn-std-move           # Warn on missed return std::move
+            -Wmost                          # Most warnings
+            
+            # Thread safety (Clang has better analysis)
+            -Wthread-safety                 # Thread safety analysis
+            -Wthread-safety-negative        # Negative thread safety analysis
+            -Wthread-safety-beta            # Beta thread safety features
+            
+            # Code quality (Clang)
+            -Wunreachable-code-aggressive   # Aggressive unreachable code detection
+            -Wloop-analysis                 # Loop analysis warnings
+            -Wrange-loop-analysis           # Range loop analysis
+            
+            # Move semantics (Clang)
+            -Wmove                          # Suspicious move operations
+            -Wredundant-move                # Redundant std::move
+            -Wself-move                     # Self-move
+            -Wreturn-std-move               # Missed return std::move
+            -Wpessimizing-move              # Pessimizing move
+            
+            # Ownership analysis (Clang)
+            -Wconsumed                      # Consumed analysis (uniqueness checking)
+            
+            # Atomics (Clang)
+            -Watomic-implicit-seq-cst       # Implicit sequential consistency
+            
+            # Style (Clang)
+            -Wextra-semi-stmt               # Extra semicolons in statements
+            -Wnewline-eof                   # Missing newline at end of file
+            -Wheader-hygiene                # Header hygiene issues
+            -Widiomatic-parentheses         # Non-idiomatic parentheses
+            
+            # Disable C++98 compatibility (we use C++23)
+            -Wno-c++98-compat
+            -Wno-c++98-compat-pedantic
+            -Wno-c++11-compat
+            -Wno-c++14-compat
+            -Wno-c++17-compat
+            -Wno-c++20-compat
+            
+            # GNU extensions (warn if used)
+            -Wgnu
         )
     endif()
+    
     if(SAPPP_WERROR)
         list(APPEND SAPPP_CXX_FLAGS -Werror)
     endif()

@@ -145,6 +145,51 @@ auto value = std::to_underlying(my_enum);
 #include <utility>    // std::to_underlying, std::unreachable
 ```
 
+### 2.4 Feature-Test Macro によるビルド時検証（SHOULD）
+
+C++23 機能の利用可否は標準ライブラリ実装によって異なるため、`<version>` の feature-test macro で検出し、欠けている場合はビルドを失敗させることを推奨します。
+
+```cpp
+// sappp/compat/require_cpp23.h
+#pragma once
+#include <version>
+
+#if !defined(__cpp_lib_print) || __cpp_lib_print < 202207L
+#error "SAP++ requires std::print/std::println (__cpp_lib_print >= 202207L)."
+#endif
+
+#if !defined(__cpp_lib_expected) || __cpp_lib_expected < 202202L
+#error "SAP++ requires std::expected (__cpp_lib_expected >= 202202L)."
+#endif
+
+#if !defined(__cpp_lib_ranges_enumerate) || __cpp_lib_ranges_enumerate < 202302L
+#error "SAP++ requires std::views::enumerate (__cpp_lib_ranges_enumerate >= 202302L)."
+#endif
+
+#if !defined(__cpp_lib_bitops) || __cpp_lib_bitops < 201907L
+#error "SAP++ requires <bit> bit operations (__cpp_lib_bitops >= 201907L)."
+#endif
+
+#if !defined(__cpp_lib_byteswap) || __cpp_lib_byteswap < 202110L
+#error "SAP++ requires std::byteswap (__cpp_lib_byteswap >= 202110L)."
+#endif
+
+#if !defined(__cpp_lib_to_underlying) || __cpp_lib_to_underlying < 202102L
+#error "SAP++ requires std::to_underlying (__cpp_lib_to_underlying >= 202102L)."
+#endif
+```
+
+**推奨する下限値:**
+
+| 機能 | マクロ | 要求値 |
+|-----|--------|--------|
+| `std::print/println` | `__cpp_lib_print` | `>= 202207L` |
+| `std::expected` | `__cpp_lib_expected` | `>= 202202L` |
+| `std::views::enumerate` | `__cpp_lib_ranges_enumerate` | `>= 202302L` |
+| `std::rotl/rotr` | `__cpp_lib_bitops` | `>= 201907L` |
+| `std::byteswap` | `__cpp_lib_byteswap` | `>= 202110L` |
+| `std::to_underlying` | `__cpp_lib_to_underlying` | `>= 202102L` |
+
 ---
 
 ## 3. 命名規約（MUST）
@@ -281,6 +326,68 @@ const std::string &ref;
 
 #include <sappp/common/error.h>
 #include <sappp/ir/nir.h>
+```
+
+### 5.3 依存追加時のルール（MUST）
+
+新しい外部依存（ライブラリ、ツール）を追加する場合は、以下を README または ADR に記録すること:
+
+| 項目 | 説明 |
+|-----|------|
+| **目的** | なぜこの依存が必要か |
+| **代替案** | 検討した他の選択肢と採用しなかった理由 |
+| **再現性・決定性への影響** | ビルド再現性、出力の決定性に悪影響がないか |
+| **ライセンス** | 依存のライセンスと SAP++ との互換性 |
+
+特に Validator / schema / hash 周りは **TCB（Trusted Computing Base）近傍**であり、依存追加には慎重を期すこと。
+
+### 5.3 `auto` の使用指針（MUST/SHOULD）
+
+`auto` は適切に使えばコードを簡潔にするが、型の意味が重要な場面では避ける。
+
+#### 推奨される使用（SHOULD）
+
+```cpp
+// イテレータ（型名が長い）
+auto it = container.find(key);
+
+// ラムダ式
+auto predicate = [](const Item& x) { return x.valid; };
+
+// make_* 系（右辺で型が明確）
+auto ptr = std::make_unique<Config>();
+
+// 構造化束縛
+auto [key, value] = *map.find(id);
+```
+
+#### 禁止される使用（MUST NOT）
+
+```cpp
+// ❌ 公開 API の戻り値型（テンプレートを除く）
+auto load_config(const Path& p);  // 型が不明
+
+// ✅ 明示的な型
+Result<Config> load_config(const Path& p);
+```
+
+#### 具体型を書くべき場面（MUST）
+
+型の意味が重要な境界では、`auto` を避けて具体型で書く:
+
+- ID（`po_id`, `tu_id`, `function_uid` など）
+- サイズ / インデックス（`std::size_t`, `std::int32_t`）
+- ハッシュ値（`std::uint64_t`, `std::array<std::byte, 32>`）
+- 座標 / 時刻 / 位置情報
+
+```cpp
+// ❌ 型の意味が不明
+auto id = generate_po_id(...);
+auto size = items.size();
+
+// ✅ 意図が明確
+std::string po_id = generate_po_id(...);
+std::size_t size = items.size();
 ```
 
 ---
@@ -666,3 +773,530 @@ std::ranges::copy(a, std::back_inserter(merged));
 std::ranges::copy(b, std::back_inserter(merged));
 std::ranges::stable_sort(merged, {}, &Item::id);
 ```
+### D. ファイル読み込みパターン（推奨）
+
+```cpp
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
+
+Result<std::string> read_file_contents(const std::filesystem::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) {
+        return std::unexpected(Error::make(
+            ErrorCode::kIoError,
+            std::format("Failed to open file: {}", path.string())
+        ));
+    }
+    
+    std::string contents{
+        std::istreambuf_iterator<char>{file},
+        std::istreambuf_iterator<char>{}
+    };
+    
+    if (file.bad()) {
+        return std::unexpected(Error::make(
+            ErrorCode::kIoError,
+            std::format("Failed to read file: {}", path.string())
+        ));
+    }
+    
+    return contents;
+}
+```
+
+### E. JSON 読み込み・書き込みパターン（推奨）
+
+```cpp
+#include <nlohmann/json.hpp>
+
+Result<nlohmann::json> load_json(const std::filesystem::path& path) {
+    auto contents = read_file_contents(path);
+    if (!contents) {
+        return std::unexpected(contents.error());
+    }
+    
+    try {
+        return nlohmann::json::parse(*contents);
+    } catch (const nlohmann::json::parse_error& e) {
+        return std::unexpected(Error::make(
+            ErrorCode::kSchemaInvalid,
+            std::format("JSON parse error: {}", e.what()),
+            path.string()
+        ));
+    }
+}
+
+VoidResult save_json(const std::filesystem::path& path, const nlohmann::json& j) {
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        return std::unexpected(Error::make(
+            ErrorCode::kIoError,
+            std::format("Failed to create file: {}", path.string())
+        ));
+    }
+    
+    // Canonical JSON: ソート済み、インデントなし
+    file << j.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
+    
+    if (!file) {
+        return std::unexpected(Error::make(
+            ErrorCode::kIoError,
+            std::format("Failed to write file: {}", path.string())
+        ));
+    }
+    
+    return {};
+}
+```
+
+### F. エラー伝播パターン（推奨）
+
+```cpp
+// 基本: 早期リターン
+Result<Output> process(const Input& input) {
+    auto step1 = do_step1(input);
+    if (!step1) {
+        return std::unexpected(step1.error());
+    }
+    
+    auto step2 = do_step2(*step1);
+    if (!step2) {
+        return std::unexpected(step2.error());
+    }
+    
+    return Output{*step1, *step2};
+}
+
+// マクロを使う場合（オプション）
+#define SAPPP_TRY(expr) \
+    ({ \
+        auto&& _result = (expr); \
+        if (!_result) return std::unexpected(_result.error()); \
+        std::move(*_result); \
+    })
+
+// 使用例
+Result<Output> process(const Input& input) {
+    auto v1 = SAPPP_TRY(do_step1(input));
+    auto v2 = SAPPP_TRY(do_step2(v1));
+    return Output{v1, v2};
+}
+```
+
+---
+
+## 付録2: 禁止パターンと理由
+
+AIエージェントが「なぜダメか」を理解すると、応用が効きやすい。
+
+### P1. `std::cout` / `std::cerr` の使用
+
+```cpp
+// ❌ 禁止
+std::cout << "Processing: " << name << std::endl;
+
+// ✅ 正しい
+std::println("Processing: {}", name);
+```
+
+**理由**: `std::endl` はフラッシュを伴い性能劣化。`<<` 連鎖は型安全性が低い。
+
+### P2. 手動インデックスループ
+
+```cpp
+// ❌ 禁止
+for (size_t i = 0; i < items.size(); ++i) {
+    process(i, items[i]);
+}
+
+// ✅ 正しい
+for (auto [i, item] : std::views::enumerate(items)) {
+    process(i, item);
+}
+```
+
+**理由**: off-by-one エラーを防ぐ。符号混在の比較を避ける。意図が明確。
+
+### P3. 例外を投げる関数
+
+```cpp
+// ❌ 禁止（ライブラリ内）
+Config load_config(const Path& p) {
+    if (!exists(p)) throw std::runtime_error("not found");
+    // ...
+}
+
+// ✅ 正しい
+Result<Config> load_config(const Path& p) {
+    if (!exists(p)) {
+        return std::unexpected(Error::make(ErrorCode::kIoError, "not found"));
+    }
+    // ...
+}
+```
+
+**理由**: 例外は制御フローを不明瞭にする。`expected` は呼び出し側に処理を強制。
+
+### P4. `std::hash` を ID/ハッシュに使用
+
+```cpp
+// ❌ 禁止
+std::string generate_id(const Data& d) {
+    return std::to_string(std::hash<std::string>{}(d.name));
+}
+
+// ✅ 正しい
+std::string generate_id(const Data& d) {
+    return sappp::canonical::sha256_hex(d.to_canonical_json());
+}
+```
+
+**理由**: `std::hash` は実装依存。同じ入力でも環境によって結果が変わり、決定性が壊れる。
+
+### P5. `unordered_map` の反復順に依存
+
+```cpp
+// ❌ 禁止
+std::unordered_map<std::string, int> map;
+for (const auto& [k, v] : map) {
+    output.push_back(k);  // 順序が不定
+}
+
+// ✅ 正しい
+std::vector<std::pair<std::string, int>> sorted(map.begin(), map.end());
+std::ranges::sort(sorted, {}, &std::pair<std::string, int>::first);
+for (const auto& [k, v] : sorted) {
+    output.push_back(k);
+}
+```
+
+**理由**: 反復順は実装依存。並列化時にも結果がブレる。
+
+### P6. 浮動小数点をハッシュ対象に含める
+
+```cpp
+// ❌ 禁止
+json j = {{"score", 0.95}};  // ハッシュ対象の場合
+auto hash = sha256(j.dump());
+
+// ✅ 正しい（整数スケーリング）
+json j = {{"score_permille", 950}};  // 0.95 * 1000
+auto hash = sha256(j.dump());
+```
+
+**理由**: 浮動小数点の文字列表現は環境依存（`0.95` vs `0.9500000000000001`）。
+
+### P7. C スタイルキャスト
+
+```cpp
+// ❌ 禁止
+int* p = (int*)void_ptr;
+
+// ✅ 正しい（意図を明示）
+auto* p = static_cast<int*>(void_ptr);     // 安全な変換
+auto* p = reinterpret_cast<int*>(void_ptr); // 危険だが意図的
+auto val = std::bit_cast<int>(float_val);   // ビット再解釈
+```
+
+**理由**: C キャストは何でも通すため、意図しない変換が起きる。
+
+### P8. 所有を表す生ポインタ
+
+```cpp
+// ❌ 禁止
+class Manager {
+    Resource* m_resource;  // 誰が delete する？
+public:
+    Manager() : m_resource(new Resource()) {}
+    ~Manager() { delete m_resource; }
+};
+
+// ✅ 正しい
+class Manager {
+    std::unique_ptr<Resource> m_resource;
+public:
+    Manager() : m_resource(std::make_unique<Resource>()) {}
+    // デストラクタ不要（Rule of 0）
+};
+```
+
+**理由**: 生ポインタはリーク/二重解放の温床。RAII で自動管理。
+
+---
+
+## 付録3: ファイル構成テンプレート
+
+### ヘッダファイル（`.h`）
+
+```cpp
+// libs/module_name/include/sappp/module_name/component.h
+#pragma once
+
+#include <expected>
+#include <string>
+#include <vector>
+
+#include <sappp/common/error.h>
+
+namespace sappp::module_name {
+
+/// @brief コンポーネントの簡潔な説明
+///
+/// 詳細な説明（必要に応じて）
+class Component
+{
+public:
+    /// @brief コンストラクタの説明
+    /// @param config 設定オブジェクト
+    explicit Component(const Config& config);
+
+    // コピー禁止、ムーブ許可
+    Component(const Component&) = delete;
+    Component& operator=(const Component&) = delete;
+    Component(Component&&) = default;
+    Component& operator=(Component&&) = default;
+
+    /// @brief 処理の説明
+    /// @param input 入力データ
+    /// @return 成功時は Output、失敗時は Error
+    [[nodiscard]] Result<Output> process(const Input& input) const;
+
+private:
+    Config m_config;
+    std::vector<Item> m_items;
+};
+
+}  // namespace sappp::module_name
+```
+
+### 実装ファイル（`.cpp`）
+
+```cpp
+// libs/module_name/component.cpp
+#include "sappp/module_name/component.h"
+
+#include <algorithm>
+#include <format>
+
+#include <sappp/common/logging.h>
+
+namespace sappp::module_name {
+
+Component::Component(const Config& config)
+    : m_config(config)
+{
+    // 初期化ロジック
+}
+
+Result<Output> Component::process(const Input& input) const
+{
+    // 入力検証
+    if (input.empty()) {
+        return std::unexpected(Error::make(
+            ErrorCode::kInvalidInput,
+            "Input cannot be empty"
+        ));
+    }
+
+    // 処理ロジック
+    std::vector<Item> results;
+    results.reserve(input.size());
+
+    for (const auto& [i, item] : std::views::enumerate(input)) {
+        auto processed = process_item(item);
+        if (!processed) {
+            return std::unexpected(processed.error());
+        }
+        results.push_back(*processed);
+    }
+
+    // 決定性のため安定ソート
+    std::ranges::stable_sort(results, {}, &Item::id);
+
+    return Output{std::move(results)};
+}
+
+}  // namespace sappp::module_name
+```
+
+### テストファイル（`test_*.cpp`）
+
+```cpp
+// tests/module_name/test_component.cpp
+#include <gtest/gtest.h>
+
+#include <sappp/module_name/component.h>
+
+namespace sappp::module_name {
+namespace {
+
+class ComponentTest : public ::testing::Test
+{
+protected:
+    void SetUp() override
+    {
+        m_config = Config{/* ... */};
+        m_component = std::make_unique<Component>(m_config);
+    }
+
+    Config m_config;
+    std::unique_ptr<Component> m_component;
+};
+
+TEST_F(ComponentTest, ProcessesValidInput)
+{
+    Input input{/* ... */};
+    
+    auto result = m_component->process(input);
+    
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->items.size(), 3);
+}
+
+TEST_F(ComponentTest, RejectsEmptyInput)
+{
+    Input input{};
+    
+    auto result = m_component->process(input);
+    
+    ASSERT_FALSE(result.has_value());
+    EXPECT_EQ(result.error().code, ErrorCode::kInvalidInput);
+}
+
+TEST_F(ComponentTest, OutputIsDeterministic)
+{
+    Input input{/* ... */};
+    
+    auto result1 = m_component->process(input);
+    auto result2 = m_component->process(input);
+    
+    ASSERT_TRUE(result1.has_value());
+    ASSERT_TRUE(result2.has_value());
+    EXPECT_EQ(result1->items, result2->items);  // 順序も一致
+}
+
+}  // namespace
+}  // namespace sappp::module_name
+```
+
+---
+
+## 付録4: 自動ツール設定
+
+### clang-format
+
+プロジェクトルートの `.clang-format` で統一。手整形は禁止。
+
+```bash
+# 単一ファイル
+clang-format -i path/to/file.cpp
+
+# 全ファイル
+find libs tests tools -name '*.cpp' -o -name '*.h' | xargs clang-format -i
+
+# チェックのみ（CI用）
+clang-format --dry-run --Werror path/to/file.cpp
+```
+
+### clang-tidy
+
+プロジェクトルートの `.clang-tidy` で統一。
+
+```bash
+# 単一ファイル（compile_commands.json 必要）
+clang-tidy -p build path/to/file.cpp
+
+# 全ファイル
+find libs -name '*.cpp' | xargs -P4 -I{} clang-tidy -p build {}
+
+# CMake 統合（ビルド時に自動実行）
+cmake -S . -B build -DCMAKE_CXX_CLANG_TIDY="clang-tidy"
+```
+
+### 主要な clang-tidy チェック
+
+| チェック | 効果 |
+|---------|------|
+| `modernize-use-nullptr` | `NULL` → `nullptr` |
+| `modernize-loop-convert` | C配列ループ → range-based |
+| `modernize-use-auto` | 明らかな場合に `auto` 推奨 |
+| `bugprone-use-after-move` | ムーブ後使用を検出 |
+| `cppcoreguidelines-owning-memory` | 所有権違反を検出 |
+| `performance-unnecessary-copy-initialization` | 不要コピーを検出 |
+| `readability-identifier-naming` | 命名規約を強制 |
+
+### CI での自動チェック（推奨）
+
+```yaml
+# .github/workflows/lint.yml
+name: Lint
+on: [push, pull_request]
+
+jobs:
+  format-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check clang-format
+        run: |
+          find libs tests tools -name '*.cpp' -o -name '*.h' | \
+            xargs clang-format --dry-run --Werror
+
+  tidy-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: Run clang-tidy
+        run: |
+          find libs -name '*.cpp' | \
+            xargs clang-tidy -p build --warnings-as-errors='*'
+```
+
+---
+
+## 付録5: AIエージェント向けチェックリスト（完全版）
+
+コード生成時に以下を確認すること。
+
+### 構文・スタイル
+
+- [ ] `std::print` / `std::println` を使用（`cout` 禁止）
+- [ ] `std::views::enumerate` を使用（手動インデックス禁止）
+- [ ] `std::expected` でエラーを返す（例外禁止）
+- [ ] `std::to_underlying` で enum 変換（`static_cast` 非推奨）
+- [ ] `[[nodiscard]]` を `Result`/`optional` 戻り値に付与
+- [ ] 命名規約に準拠（型: PascalCase、関数/変数: snake_case）
+- [ ] インデント 4 スペース
+- [ ] 1 行 100 文字以内
+
+### 決定性
+
+- [ ] 出力配列は仕様キーで `std::ranges::stable_sort`
+- [ ] `unordered_map/set` の反復順に依存しない
+- [ ] `std::hash` を ID/ハッシュに使わない
+- [ ] ハッシュ対象に浮動小数点を含めない
+- [ ] 乱数を使わない（使うなら seed 固定）
+- [ ] 時刻/PID/スレッドID を決定性データに混入しない
+
+### メモリ・安全性
+
+- [ ] 所有は `std::unique_ptr`（生ポインタ禁止）
+- [ ] `new`/`delete` を直接使わない
+- [ ] `string_view`/`span` は所有しない（メンバ保持時は所有型へコピー）
+- [ ] Rule of 0 または 5 を遵守
+
+### エラー処理
+
+- [ ] 失敗は `std::expected<T, Error>` で返す
+- [ ] `Error` に `ErrorCode` と `message` を含める
+- [ ] 例外はモジュール境界で捕捉して `expected` に変換
+
+### テスト
+
+- [ ] 新機能にはテストを追加
+- [ ] 決定性テスト: `--jobs=1` と `--jobs=N` で結果一致
+- [ ] スキーマ検証テスト: 出力が schema に適合

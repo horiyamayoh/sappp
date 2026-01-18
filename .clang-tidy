@@ -3,6 +3,10 @@
 # このファイルは clang-tidy を使って C++23 スタイルを強制するための設定です。
 # 使用方法: clang-tidy --config-file=.clang-tidy <source-file>
 # または: cmake -DCMAKE_CXX_CLANG_TIDY="clang-tidy" ...
+#
+# AIエージェント向け注記:
+# - このファイルで定義されたチェックに違反するコードは生成しないこと
+# - 特に modernize-* と bugprone-* は必須遵守
 
 ---
 Checks: >
@@ -12,15 +16,22 @@ Checks: >
   readability-*,
   cppcoreguidelines-*,
   bugprone-*,
+  misc-*,
   -modernize-use-trailing-return-type,
   -readability-identifier-length,
   -readability-magic-numbers,
   -cppcoreguidelines-avoid-magic-numbers,
   -cppcoreguidelines-pro-bounds-pointer-arithmetic,
   -cppcoreguidelines-pro-type-reinterpret-cast,
-  -cppcoreguidelines-avoid-non-const-global-variables
+  -cppcoreguidelines-avoid-non-const-global-variables,
+  -misc-non-private-member-variables-in-classes,
+  -misc-no-recursion
 
-WarningsAsErrors: ''
+WarningsAsErrors: >
+  bugprone-use-after-move,
+  bugprone-dangling-handle,
+  modernize-use-nullptr,
+  modernize-use-override
 
 HeaderFilterRegex: '.*/(include|libs)/sappp/.*'
 
