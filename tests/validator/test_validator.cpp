@@ -63,9 +63,9 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
         {"po", {
             {"po_id", po_id},
             {"po_kind", "div0"},
-            {"profile_version", sappp::PROFILE_VERSION},
-            {"semantics_version", sappp::SEMANTICS_VERSION},
-            {"proof_system_version", sappp::PROOF_SYSTEM_VERSION},
+            {"profile_version", sappp::kProfileVersion},
+            {"semantics_version", sappp::kSemanticsVersion},
+            {"proof_system_version", sappp::kProofSystemVersion},
             {"repo_identity", {
                 {"path", "src/test.cpp"},
                 {"content_sha256", sappp::common::sha256_prefixed("content")}
@@ -138,9 +138,9 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
         {"evidence", { {"ref", bug_hash} }},
         {"result", "BUG"},
         {"depends", {
-            {"semantics_version", sappp::SEMANTICS_VERSION},
-            {"proof_system_version", sappp::PROOF_SYSTEM_VERSION},
-            {"profile_version", sappp::PROFILE_VERSION}
+            {"semantics_version", sappp::kSemanticsVersion},
+            {"proof_system_version", sappp::kProofSystemVersion},
+            {"profile_version", sappp::kProfileVersion}
         }},
         {"hash_scope", "hash_scope.v1"}
     };

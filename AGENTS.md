@@ -265,154 +265,47 @@ diff -u /tmp/po_j1.txt /tmp/po_j8.txt
 
 ## 8) コーディング規約（C++23 徹底）
 
-**本プロジェクトは C++23 を全面採用**。GCC 14+ / Clang 18+ を前提とする。
-C++17/20 スタイルで書けるものでも、C++23 で簡潔に書けるなら **必ず C++23 を使う**。
+**詳細規約は [`docs/CODING_STYLE_CPP23.md`](docs/CODING_STYLE_CPP23.md) を参照。**
 
-### 8.1 必須: C++23 機能の積極利用
+本プロジェクトは **C++23 を全面採用**（GCC 14+ / Clang 18+）。  
+以下は最重要ポイントの要約。違反はレビューで即指摘対象。
 
-以下の機能は「使える場面では必ず使う」こと。レビューで指摘対象となる。
+### 8.1 C++23 必須機能（抜粋）
 
-| 機能 | 用途 | 必須度 |
-|-----|------|-------|
-| `std::print` / `std::println` | コンソール出力 | **必須** (`std::cout` 禁止) |
-| `std::expected<T, E>` | エラーハンドリング | **必須** (例外スローより優先) |
-| `std::views::enumerate` | インデックス付きループ | **必須** (`for (size_t i = 0; ...)` 禁止) |
-| `std::views::zip` | 複数範囲の同時走査 | 推奨 |
-| `std::views::drop` / `take` | 範囲のスライス | 推奨 |
-| `std::ranges::to<Container>` | パイプラインからコンテナ変換 | 推奨 |
-| `std::rotr` / `std::rotl` | ビット回転 | **必須** (手書き禁止) |
-| `std::byteswap` | エンディアン変換 | **必須** (手書きシフト禁止) |
-| `std::to_underlying` | enum → 整数変換 | **必須** (`static_cast` より優先) |
-| `std::unreachable()` | 到達不能コードのマーク | 推奨 |
-| `constexpr` 拡張 | コンパイル時計算 | 可能な限り |
-| `[[nodiscard]]` | 戻り値無視防止 | **必須** (pure function) |
-| `[[maybe_unused]]` | 意図的な未使用 | 必要時 |
-| `size_t` literal (`uz`) | サイズ型リテラル | 推奨 |
+| 機能 | 用途 | 旧スタイル（禁止） |
+|-----|------|------------------|
+| `std::print` / `std::println` | 出力 | `std::cout <<` |
+| `std::expected<T, E>` | エラー | 例外スロー |
+| `std::views::enumerate` | インデックス付きループ | `for (size_t i = 0; ...)` |
+| `std::rotr` / `std::byteswap` | ビット操作 | 手書き |
+| `std::to_underlying` | enum→整数 | `static_cast` |
+| `[[nodiscard]]` | 戻り値無視防止 | （なし） |
 
-### 8.2 禁止パターン（C++23 で置き換え可能なもの）
+### 8.2 命名規約（Google C++ Style Guide ベース）
 
-```cpp
-// ❌ 禁止: std::cout / std::cerr
-std::cout << "message" << std::endl;
-std::cerr << "error: " << msg << "\n";
+| 種別 | スタイル | 例 |
+|-----|---------|-----|
+| namespace | `snake_case` | `sappp::validator` |
+| 型（class/struct/enum） | `PascalCase` | `PoGenerator` |
+| 関数/変数 | `snake_case` | `validate_cert()` |
+| メンバ変数 | `m_` + `snake_case` | `m_config` |
+| 定数 | `k` + `PascalCase` | `kMaxRetries` |
+| 列挙子 | `k` + `PascalCase` | `kSuccess` |
+| マクロ | `UPPER_SNAKE_CASE` | `SAPPP_VERSION` |
 
-// ✅ 必須: std::print / std::println
-std::println("message");
-std::println(stderr, "error: {}", msg);
-```
+### 8.3 フォーマット
 
-```cpp
-// ❌ 禁止: インデックス付き手動ループ
-for (size_t i = 0; i < vec.size(); ++i) {
-    process(i, vec[i]);
-}
+- インデント: **4スペース**
+- 1行最大: **100文字**
+- `clang-format` を正とする（手整形禁止）
 
-// ✅ 必須: views::enumerate
-for (auto [i, elem] : std::views::enumerate(vec)) {
-    process(i, elem);
-}
-```
+### 8.4 コミットメッセージ
 
-```cpp
-// ❌ 禁止: 手書きビット回転
-uint32_t rotr(uint32_t x, int n) {
-    return (x >> n) | (x << (32 - n));
-}
-
-// ✅ 必須: std::rotr
-auto result = std::rotr(x, n);
-```
-
-```cpp
-// ❌ 禁止: 手書きエンディアン変換
-uint32_t be_to_native(const uint8_t* p) {
-    return (p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3];
-}
-
-// ✅ 必須: std::byteswap + std::endian
-uint32_t val;
-std::memcpy(&val, p, 4);
-if constexpr (std::endian::native == std::endian::little) {
-    val = std::byteswap(val);
-}
-```
-
-```cpp
-// ❌ 非推奨: 例外スロー（境界以外）
-if (!file.is_open()) {
-    throw std::runtime_error("Failed to open file");
-}
-
-// ✅ 推奨: std::expected
-auto open_file(const std::string& path) -> std::expected<File, Error> {
-    if (!file.is_open()) {
-        return std::unexpected(Error::make("IOError", "Failed to open"));
-    }
-    return file;
-}
-```
-
-### 8.3 ヘッダインクルード
-
-```cpp
-// C++23 必須ヘッダ（必要に応じて）
-#include <bit>        // std::rotr, std::byteswap, std::endian
-#include <expected>   // std::expected
-#include <print>      // std::print, std::println
-#include <ranges>     // std::views::enumerate, etc.
-#include <utility>    // std::to_underlying, std::unreachable
-```
-
-### 8.4 エラーハンドリング方針
-
-```cpp
-// プロジェクト共通の Result 型を使用
-namespace sappp {
-    template<typename T>
-    using Result = std::expected<T, Error>;
-    
-    using VoidResult = std::expected<void, Error>;
-}
-
-// 使用例
-Result<std::string> compute() {
-    if (error_condition) {
-        return std::unexpected(Error::make("CODE", "message"));
-    }
-    return "success";
-}
-
-// 呼び出し側
-auto result = compute();
-if (!result) {
-    // エラー処理
-    log_error(result.error());
-    return std::unexpected(result.error());
-}
-// 成功時
-use(*result);
-```
-
-### 8.5 一般規約
-
-- 名前空間: `sappp::<module>`
-- 可能なら `const` / 参照 / move を適切に使い、巨大コピーを避ける
-- ログは決定性に影響させない（ログが出力JSONに混ざらないよう分離）
-
-**命名**
-- namespace / 関数: snake_case
-- 型: PascalCase
-- メンバ: `m_` prefix
-- 定数: UPPER_SNAKE_CASE
-
-### 8.6 コミットメッセージ
-
-- **日本語で記述**すること
+- **日本語で記述**
 - 1行目: 変更の要約（50文字以内目安）
-- 2行目: 空行
-- 3行目以降: 詳細な説明（なぜ・何を・どう変えたか）
+- 3行目以降: 詳細（なぜ・何を・どう変えたか）
 
-### 8.7 ビルド環境要件
+### 8.5 ビルド環境要件
 
 | 項目 | 最小要件 |
 |-----|---------|
@@ -421,8 +314,8 @@ use(*result);
 | Clang | 18.0+ |
 | CMake | 3.16+ |
 
-Ubuntu 24.04 LTS では `g++-14` パッケージをインストールすること:
 ```bash
+# Ubuntu 24.04 LTS
 sudo apt install gcc-14 g++-14
 cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
 ```
@@ -460,6 +353,7 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
 ---
 
 ## 付録: 仕様の一次ソース（必読）
+- **`docs/CODING_STYLE_CPP23.md`** — C++23 コーディング規約（詳細）
 - `docs/SAPpp_Implementation_Directive_v0.1.md`
 - `docs/SAPpp_SRS_v1.1.md`
 - `docs/SAPpp_Detailed_Design_v0.1.md`

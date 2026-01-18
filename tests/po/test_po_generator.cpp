@@ -54,14 +54,14 @@ nlohmann::json build_minimal_nir(const std::filesystem::path& source_path,
         {"schema_version", "nir.v1"},
         {"tool", {
             {"name", "sappp"},
-            {"version", sappp::VERSION},
-            {"build_id", sappp::BUILD_ID}
+            {"version", sappp::kVersion},
+            {"build_id", sappp::kBuildId}
         }},
         {"generated_at", "2024-01-01T00:00:00Z"},
         {"tu_id", tu_id},
-        {"semantics_version", sappp::SEMANTICS_VERSION},
-        {"proof_system_version", sappp::PROOF_SYSTEM_VERSION},
-        {"profile_version", sappp::PROFILE_VERSION},
+        {"semantics_version", sappp::kSemanticsVersion},
+        {"proof_system_version", sappp::kProofSystemVersion},
+        {"profile_version", sappp::kProfileVersion},
         {"functions", nlohmann::json::array({
             {
                 {"function_uid", "f1"},
@@ -160,9 +160,9 @@ TEST(PoGeneratorTest, PoIdMatchesSpec) {
         {"function", {{"usr", "f1"}}},
         {"anchor", anchor},
         {"po_kind", "UB.DivZero"},
-        {"semantics_version", sappp::SEMANTICS_VERSION},
-        {"proof_system_version", sappp::PROOF_SYSTEM_VERSION},
-        {"profile_version", sappp::PROFILE_VERSION}
+        {"semantics_version", sappp::kSemanticsVersion},
+        {"proof_system_version", sappp::kProofSystemVersion},
+        {"profile_version", sappp::kProfileVersion}
     };
     auto expected_id = sappp::canonical::hash_canonical(po_id_input);
     ASSERT_TRUE(expected_id);

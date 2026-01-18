@@ -21,12 +21,14 @@ namespace sappp::canonical {
 
 /**
  * Hash scope for canonical serialization
- * - core: Include in hash computation (required for verification)
- * - ui: Exclude from hash (pretty text, notes, etc.)
+ * - kCore: Include in hash computation (required for verification)
+ * - kUi: Exclude from hash (pretty text, notes, etc.)
+ *
+ * Naming convention: kPascalCase for enum constants (Google C++ Style Guide)
  */
 enum class HashScope {
-    Core,  // Included in hash
-    UI     // Excluded from hash
+    kCore,  ///< Included in hash
+    kUi     ///< Excluded from hash
 };
 
 /**

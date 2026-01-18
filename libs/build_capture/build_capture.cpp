@@ -27,7 +27,7 @@ namespace sappp::build_capture {
 
 namespace {
 
-sappp::Result<std::string> read_file(const std::string& path) {
+[[nodiscard]] sappp::Result<std::string> read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
         return std::unexpected(Error::make("CompileCommandsOpenFailed",
@@ -37,12 +37,12 @@ sappp::Result<std::string> read_file(const std::string& path) {
                        std::istreambuf_iterator<char>{}};
 }
 
-std::string current_time_utc() {
+[[nodiscard]] std::string current_time_utc() {
     const auto now = std::chrono::system_clock::now();
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
-std::string detect_os() {
+[[nodiscard]] std::string detect_os() {
 #if defined(_WIN32)
     return "windows";
 #elif defined(__APPLE__)
@@ -52,7 +52,7 @@ std::string detect_os() {
 #endif
 }
 
-std::string detect_arch() {
+[[nodiscard]] std::string detect_arch() {
 #if defined(__x86_64__) || defined(_M_X64)
     return "x86_64";
 #elif defined(__aarch64__) || defined(_M_ARM64)
@@ -66,7 +66,7 @@ std::string detect_arch() {
 #endif
 }
 
-std::string default_triple(const std::string& os, const std::string& arch) {
+[[nodiscard]] std::string default_triple(const std::string& os, const std::string& arch) {
     if (os == "linux") {
         if (arch == "x86_64") return "x86_64-unknown-linux-gnu";
         if (arch == "aarch64") return "aarch64-unknown-linux-gnu";
@@ -84,7 +84,7 @@ std::string default_triple(const std::string& os, const std::string& arch) {
     return "unknown-unknown-unknown";
 }
 
-nlohmann::json default_target() {
+[[nodiscard]] nlohmann::json default_target() {
     std::string os = detect_os();
     std::string arch = detect_arch();
     nlohmann::json data_layout = {
@@ -99,7 +99,7 @@ nlohmann::json default_target() {
     };
 }
 
-nlohmann::json default_frontend(const std::vector<std::string>& argv) {
+[[nodiscard]] nlohmann::json default_frontend(const std::vector<std::string>& argv) {
     std::string kind = "clang";
     if (!argv.empty()) {
         std::string lower = argv.front();
@@ -115,7 +115,7 @@ nlohmann::json default_frontend(const std::vector<std::string>& argv) {
     };
 }
 
-std::vector<std::string> parse_command_line(const std::string& command) {
+[[nodiscard]] std::vector<std::string> parse_command_line(const std::string& command) {
     std::vector<std::string> args;
     std::string current;
     bool in_single = false;
@@ -158,7 +158,7 @@ std::vector<std::string> parse_command_line(const std::string& command) {
     return args;
 }
 
-std::string detect_lang_from_file(const std::string& file_path) {
+[[nodiscard]] std::string detect_lang_from_file(const std::string& file_path) {
     auto pos = file_path.find_last_of('.');
     if (pos == std::string::npos) {
         return "c++";
@@ -175,20 +175,19 @@ std::string detect_lang_from_file(const std::string& file_path) {
     return "c++";
 }
 
-std::string extract_std(const std::vector<std::string>& argv, const std::string& lang) {
+[[nodiscard]] std::string extract_std(const std::vector<std::string>& argv, const std::string& lang) {
     for (auto [i, arg] : std::views::enumerate(argv)) {
-        const auto idx = static_cast<std::size_t>(i);
         if (arg.starts_with("-std=")) {
             return arg.substr(5);
         }
-        if (arg == "-std" && idx + 1 < argv.size()) {
-            return argv[idx + 1];
+        if (arg == "-std" && i + 1 < std::ssize(argv)) {
+            return argv[static_cast<std::size_t>(i + 1)];
         }
     }
     return lang == "c" ? "c23" : "c++23";
 }
 
-nlohmann::json build_hash_input(const nlohmann::json& compile_unit) {
+[[nodiscard]] nlohmann::json build_hash_input(const nlohmann::json& compile_unit) {
     nlohmann::json hash_input = {
         {"cwd", compile_unit.at("cwd")},
         {"argv", compile_unit.at("argv")},
@@ -234,14 +233,13 @@ sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_co
     units.reserve(compile_db.size());
 
     for (auto [index, entry] : std::views::enumerate(compile_db)) {
-        const auto idx = static_cast<std::size_t>(index);
         if (!entry.is_object()) {
             return std::unexpected(Error::make("CompileCommandsEntryInvalid",
-                std::format("compile_commands entry {} is not an object", idx)));
+                std::format("compile_commands entry {} is not an object", index)));
         }
         if (!entry.contains("directory") || !entry.contains("file")) {
             return std::unexpected(Error::make("CompileCommandsEntryInvalid",
-                std::format("compile_commands entry {} missing directory or file", idx)));
+                std::format("compile_commands entry {} missing directory or file", index)));
         }
 
         std::string directory = entry.at("directory").get<std::string>();
@@ -252,7 +250,7 @@ sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_co
             const auto& args_json = entry.at("arguments");
             if (!args_json.is_array()) {
                 return std::unexpected(Error::make("CompileCommandsEntryInvalid",
-                    std::format("compile_commands entry {} arguments must be an array", idx)));
+                    std::format("compile_commands entry {} arguments must be an array", index)));
             }
             for (const auto& arg : args_json) {
                 argv.push_back(arg.get<std::string>());
@@ -261,12 +259,12 @@ sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_co
             argv = parse_command_line(entry.at("command").get<std::string>());
         } else {
             return std::unexpected(Error::make("CompileCommandsEntryInvalid",
-                std::format("compile_commands entry {} missing arguments/command", idx)));
+                std::format("compile_commands entry {} missing arguments/command", index)));
         }
 
         if (argv.empty()) {
             return std::unexpected(Error::make("CompileCommandsEntryInvalid",
-                std::format("compile_commands entry {} has empty argv", idx)));
+                std::format("compile_commands entry {} has empty argv", index)));
         }
 
         std::string cwd = common::normalize_path(directory, m_repo_root);
@@ -304,7 +302,7 @@ sappp::Result<BuildSnapshot> BuildCapture::capture(const std::string& compile_co
 
     nlohmann::json snapshot = {
         {"schema_version", "build_snapshot.v1"},
-        {"tool", {{"name", "sappp"}, {"version", sappp::VERSION}, {"build_id", sappp::BUILD_ID}}},
+        {"tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
         {"generated_at", current_time_utc()},
         {"host", {{"os", detect_os()}, {"arch", detect_arch()}}},
         {"compile_units", units}

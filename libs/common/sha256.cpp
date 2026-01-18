@@ -177,7 +177,7 @@ private:
     uint64_t count_;
 };
 
-std::string to_hex(const std::array<uint8_t, 32>& hash) {
+[[nodiscard]] std::string to_hex(const std::array<uint8_t, 32>& hash) {
     std::string result;
     result.reserve(64);
     for (uint8_t b : hash) {

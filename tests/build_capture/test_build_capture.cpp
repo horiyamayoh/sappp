@@ -98,10 +98,10 @@ TEST(BuildCaptureTest, GeneratesSnapshotFromCompileCommands) {
     }
 
     for (auto [i, unit] : std::views::enumerate(units)) {
-        const auto idx = static_cast<std::size_t>(i);
-        if (idx == 0) {
+        if (i == 0) {
             continue;
         }
+        const auto idx = static_cast<std::size_t>(i);
         EXPECT_LE(units.at(idx - 1).at("tu_id").get<std::string>(),
                   unit.at("tu_id").get<std::string>());
     }

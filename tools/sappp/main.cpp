@@ -40,10 +40,10 @@
 namespace {
 
 void print_version() {
-    std::println("sappp {} ({})", sappp::VERSION, sappp::BUILD_ID);
-    std::println("  semantics:    {}", sappp::SEMANTICS_VERSION);
-    std::println("  proof_system: {}", sappp::PROOF_SYSTEM_VERSION);
-    std::println("  profile:      {}", sappp::PROFILE_VERSION);
+    std::println("sappp {} ({})", sappp::kVersion, sappp::kBuildId);
+    std::println("  semantics:    {}", sappp::kSemanticsVersion);
+    std::println("  proof_system: {}", sappp::kProofSystemVersion);
+    std::println("  profile:      {}", sappp::kProfileVersion);
 }
 
 void print_help() {
@@ -176,13 +176,13 @@ int cmd_capture(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             print_capture_help();
             return 0;
-        } else if (arg == "--compile-commands" && idx + 1 < args.size()) {
+        } else if (arg == "--compile-commands" && i + 1 < std::ssize(args)) {
             compile_commands = args[idx + 1];
             skip_next = true;
-        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+        } else if ((arg == "--output" || arg == "-o") && i + 1 < std::ssize(args)) {
             output = args[idx + 1];
             skip_next = true;
-        } else if (arg == "--repo-root" && idx + 1 < args.size()) {
+        } else if (arg == "--repo-root" && i + 1 < std::ssize(args)) {
             repo_root = args[idx + 1];
             skip_next = true;
         }
@@ -246,13 +246,13 @@ int cmd_analyze(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             print_analyze_help();
             return 0;
-        } else if (arg == "--snapshot" && idx + 1 < args.size()) {
+        } else if (arg == "--snapshot" && i + 1 < std::ssize(args)) {
             snapshot = args[idx + 1];
             skip_next = true;
-        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+        } else if ((arg == "--output" || arg == "-o") && i + 1 < std::ssize(args)) {
             output = args[idx + 1];
             skip_next = true;
-        } else if ((arg == "--jobs" || arg == "-j") && idx + 1 < args.size()) {
+        } else if ((arg == "--jobs" || arg == "-j") && i + 1 < std::ssize(args)) {
             std::string_view value = args[idx + 1] ? std::string_view(args[idx + 1]) : std::string_view();
             int parsed = 0;
             auto [ptr, ec] = std::from_chars(value.data(), value.data() + value.size(), parsed);
@@ -262,7 +262,7 @@ int cmd_analyze(int argc, char** argv) {
             }
             jobs = parsed;
             skip_next = true;
-        } else if (arg == "--schema-dir" && idx + 1 < args.size()) {
+        } else if (arg == "--schema-dir" && i + 1 < std::ssize(args)) {
             schema_dir = args[idx + 1];
             skip_next = true;
         }
@@ -396,15 +396,15 @@ int cmd_validate(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             print_validate_help();
             return 0;
-        } else if ((arg == "--input" || arg == "--in") && idx + 1 < args.size()) {
+        } else if ((arg == "--input" || arg == "--in") && i + 1 < std::ssize(args)) {
             input = args[idx + 1];
             skip_next = true;
-        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+        } else if ((arg == "--output" || arg == "-o") && i + 1 < std::ssize(args)) {
             output = args[idx + 1];
             skip_next = true;
         } else if (arg == "--strict") {
             strict = true;
-        } else if (arg == "--schema-dir" && idx + 1 < args.size()) {
+        } else if (arg == "--schema-dir" && i + 1 < std::ssize(args)) {
             schema_dir = args[idx + 1];
             skip_next = true;
         }
@@ -450,10 +450,10 @@ int cmd_pack(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             print_pack_help();
             return 0;
-        } else if (arg == "--input" && idx + 1 < args.size()) {
+        } else if (arg == "--input" && i + 1 < std::ssize(args)) {
             input = args[idx + 1];
             skip_next = true;
-        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+        } else if ((arg == "--output" || arg == "-o") && i + 1 < std::ssize(args)) {
             output = args[idx + 1];
             skip_next = true;
         }
@@ -488,13 +488,13 @@ int cmd_diff(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             print_diff_help();
             return 0;
-        } else if (arg == "--before" && idx + 1 < args.size()) {
+        } else if (arg == "--before" && i + 1 < std::ssize(args)) {
             before = args[idx + 1];
             skip_next = true;
-        } else if (arg == "--after" && idx + 1 < args.size()) {
+        } else if (arg == "--after" && i + 1 < std::ssize(args)) {
             after = args[idx + 1];
             skip_next = true;
-        } else if ((arg == "--output" || arg == "-o") && idx + 1 < args.size()) {
+        } else if ((arg == "--output" || arg == "-o") && i + 1 < std::ssize(args)) {
             output = args[idx + 1];
             skip_next = true;
         }

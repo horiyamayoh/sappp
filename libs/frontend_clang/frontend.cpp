@@ -78,7 +78,7 @@ sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& 
     std::optional<std::size_t> source_index;
     for (auto [i, arg] : std::views::enumerate(result.args)) {
         const auto idx = static_cast<std::size_t>(i);
-        if (arg == "-c" && idx + 1 < result.args.size() && is_source_file(result.args[idx + 1])) {
+        if (arg == "-c" && i + 1 < std::ssize(result.args) && is_source_file(result.args[idx + 1])) {
             source_index = idx + 1;
             break;
         }
@@ -499,14 +499,14 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
     nir.schema_version = "nir.v1";
     nir.tool = {
         {"name", "sappp"},
-        {"version", sappp::VERSION},
-        {"build_id", sappp::BUILD_ID}
+        {"version", sappp::kVersion},
+        {"build_id", sappp::kBuildId}
     };
     nir.generated_at = current_time_utc();
     nir.tu_id = tu_id;
-    nir.semantics_version = sappp::SEMANTICS_VERSION;
-    nir.proof_system_version = sappp::PROOF_SYSTEM_VERSION;
-    nir.profile_version = sappp::PROFILE_VERSION;
+    nir.semantics_version = sappp::kSemanticsVersion;
+    nir.proof_system_version = sappp::kProofSystemVersion;
+    nir.profile_version = sappp::kProfileVersion;
     if (build_snapshot.contains("input_digest")) {
         nir.input_digest = build_snapshot.at("input_digest").get<std::string>();
     }
@@ -518,8 +518,8 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
         {"schema_version", "source_map.v1"},
         {"tool", {
             {"name", "sappp"},
-            {"version", sappp::VERSION},
-            {"build_id", sappp::BUILD_ID}
+            {"version", sappp::kVersion},
+            {"build_id", sappp::kBuildId}
         }},
         {"generated_at", current_time_utc()},
         {"tu_id", tu_id},

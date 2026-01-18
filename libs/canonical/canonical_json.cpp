@@ -34,8 +34,7 @@ sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view pa
     } else if (j.is_array()) {
         // Use views::enumerate for cleaner indexed iteration
         for (auto [i, elem] : std::views::enumerate(j)) {
-            const auto idx = static_cast<std::size_t>(i);
-            if (auto result = validate_no_float(elem, std::format("{}[{}]", path, idx)); !result) {
+            if (auto result = validate_no_float(elem, std::format("{}[{}]", path, i)); !result) {
                 return result;
             }
         }

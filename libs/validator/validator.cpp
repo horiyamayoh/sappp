@@ -33,16 +33,16 @@ struct ValidationError {
     std::string message;
 };
 
-std::string current_time_rfc3339() {
+[[nodiscard]] std::string current_time_rfc3339() {
     const auto now = std::chrono::system_clock::now();
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
-bool is_hex_lower(char c) {
+[[nodiscard]] bool is_hex_lower(char c) {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
 }
 
-bool is_sha256_prefixed(std::string_view value) {
+[[nodiscard]] bool is_sha256_prefixed(std::string_view value) {
     constexpr std::string_view prefix = "sha256:";
     if (!value.starts_with(prefix)) {
         return false;
@@ -53,7 +53,7 @@ bool is_sha256_prefixed(std::string_view value) {
     return std::ranges::all_of(value.substr(prefix.size()), is_hex_lower);
 }
 
-std::string derive_po_id_from_path(const fs::path& path) {
+[[nodiscard]] std::string derive_po_id_from_path(const fs::path& path) {
     std::string stem = path.stem().string();
     if (is_sha256_prefixed(stem)) {
         return stem;
@@ -61,19 +61,19 @@ std::string derive_po_id_from_path(const fs::path& path) {
     return sappp::common::sha256_prefixed(stem);
 }
 
-std::string cert_schema_path(const std::string& schema_dir) {
+[[nodiscard]] std::string cert_schema_path(const std::string& schema_dir) {
     return (fs::path(schema_dir) / "cert.v1.schema.json").string();
 }
 
-std::string cert_index_schema_path(const std::string& schema_dir) {
+[[nodiscard]] std::string cert_index_schema_path(const std::string& schema_dir) {
     return (fs::path(schema_dir) / "cert_index.v1.schema.json").string();
 }
 
-std::string validated_results_schema_path(const std::string& schema_dir) {
+[[nodiscard]] std::string validated_results_schema_path(const std::string& schema_dir) {
     return (fs::path(schema_dir) / "validated_results.v1.schema.json").string();
 }
 
-sappp::Result<std::string> object_path_for_hash(const fs::path& base_dir, const std::string& hash) {
+[[nodiscard]] sappp::Result<std::string> object_path_for_hash(const fs::path& base_dir, const std::string& hash) {
     constexpr std::string_view prefix = "sha256:";
     std::size_t digest_start = hash.starts_with(prefix) ? prefix.size() : 0;
     if (hash.size() < digest_start + 2) {
@@ -85,7 +85,7 @@ sappp::Result<std::string> object_path_for_hash(const fs::path& base_dir, const 
     return object_path.string();
 }
 
-sappp::Result<nlohmann::json> read_json_file(const std::string& path) {
+[[nodiscard]] sappp::Result<nlohmann::json> read_json_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in.is_open()) {
         return std::unexpected(Error::make("IOError",
@@ -101,7 +101,7 @@ sappp::Result<nlohmann::json> read_json_file(const std::string& path) {
     }
 }
 
-sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) {
+[[nodiscard]] sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload) {
     fs::path out_path(path);
     fs::path parent = out_path.parent_path();
     if (!parent.empty()) {
@@ -129,11 +129,11 @@ sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json&
     return {};
 }
 
-ValidationError make_error(const std::string& status, const std::string& message) {
+[[nodiscard]] ValidationError make_error(const std::string& status, const std::string& message) {
     return {status, status, message};
 }
 
-nlohmann::json make_unknown_result(const std::string& po_id,
+[[nodiscard]] nlohmann::json make_unknown_result(const std::string& po_id,
                                   const ValidationError& error) {
     nlohmann::json result = {
         {"po_id", po_id},
@@ -147,7 +147,7 @@ nlohmann::json make_unknown_result(const std::string& po_id,
     return result;
 }
 
-nlohmann::json make_validated_result(const std::string& po_id,
+[[nodiscard]] nlohmann::json make_validated_result(const std::string& po_id,
                                      const std::string& category,
                                      const std::string& certificate_root) {
     return nlohmann::json{
@@ -158,11 +158,11 @@ nlohmann::json make_validated_result(const std::string& po_id,
     };
 }
 
-ValidationError make_error_from_result(const sappp::Error& error) {
+[[nodiscard]] ValidationError make_error_from_result(const sappp::Error& error) {
     return make_error(error.code, error.message);
 }
 
-sappp::Result<nlohmann::json> load_cert_object(const std::string& input_dir,
+[[nodiscard]] sappp::Result<nlohmann::json> load_cert_object(const std::string& input_dir,
                                                const std::string& schema_dir,
                                                const std::string& hash) {
     auto path = object_path_for_hash(input_dir, hash);
@@ -316,9 +316,9 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
         std::string sem_version = depends.at("semantics_version").get<std::string>();
         std::string proof_version = depends.at("proof_system_version").get<std::string>();
         std::string profile_version = depends.at("profile_version").get<std::string>();
-        if (sem_version != sappp::SEMANTICS_VERSION ||
-            proof_version != sappp::PROOF_SYSTEM_VERSION ||
-            profile_version != sappp::PROFILE_VERSION) {
+        if (sem_version != sappp::kSemanticsVersion ||
+            proof_version != sappp::kProofSystemVersion ||
+            profile_version != sappp::kProfileVersion) {
             ValidationError mismatch = version_mismatch_error("ProofRoot version triple mismatch");
             if (strict) {
                 return std::unexpected(Error::make(mismatch.reason, mismatch.message));
@@ -456,15 +456,15 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict) {
         {"schema_version", "validated_results.v1"},
         {"tool", {
             {"name", "sappp"},
-            {"version", sappp::VERSION},
-            {"build_id", sappp::BUILD_ID}
+            {"version", sappp::kVersion},
+            {"build_id", sappp::kBuildId}
         }},
         {"generated_at", current_time_rfc3339()},
         {"tu_id", tu_id},
         {"results", results},
-        {"semantics_version", sappp::SEMANTICS_VERSION},
-        {"proof_system_version", sappp::PROOF_SYSTEM_VERSION},
-        {"profile_version", sappp::PROFILE_VERSION}
+        {"semantics_version", sappp::kSemanticsVersion},
+        {"proof_system_version", sappp::kProofSystemVersion},
+        {"profile_version", sappp::kProfileVersion}
     };
 
     if (auto result = sappp::common::validate_json(output, validated_results_schema_path(m_schema_dir)); !result) {
