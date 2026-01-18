@@ -1,7 +1,7 @@
 {
   "$defs": {
     "ContractIR": {
-      "$ref": "contract_ir.v1.schema.json"
+      "$ref": "sappp:schema/contract_ir.v1"
     },
     "GeneratedAt": {
       "format": "date-time",

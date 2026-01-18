@@ -214,9 +214,16 @@ if [ "$SKIP_SCHEMA" = false ]; then
         fi
         
         # NOTE: ajv-formats is required for date-time format validation
+        # Build reference list for cross-schema references (excluding the schema being validated)
         for schema in schemas/*.schema.json; do
+            refs=""
+            for ref_schema in schemas/*.schema.json; do
+                if [ "$ref_schema" != "$schema" ]; then
+                    refs="$refs -r $ref_schema"
+                fi
+            done
             echo "Validating: $schema"
-            ajv compile -s "$schema" --spec=draft2020 -c ajv-formats || exit 1
+            ajv compile -s "$schema" --spec=draft2020 -c ajv-formats $refs || exit 1
         done
     '
 fi
