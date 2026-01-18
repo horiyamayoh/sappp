@@ -16,6 +16,7 @@
 #include "sappp/common.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
+#include "sappp/po.hpp"
 #include "sappp/validator.hpp"
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
 #include "frontend_clang/frontend.hpp"
@@ -245,6 +246,8 @@ int cmd_analyze(int argc, char** argv) {
 
         std::filesystem::path nir_path = frontend_dir / "nir.json";
         std::filesystem::path source_map_path = frontend_dir / "source_map.json";
+        std::filesystem::path po_dir = output_dir / "po";
+        std::filesystem::path po_path = po_dir / "po_list.json";
 
         std::ofstream nir_out(nir_path);
         if (!nir_out) {
@@ -260,11 +263,23 @@ int cmd_analyze(int argc, char** argv) {
         }
         source_out << sappp::canonical::canonicalize(result.source_map) << "\n";
 
+        std::filesystem::create_directories(po_dir);
+        sappp::po::PoGenerator po_generator;
+        nlohmann::json po_list = po_generator.generate(result.nir);
+
+        std::ofstream po_out(po_path);
+        if (!po_out) {
+            std::cerr << "Error: failed to write PO output: " << po_path << "\n";
+            return 1;
+        }
+        po_out << sappp::canonical::canonicalize(po_list) << "\n";
+
         std::cout << "[analyze] Wrote frontend outputs\n";
         std::cout << "  snapshot: " << snapshot << "\n";
         std::cout << "  output: " << output_dir.string() << "\n";
         std::cout << "  nir: " << nir_path.string() << "\n";
         std::cout << "  source_map: " << source_map_path.string() << "\n";
+        std::cout << "  po_list: " << po_path.string() << "\n";
     } catch (const std::exception& ex) {
         std::cerr << "Error: analyze failed: " << ex.what() << "\n";
         return 1;

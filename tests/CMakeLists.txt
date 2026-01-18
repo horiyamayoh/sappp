@@ -15,6 +15,9 @@ add_subdirectory(schemas)
 # Build capture tests
 add_subdirectory(build_capture)
 
+# PO generator tests
+add_subdirectory(po)
+
 # Determinism tests
 add_subdirectory(determinism)
 
