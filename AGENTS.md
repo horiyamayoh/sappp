@@ -8,7 +8,40 @@
 > **差分・再現手順・実行ログを“完了報告”として提示**すること。
 
 ---
+## 開発環境（まずここを確認）
 
+本プロジェクトは **Docker / Dev Container** による統一環境を提供しています。  
+ローカル環境との差異によるCI失敗を防ぐため、以下の方法を推奨します。
+
+### 推奨: Docker CI（CI と完全同一環境）
+
+```bash
+# 高速チェック（コミット前）
+./scripts/docker-ci.sh --quick
+
+# フルチェック（プッシュ前）
+./scripts/docker-ci.sh
+
+# デバッグ用シェル
+./scripts/docker-ci.sh --shell
+```
+
+### 代替: Makefile コマンド
+
+```bash
+make help           # コマンド一覧
+make quick          # 高速チェック（ローカル）
+make docker-ci      # Docker CI
+make install-hooks  # Git hooks インストール
+```
+
+### 環境詳細
+
+詳細な開発環境のセットアップは以下を参照:
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — クイックスタート・開発ワークフロー
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — 詳細な開発ガイド・トラブルシューティング
+
+---
 ## 0) まず守るべき最上位原則（破ったら失格）
 
 ### 0.1 嘘SAFE/嘘BUGを絶対に作らない（最重要）
@@ -373,11 +406,22 @@ cmake -S . -B build -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER=gcc-14
 ---
 
 ## 付録: 仕様の一次ソース（必読）
-- **`docs/CODING_STYLE_CPP23.md`** — C++23 コーディング規約（詳細）
-- `docs/SAPpp_Implementation_Directive_v0.1.md`
-- `docs/SAPpp_SRS_v1.1.md`
-- `docs/SAPpp_Detailed_Design_v0.1.md`
-- `docs/SAPpp_Architecture_Design_v0.1.md`
+
+### 開発環境・ワークフロー
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** — クイックスタート・開発ワークフロー
+- **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** — 詳細な開発ガイド・トラブルシューティング
+- **[Makefile](Makefile)** — 統一ビルドコマンド（`make help` で一覧）
+
+### コーディング規約
+- **[docs/CODING_STYLE_CPP23.md](docs/CODING_STYLE_CPP23.md)** — C++23 コーディング規約（詳細）
+
+### 設計・仕様書
+- [docs/SAPpp_Implementation_Directive_v0.1.md](docs/SAPpp_Implementation_Directive_v0.1.md)
+- [docs/SAPpp_SRS_v1.1.md](docs/SAPpp_SRS_v1.1.md)
+- [docs/SAPpp_Detailed_Design_v0.1.md](docs/SAPpp_Detailed_Design_v0.1.md)
+- [docs/SAPpp_Architecture_Design_v0.1.md](docs/SAPpp_Architecture_Design_v0.1.md)
 - `docs/ADR/`（特に determinism / po_id / unknown / canonical json）
 - `docs/CLI_Spec_v0.1.md`
+
+### スキーマ
 - `schemas/*.schema.json`
