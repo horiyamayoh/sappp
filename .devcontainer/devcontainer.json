@@ -12,6 +12,9 @@
     "features": {
         "ghcr.io/devcontainers/features/git:1": {}
     },
+    "mounts": [
+        "source=sappp-ccache,target=/home/developer/.ccache,type=volume"
+    ],
     "customizations": {
         "vscode": {
             "settings": {
@@ -57,11 +60,12 @@
             ]
         }
     },
-    "postCreateCommand": "chmod +x scripts/*.sh && ./scripts/install-hooks.sh && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DSAPPP_BUILD_TESTS=ON -DSAPPP_WERROR=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build --parallel",
+    "postCreateCommand": "chmod +x scripts/*.sh && ./scripts/install-hooks.sh && ccache --max-size=2G && cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DSAPPP_BUILD_TESTS=ON -DSAPPP_WERROR=ON -DCMAKE_EXPORT_COMPILE_COMMANDS=ON && cmake --build build --parallel",
     "postStartCommand": "git config --global --add safe.directory ${containerWorkspaceFolder}",
     "remoteUser": "developer",
     "containerEnv": {
-        "SAPPP_CI_ENV": "devcontainer"
+        "SAPPP_CI_ENV": "devcontainer",
+        "SAPPP_USE_CCACHE": "1"
     },
     "runArgs": [
         "--init"

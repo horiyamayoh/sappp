@@ -38,6 +38,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
     jq \
+    ccache \
+    ripgrep \
     less \
     vim \
     # SSH for git operations

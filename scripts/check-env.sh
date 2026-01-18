@@ -10,7 +10,7 @@
 #   - Docker の利用可否
 #   - 必要なツールの存在
 
-set -e
+set -euo pipefail
 
 # 色付き出力
 RED='\033[0;31m'
@@ -52,6 +52,20 @@ echo -e "${NC}"
 
 WARNINGS=0
 ERRORS=0
+
+version_ge() {
+    local have="$1"
+    local need="$2"
+    if [ -z "$have" ] || [ -z "$need" ]; then
+        return 1
+    fi
+    [ "$(printf '%s\n%s\n' "$need" "$have" | sort -V | head -n1)" = "$need" ]
+}
+
+extract_version() {
+    local input="$1"
+    echo "$input" | grep -Eo '[0-9]+(\.[0-9]+)+' | head -1
+}
 
 # ===========================================================================
 # 1. Git hooks チェック
@@ -123,14 +137,14 @@ fi
 echo -e "\n${BLUE}▶ コンパイラ${NC}"
 
 if command -v g++-14 &> /dev/null; then
-    VERSION=$(g++-14 --version | head -1)
+    VERSION=$(g++-14 -dumpfullversion -dumpversion 2>/dev/null || g++-14 --version | head -1)
     echo -e "  ${GREEN}✓ GCC 14: $VERSION${NC}"
 else
     echo -e "  ${YELLOW}⚠ GCC 14: 未インストール（Docker使用時は不要）${NC}"
 fi
 
 if command -v clang++-18 &> /dev/null; then
-    VERSION=$(clang++-18 --version | head -1)
+    VERSION=$(extract_version "$(clang++-18 --version | head -1)")
     echo -e "  ${GREEN}✓ Clang 18: $VERSION${NC}"
 else
     echo -e "  ${YELLOW}⚠ Clang 18: 未インストール（Docker使用時は不要）${NC}"
@@ -160,6 +174,41 @@ check_tool "CMake" "cmake" "optional"
 check_tool "Ninja" "ninja" "optional"
 check_tool "clang-format" "clang-format-18" "optional"
 check_tool "clang-tidy" "clang-tidy-18" "optional"
+check_tool "clangd" "clangd-18" "optional"
+check_tool "ccache" "ccache" "optional"
+check_tool "jq" "jq" "optional"
+check_tool "rg" "rg" "optional"
+
+# ajv-cli チェック（スキーマ検証に必要）
+if command -v ajv &> /dev/null; then
+    echo -e "  ${GREEN}✓ ajv-cli: $(command -v ajv)${NC}"
+else
+    echo -e "  ${YELLOW}⚠ ajv-cli: 未インストール（スキーマ検証に必要）${NC}"
+    if [ "$FIX_MODE" = true ]; then
+        if command -v npm &> /dev/null; then
+            echo -e "  ${BLUE}→ インストール中...${NC}"
+            sudo npm install -g ajv-cli ajv-formats
+        else
+            echo -e "  ${YELLOW}  npm がないためスキップ${NC}"
+        fi
+    else
+        echo -e "  ${YELLOW}  修正: npm install -g ajv-cli ajv-formats${NC}"
+    fi
+fi
+
+# Node.js チェック
+check_tool "node" "node" "optional"
+check_tool "npm" "npm" "optional"
+check_tool "python3" "python3" "optional"
+
+# CMakeバージョンチェック
+if command -v cmake &> /dev/null; then
+    CMAKE_VERSION=$(cmake --version | head -1 | awk "{print \$3}")
+    if ! version_ge "$CMAKE_VERSION" "3.16.0"; then
+        echo -e "  ${RED}✗ CMake: $CMAKE_VERSION (3.16+ が必要)${NC}"
+        ERRORS=$((ERRORS + 1))
+    fi
+fi
 
 # ===========================================================================
 # 5. ビルドディレクトリチェック

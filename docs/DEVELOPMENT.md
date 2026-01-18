@@ -31,6 +31,7 @@ Dev Container を使用すると、CI と完全に同一の環境で開発でき
 | CMake | 3.28+ | ビルドシステム |
 | Ninja | 1.11+ | ビルドツール |
 | ajv-cli | latest | JSONスキーマ検証 |
+| ccache | latest | ビルドキャッシュ（任意） |
 
 #### VS Code 拡張機能（自動インストール）
 
@@ -66,6 +67,7 @@ sudo apt install -y \
     gcc-14 g++-14 \
     clang-18 clang-format-18 clang-tidy-18 clangd-18 \
     cmake ninja-build \
+    ccache ripgrep \
     nodejs npm
 
 # ajv-cli（スキーマ検証）
@@ -117,6 +119,14 @@ sappp/
 | `SAPPP_BUILD_CLANG_FRONTEND` | OFF | Clang フロントエンドをビルド |
 | `SAPPP_WERROR` | OFF | 警告をエラーとして扱う |
 
+### 推奨環境変数（パフォーマンス/再現性）
+
+| 変数 | 説明 | 例 |
+|------|------|----|
+| `SAPPP_BUILD_JOBS` | build/ctest の並列度 | `8` |
+| `SAPPP_USE_CCACHE` | ccache を使用（1で有効） | `1` |
+| `SAPPP_LOG_DIR` | CIログの出力先 | `build/ci-logs` |
+
 ### ビルド例
 
 ```bash
@@ -137,6 +147,14 @@ cmake -S . -B build-release -G Ninja \
     -DSAPPP_WERROR=ON
 
 cmake --build build-release --parallel
+```
+
+### CMake Presets（推奨）
+
+```bash
+cmake --preset gcc-debug
+cmake --build --preset gcc-debug
+ctest --preset gcc-debug
 ```
 
 ### Makefile ターゲット
@@ -170,6 +188,11 @@ make tidy           # clang-tidy 実行
 ```bash
 # 全テスト
 ctest --test-dir build --output-on-failure
+
+# 高速テスト（quick ラベルのみ）
+ctest --test-dir build -L quick --output-on-failure
+
+# quick ラベルの対象: schemas / determinism / build_capture / po / validator
 
 # 決定性テストのみ
 ctest --test-dir build -R determinism --output-on-failure

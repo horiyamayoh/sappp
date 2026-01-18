@@ -6,7 +6,7 @@
 #   ./scripts/pre-commit-check.sh --quick # 最小限のチェック（ビルド+テスト+フォーマット）
 #   ./scripts/pre-commit-check.sh --help  # ヘルプ表示
 
-set -e
+set -euo pipefail
 
 # 色付き出力
 RED='\033[0;31m'
@@ -25,6 +25,7 @@ QUICK_MODE=false
 SKIP_CLANG_BUILD=false
 SKIP_TIDY=false
 SKIP_SCHEMA=false
+TIDY_ALL=false
 
 for arg in "$@"; do
     case $arg in
@@ -43,6 +44,9 @@ for arg in "$@"; do
         --skip-schema)
             SKIP_SCHEMA=true
             ;;
+        --tidy-all)
+            TIDY_ALL=true
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
@@ -51,15 +55,99 @@ for arg in "$@"; do
             echo "  --skip-clang   Clang 18 ビルドをスキップ"
             echo "  --skip-tidy    clang-tidy をスキップ"
             echo "  --skip-schema  スキーマ検証をスキップ"
+            echo "  --tidy-all     clang-tidy を全ファイルに適用"
             echo "  --help, -h     このヘルプを表示"
             exit 0
             ;;
     esac
 done
 
+# 並列度
+if command -v nproc &> /dev/null; then
+    DEFAULT_JOBS="$(nproc)"
+else
+    DEFAULT_JOBS=1
+fi
+BUILD_JOBS="${SAPPP_BUILD_JOBS:-$DEFAULT_JOBS}"
+
+# CMakeジェネレータ
+if command -v ninja &> /dev/null; then
+    GENERATOR="-G Ninja"
+else
+    GENERATOR=""
+fi
+
+# ccache（任意）
+CMAKE_LAUNCHER_OPTS=""
+if [ "${SAPPP_USE_CCACHE:-0}" = "1" ] && command -v ccache &> /dev/null; then
+    CMAKE_LAUNCHER_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+
+has_compiler_warnings() {
+    local log_file="$1"
+    if command -v rg &> /dev/null; then
+        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
+    else
+        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
+    fi
+}
+
+print_compiler_warnings() {
+    local log_file="$1"
+    if command -v rg &> /dev/null; then
+        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
+    else
+        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
+    fi
+}
+
 # 結果追跡
 PASSED=()
 FAILED=()
+
+# ビルドディレクトリ（Docker CI では tmpfs で隔離されるため常に build/ を使用）
+BUILD_DIR="${SAPPP_BUILD_DIR:-build}"
+BUILD_CLANG_DIR="${SAPPP_BUILD_CLANG_DIR:-build-clang}"
+LOG_ROOT="${SAPPP_LOG_DIR:-}"
+if [ -n "$LOG_ROOT" ]; then
+    GCC_LOG_DIR="$LOG_ROOT/gcc"
+    CLANG_LOG_DIR="$LOG_ROOT/clang"
+else
+    GCC_LOG_DIR="$BUILD_DIR/ci-logs"
+    CLANG_LOG_DIR="$BUILD_CLANG_DIR/ci-logs"
+fi
+
+collect_tidy_files() {
+    local files=""
+    if [ "$TIDY_ALL" = true ]; then
+        find libs tools tests include -name "*.cpp" -print
+        return 0
+    fi
+
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        if git rev-parse --verify HEAD > /dev/null 2>&1; then
+            files=$( { git diff --name-only --diff-filter=ACMR HEAD -- libs tools tests include; \
+                git diff --name-only --cached --diff-filter=ACMR HEAD -- libs tools tests include; } | sort -u )
+        else
+            files=$(git ls-files -- libs tools tests include 2>/dev/null || true)
+        fi
+    fi
+
+    if [ -n "$files" ]; then
+        if command -v rg &> /dev/null; then
+            files=$(echo "$files" | rg -e '\.cpp$' || true)
+        else
+            files=$(echo "$files" | grep -E '\.cpp$' || true)
+        fi
+    fi
+
+    if [ -z "$files" ]; then
+        find libs tools tests include -name "*.cpp" -print
+        return 0
+    fi
+
+    echo "$files"
+}
 
 run_check() {
     local name="$1"
@@ -94,11 +182,13 @@ run_check "Format Check (clang-format)" '
         CLANG_FORMAT=clang-format
     else
         echo "Warning: clang-format not found, skipping"
-        exit 0
+        CLANG_FORMAT=""
     fi
-    find libs tools tests include \
-        \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" \) \
-        -print0 2>/dev/null | xargs -0 $CLANG_FORMAT --dry-run --Werror
+    if [ -n "$CLANG_FORMAT" ]; then
+        find libs tools tests include \
+            \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" \) \
+            -print0 2>/dev/null | xargs -0 $CLANG_FORMAT --dry-run --Werror
+    fi
 '
 
 # ===========================================================================
@@ -113,8 +203,9 @@ run_check "Build (GCC 14)" '
         C_COMPILER=gcc
         echo "Warning: g++-14 not found, using default g++"
     fi
-    
-    cmake -S . -B build \
+
+    mkdir -p "$GCC_LOG_DIR"
+    cmake -S . -B "$BUILD_DIR" $GENERATOR \
         -DCMAKE_BUILD_TYPE=Debug \
         -DCMAKE_C_COMPILER=$C_COMPILER \
         -DCMAKE_CXX_COMPILER=$CXX_COMPILER \
@@ -122,23 +213,34 @@ run_check "Build (GCC 14)" '
         -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
         -DSAPPP_WERROR=ON \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-        2>&1 | tail -20
-    
-    cmake --build build --parallel 2>&1
+        $CMAKE_LAUNCHER_OPTS \
+        > "$GCC_LOG_DIR/config.log" 2>&1 || { \
+            echo "CMake configure failed"; \
+            tail -100 "$GCC_LOG_DIR/config.log"; \
+            false; } \
+    && cmake --build "$BUILD_DIR" --parallel "$BUILD_JOBS" > "$GCC_LOG_DIR/build.log" 2>&1 || { \
+        echo "Build failed"; \
+        tail -100 "$GCC_LOG_DIR/build.log"; \
+        false; } \
+    && if has_compiler_warnings "$GCC_LOG_DIR/build.log"; then \
+        echo "Compiler warnings found"; \
+        print_compiler_warnings "$GCC_LOG_DIR/build.log"; \
+        false; \
+    fi
 '
 
 # ===========================================================================
 # 3. テスト実行
 # ===========================================================================
 run_check "All Tests" '
-    ctest --test-dir build --output-on-failure
+    ctest --test-dir "$BUILD_DIR" --output-on-failure -j "$BUILD_JOBS"
 '
 
 # ===========================================================================
 # 4. 決定性テスト
 # ===========================================================================
 run_check "Determinism Tests" '
-    ctest --test-dir build -R determinism --output-on-failure
+    ctest --test-dir "$BUILD_DIR" -R determinism --output-on-failure -j "$BUILD_JOBS"
 '
 
 # ===========================================================================
@@ -149,21 +251,33 @@ if [ "$SKIP_CLANG_BUILD" = false ]; then
     run_check "Build (Clang 18)" '
         if ! command -v clang++-18 &> /dev/null; then
             echo "Warning: clang++-18 not found, skipping"
-            exit 0
+        else
+            rm -rf "$BUILD_CLANG_DIR"
+            mkdir -p "$CLANG_LOG_DIR"
+            cmake -S . -B "$BUILD_CLANG_DIR" $GENERATOR \
+                -DCMAKE_BUILD_TYPE=Debug \
+                -DCMAKE_C_COMPILER=clang-18 \
+                -DCMAKE_CXX_COMPILER=clang++-18 \
+                -DSAPPP_BUILD_TESTS=ON \
+                -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
+                -DSAPPP_WERROR=ON \
+                -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+                $CMAKE_LAUNCHER_OPTS \
+                > "$CLANG_LOG_DIR/config.log" 2>&1 || { \
+                    echo "CMake configure failed"; \
+                    tail -100 "$CLANG_LOG_DIR/config.log"; \
+                    false; } \
+            && cmake --build "$BUILD_CLANG_DIR" --parallel "$BUILD_JOBS" > "$CLANG_LOG_DIR/build.log" 2>&1 || { \
+                echo "Build failed"; \
+                tail -100 "$CLANG_LOG_DIR/build.log"; \
+                false; } \
+            && if has_compiler_warnings "$CLANG_LOG_DIR/build.log"; then \
+                echo "Compiler warnings found"; \
+                print_compiler_warnings "$CLANG_LOG_DIR/build.log"; \
+                false; \
+            fi \
+            && ctest --test-dir "$BUILD_CLANG_DIR" --output-on-failure -j "$BUILD_JOBS"
         fi
-        
-        rm -rf build-clang
-        cmake -S . -B build-clang \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_C_COMPILER=clang-18 \
-            -DCMAKE_CXX_COMPILER=clang++-18 \
-            -DSAPPP_BUILD_TESTS=ON \
-            -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
-            -DSAPPP_WERROR=ON \
-            2>&1 | tail -20
-        
-        cmake --build build-clang --parallel 2>&1
-        ctest --test-dir build-clang --output-on-failure
     '
 fi
 
@@ -178,19 +292,20 @@ if [ "$SKIP_TIDY" = false ]; then
             CLANG_TIDY=clang-tidy
         else
             echo "Warning: clang-tidy not found, skipping"
-            exit 0
+            CLANG_TIDY=""
         fi
         
         # 変更されたファイルのみチェック（高速化）
-        CHANGED_FILES=$(git diff --name-only HEAD~1 -- "libs/*.cpp" 2>/dev/null || find libs -name "*.cpp")
-        if [ -z "$CHANGED_FILES" ]; then
-            echo "No C++ files to check"
-            exit 0
+        if [ -n "$CLANG_TIDY" ]; then
+            CHANGED_FILES=$(collect_tidy_files)
+            if [ -z "$CHANGED_FILES" ]; then
+                echo "No C++ files to check"
+            else
+                echo "Checking files:"
+                echo "$CHANGED_FILES"
+                echo "$CHANGED_FILES" | xargs -P"$BUILD_JOBS" -I{} $CLANG_TIDY -p "$BUILD_DIR" --warnings-as-errors="*" {}
+            fi
         fi
-        
-        echo "Checking files:"
-        echo "$CHANGED_FILES"
-        echo "$CHANGED_FILES" | xargs -P$(nproc) -I{} $CLANG_TIDY -p build --warnings-as-errors="*" {}
     '
 fi
 
@@ -202,29 +317,41 @@ if [ "$SKIP_SCHEMA" = false ]; then
         if ! command -v ajv &> /dev/null; then
             echo "Warning: ajv-cli not found, trying with Python"
             if command -v python3 &> /dev/null; then
+                SCHEMA_OK=true
                 for schema in schemas/*.schema.json; do
                     echo "Validating: $schema"
-                    python3 -c "import json; json.load(open(\"$schema\"))" || exit 1
+                    if ! python3 -c "import json; json.load(open(\"$schema\"))"; then
+                        SCHEMA_OK=false
+                        break
+                    fi
                 done
-                exit 0
+                if [ "$SCHEMA_OK" = false ]; then
+                    false
+                fi
             else
                 echo "Warning: No JSON validator found, skipping"
-                exit 0
             fi
-        fi
-        
-        # NOTE: ajv-formats is required for date-time format validation
-        # Build reference list for cross-schema references (excluding the schema being validated)
-        for schema in schemas/*.schema.json; do
-            refs=""
-            for ref_schema in schemas/*.schema.json; do
-                if [ "$ref_schema" != "$schema" ]; then
-                    refs="$refs -r $ref_schema"
+        else
+            # NOTE: ajv-formats is required for date-time format validation
+            # Build reference list for cross-schema references (excluding the schema being validated)
+            SCHEMA_OK=true
+            for schema in schemas/*.schema.json; do
+                refs=""
+                for ref_schema in schemas/*.schema.json; do
+                    if [ "$ref_schema" != "$schema" ]; then
+                        refs="$refs -r $ref_schema"
+                    fi
+                done
+                echo "Validating: $schema"
+                if ! ajv compile -s "$schema" --spec=draft2020 -c ajv-formats $refs; then
+                    SCHEMA_OK=false
+                    break
                 fi
             done
-            echo "Validating: $schema"
-            ajv compile -s "$schema" --spec=draft2020 -c ajv-formats $refs || exit 1
-        done
+            if [ "$SCHEMA_OK" = false ]; then
+                false
+            fi
+        fi
     '
 fi
 

@@ -8,7 +8,7 @@
 # このスクリプトはコミット前の高速フィードバック用です。
 # フルチェックは pre-commit-check.sh または docker-ci.sh を使用してください。
 
-set -e
+set -euo pipefail
 
 # 色付き出力
 RED='\033[0;31m'
@@ -42,6 +42,45 @@ for arg in "$@"; do
     esac
 done
 
+# 並列度
+if command -v nproc &> /dev/null; then
+    DEFAULT_JOBS="$(nproc)"
+else
+    DEFAULT_JOBS=1
+fi
+BUILD_JOBS="${SAPPP_BUILD_JOBS:-$DEFAULT_JOBS}"
+
+# CMakeジェネレータ
+if command -v ninja &> /dev/null; then
+    GENERATOR="-G Ninja"
+else
+    GENERATOR=""
+fi
+
+# ccache（任意）
+CMAKE_LAUNCHER_OPTS=""
+if [ "${SAPPP_USE_CCACHE:-0}" = "1" ] && command -v ccache &> /dev/null; then
+    CMAKE_LAUNCHER_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+fi
+
+has_compiler_warnings() {
+    local log_file="$1"
+    if command -v rg &> /dev/null; then
+        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
+    else
+        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
+    fi
+}
+
+print_compiler_warnings() {
+    local log_file="$1"
+    if command -v rg &> /dev/null; then
+        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
+    else
+        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
+    fi
+}
+
 # 開始時刻
 START_TIME=$(date +%s)
 
@@ -51,12 +90,26 @@ echo -e "${YELLOW}━━━ SAP++ Quick Check ━━━${NC}"
 # 1. 変更ファイルの検出
 # ===========================================================================
 if [ "$CHECK_ALL" = true ]; then
-    CHANGED_CPP=$(find libs tools tests include -name '*.cpp' -o -name '*.hpp' -o -name '*.h' 2>/dev/null | head -100)
+    CHANGED_CPP=$(find libs tools tests include \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -print 2>/dev/null | head -100)
 else
     # git diff で変更ファイルを検出（staged + unstaged）
-    CHANGED_CPP=$(git diff --name-only --diff-filter=ACMR HEAD -- '*.cpp' '*.hpp' '*.h' 2>/dev/null || true)
-    STAGED_CPP=$(git diff --name-only --cached --diff-filter=ACMR -- '*.cpp' '*.hpp' '*.h' 2>/dev/null || true)
-    CHANGED_CPP=$(echo -e "$CHANGED_CPP\n$STAGED_CPP" | sort -u | grep -v '^$' || true)
+    CHANGED_CPP=""
+    if git rev-parse --git-dir > /dev/null 2>&1; then
+        if git rev-parse --verify HEAD > /dev/null 2>&1; then
+            CHANGED_CPP=$( { git diff --name-only --diff-filter=ACMR HEAD -- libs tools tests include; \
+                git diff --name-only --cached --diff-filter=ACMR HEAD -- libs tools tests include; } | sort -u )
+        else
+            CHANGED_CPP=$(git ls-files -- libs tools tests include 2>/dev/null || true)
+        fi
+    fi
+
+    if [ -n "$CHANGED_CPP" ]; then
+        if command -v rg &> /dev/null; then
+            CHANGED_CPP=$(echo "$CHANGED_CPP" | rg -e '\.(cpp|hpp|h)$' || true)
+        else
+            CHANGED_CPP=$(echo "$CHANGED_CPP" | grep -E '\.(cpp|hpp|h)$' || true)
+        fi
+    fi
 fi
 
 if [ -z "$CHANGED_CPP" ]; then
@@ -105,8 +158,13 @@ fi
 # ===========================================================================
 echo -e "\n${BLUE}▶ Incremental Build${NC}"
 
+# ビルドディレクトリ（環境変数で上書き可能 - Docker CI用）
+BUILD_DIR="${SAPPP_BUILD_DIR:-build}"
+LOG_DIR="${SAPPP_LOG_DIR:-$BUILD_DIR/ci-logs}"
+mkdir -p "$LOG_DIR"
+
 # ビルドディレクトリがなければ設定
-if [ ! -f "build/Makefile" ] && [ ! -f "build/build.ninja" ]; then
+if [ ! -f "$BUILD_DIR/Makefile" ] && [ ! -f "$BUILD_DIR/build.ninja" ]; then
     echo "Configuring CMake..."
     
     # コンパイラ検出
@@ -118,14 +176,7 @@ if [ ! -f "build/Makefile" ] && [ ! -f "build/build.ninja" ]; then
         CC=gcc
     fi
     
-    # Ninja優先
-    if command -v ninja &> /dev/null; then
-        GENERATOR="-G Ninja"
-    else
-        GENERATOR=""
-    fi
-    
-    cmake -S . -B build $GENERATOR \
+    if ! cmake -S . -B "$BUILD_DIR" $GENERATOR \
         -DCMAKE_BUILD_TYPE=Debug \
         -DCMAKE_C_COMPILER=$CC \
         -DCMAKE_CXX_COMPILER=$CXX \
@@ -133,16 +184,25 @@ if [ ! -f "build/Makefile" ] && [ ! -f "build/build.ninja" ]; then
         -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
         -DSAPPP_WERROR=ON \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-        > /dev/null 2>&1
-fi
-
-# ビルド（並列、出力抑制）
-if cmake --build build --parallel 2>&1 | grep -E "(error:|warning:)" | head -20; then
-    # エラーがあれば失敗
-    if cmake --build build --parallel 2>&1 | grep -q "error:"; then
-        echo -e "${RED}✗ Build failed${NC}"
+        $CMAKE_LAUNCHER_OPTS \
+        > "$LOG_DIR/quick-config.log" 2>&1; then
+        echo -e "${RED}✗ CMake configure failed${NC}"
+        tail -100 "$LOG_DIR/quick-config.log"
         exit 1
     fi
+fi
+
+# ビルド（並列）
+BUILD_LOG="$LOG_DIR/quick-build.log"
+if ! cmake --build "$BUILD_DIR" --parallel "$BUILD_JOBS" > "$BUILD_LOG" 2>&1; then
+    echo -e "${RED}✗ Build failed${NC}"
+    tail -100 "$BUILD_LOG"
+    exit 1
+fi
+if has_compiler_warnings "$BUILD_LOG"; then
+    echo -e "${RED}✗ Compiler warnings found${NC}"
+    print_compiler_warnings "$BUILD_LOG"
+    exit 1
 fi
 echo -e "${GREEN}✓ Build passed${NC}"
 
@@ -152,9 +212,16 @@ echo -e "${GREEN}✓ Build passed${NC}"
 echo -e "\n${BLUE}▶ Quick Tests${NC}"
 
 # 失敗したテストのみ表示
-if ! ctest --test-dir build --output-on-failure -j$(nproc) 2>&1 | tail -5; then
-    echo -e "${RED}✗ Tests failed${NC}"
-    exit 1
+if ctest --test-dir "$BUILD_DIR" -N -L quick | grep -q "Total Tests: 0"; then
+    if ! ctest --test-dir "$BUILD_DIR" --output-on-failure -j "$BUILD_JOBS"; then
+        echo -e "${RED}✗ Tests failed${NC}"
+        exit 1
+    fi
+else
+    if ! ctest --test-dir "$BUILD_DIR" -L quick --output-on-failure -j "$BUILD_JOBS"; then
+        echo -e "${RED}✗ Tests failed${NC}"
+        exit 1
+    fi
 fi
 echo -e "${GREEN}✓ Tests passed${NC}"
 

@@ -10,7 +10,7 @@
 # このスクリプトはGitHub Actions CIと完全に同一の環境を提供します。
 # 「ローカルでは通ったのにCIで落ちる」問題を根本的に解決します。
 
-set -e
+set -euo pipefail
 
 # 色付き出力
 RED='\033[0;31m'
@@ -65,11 +65,12 @@ done
 # Dockerイメージのビルド（必要な場合）
 build_image() {
     echo -e "${BLUE}▶ Dockerイメージをビルド中...${NC}"
+
+    DOCKERFILE_HASH=$(sha256sum docker/Dockerfile | cut -d' ' -f1)
     
     # イメージが存在するかチェック
     if docker image inspect "$IMAGE_NAME" &> /dev/null; then
         # Dockerfileの更新チェック
-        DOCKERFILE_HASH=$(sha256sum docker/Dockerfile | cut -d' ' -f1)
         EXISTING_HASH=$(docker image inspect "$IMAGE_NAME" --format '{{.Config.Labels.dockerfile_hash}}' 2>/dev/null || echo "")
         
         if [ "$DOCKERFILE_HASH" = "$EXISTING_HASH" ]; then
@@ -109,12 +110,18 @@ main() {
     echo -e "${BLUE}  Command: $COMMAND${NC}\n"
     
     # Docker実行オプション
+    # tmpfs でビルドディレクトリを隔離し、ホストの build/ との競合を回避
+    # これにより完全なCI再現性を確保
     DOCKER_OPTS=(
         --rm
         -v "$PROJECT_ROOT:/workspace"
+        --tmpfs /workspace/build:exec
+        --tmpfs /workspace/build-clang:exec
         -w /workspace
         -e "TERM=xterm-256color"
         -e "SAPPP_CI_ENV=docker"
+        -e "SAPPP_BUILD_JOBS=${SAPPP_BUILD_JOBS:-}"
+        -e "SAPPP_USE_CCACHE=${SAPPP_USE_CCACHE:-0}"
     )
     
     if [ "$INTERACTIVE" = true ]; then

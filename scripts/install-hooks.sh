@@ -8,7 +8,7 @@
 # インストールされるフック:
 #   pre-commit: quick-check.sh を実行（30秒以内の高速チェック）
 
-set -e
+set -euo pipefail
 
 # 色付き出力
 RED='\033[0;31m'
@@ -65,6 +65,8 @@ cat > "$HOOKS_DIR/pre-commit" << 'EOF'
 # インストール: ./scripts/install-hooks.sh
 # 削除: ./scripts/install-hooks.sh --remove
 
+set -euo pipefail
+
 # 色付き出力
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -74,13 +76,13 @@ NC='\033[0m'
 echo -e "${YELLOW}━━━ SAP++ Pre-commit Check ━━━${NC}"
 
 # スキップオプション
-if [ -n "$SKIP_PRE_COMMIT" ]; then
+if [ -n "${SKIP_PRE_COMMIT:-}" ]; then
     echo -e "${YELLOW}⚠ SKIP_PRE_COMMIT が設定されています。チェックをスキップ${NC}"
     exit 0
 fi
 
 # Docker環境内かどうかを検出
-if [ -n "$SAPPP_CI_ENV" ]; then
+if [ -n "${SAPPP_CI_ENV:-}" ]; then
     # Docker/DevContainer内 - quick-check.sh を直接実行
     if ./scripts/quick-check.sh; then
         echo -e "${GREEN}✓ Pre-commit check passed${NC}"
@@ -137,6 +139,8 @@ cat > "$HOOKS_DIR/pre-push" << 'EOF'
 #
 # push前にフルCIチェックを実行します（Docker推奨）
 
+set -euo pipefail
+
 # 色付き出力
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -147,14 +151,14 @@ NC='\033[0m'
 echo -e "${YELLOW}━━━ SAP++ Pre-push Check ━━━${NC}"
 
 # スキップオプション
-if [ -n "$SKIP_PRE_PUSH" ]; then
+if [ -n "${SKIP_PRE_PUSH:-}" ]; then
     echo -e "${YELLOW}⚠ SKIP_PRE_PUSH が設定されています。チェックをスキップ${NC}"
     echo -e "${RED}警告: CI で失敗する可能性があります${NC}"
     exit 0
 fi
 
 # Docker環境内かどうかを検出
-if [ -n "$SAPPP_CI_ENV" ]; then
+if [ -n "${SAPPP_CI_ENV:-}" ]; then
     # Docker/DevContainer内 - pre-commit-check.sh を直接実行
     echo -e "${BLUE}フルCIチェックを実行中...${NC}"
     if ./scripts/pre-commit-check.sh; then

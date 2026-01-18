@@ -49,7 +49,7 @@ Docker だけで CI と同等のチェックを実行できます。
 
 ```bash
 # Ubuntu 24.04 LTS
-sudo apt install gcc-14 g++-14 clang-18 clang-format-18 clang-tidy-18 cmake ninja-build
+sudo apt install gcc-14 g++-14 clang-18 clang-format-18 clang-tidy-18 cmake ninja-build ccache ripgrep
 
 # ビルド
 cmake -S . -B build -G Ninja \
@@ -61,6 +61,14 @@ cmake --build build --parallel
 
 # テスト
 ctest --test-dir build --output-on-failure
+```
+
+CMake Presets を使う場合:
+
+```bash
+cmake --preset gcc-debug
+cmake --build --preset gcc-debug
+ctest --preset gcc-debug
 ```
 
 ---
@@ -93,6 +101,13 @@ make docker-ci
 
 # プッシュ
 git push
+```
+
+オプション（パフォーマンス/再現性）:
+
+```bash
+# 並列度と ccache を明示
+SAPPP_BUILD_JOBS=8 SAPPP_USE_CCACHE=1 make quick
 ```
 
 ### 3. 利用可能なコマンド

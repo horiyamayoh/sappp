@@ -26,13 +26,27 @@ CC := $(shell command -v gcc-14 2>/dev/null || echo gcc)
 # ビルド設定
 BUILD_DIR := build
 BUILD_TYPE := Debug
+
+BUILD_JOBS := $(shell command -v nproc >/dev/null 2>&1 && nproc || echo 1)
+ifneq ($(SAPPP_BUILD_JOBS),)
+BUILD_JOBS := $(SAPPP_BUILD_JOBS)
+endif
+
+CMAKE_LAUNCHER_OPTS :=
+ifneq ($(SAPPP_USE_CCACHE),)
+ifneq ($(SAPPP_USE_CCACHE),0)
+CMAKE_LAUNCHER_OPTS := -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+endif
+endif
+
 CMAKE_OPTS := -DCMAKE_BUILD_TYPE=$(BUILD_TYPE) \
               -DCMAKE_C_COMPILER=$(CC) \
               -DCMAKE_CXX_COMPILER=$(CXX) \
               -DSAPPP_BUILD_TESTS=ON \
               -DSAPPP_BUILD_CLANG_FRONTEND=OFF \
               -DSAPPP_WERROR=ON \
-              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+              -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+              $(CMAKE_LAUNCHER_OPTS)
 
 # Ninja優先
 GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja" || echo "")
@@ -120,7 +134,7 @@ configure: $(BUILD_DIR)/Makefile $(BUILD_DIR)/build.ninja
 
 build: configure
 	@echo "$(BLUE)▶ ビルド中...$(NC)"
-	@cmake --build $(BUILD_DIR) --parallel
+	@cmake --build $(BUILD_DIR) --parallel $(BUILD_JOBS)
 	@echo "$(GREEN)✓ ビルド完了$(NC)"
 
 # ===========================================================================
@@ -128,12 +142,12 @@ build: configure
 # ===========================================================================
 test: build
 	@echo "$(BLUE)▶ テスト実行中...$(NC)"
-	@ctest --test-dir $(BUILD_DIR) --output-on-failure
+	@ctest --test-dir $(BUILD_DIR) --output-on-failure -j$(BUILD_JOBS)
 	@echo "$(GREEN)✓ テスト完了$(NC)"
 
 test-determinism: build
 	@echo "$(BLUE)▶ 決定性テスト実行中...$(NC)"
-	@ctest --test-dir $(BUILD_DIR) -R determinism --output-on-failure
+	@ctest --test-dir $(BUILD_DIR) -R determinism --output-on-failure -j$(BUILD_JOBS)
 	@echo "$(GREEN)✓ 決定性テスト完了$(NC)"
 
 # ===========================================================================
@@ -167,7 +181,7 @@ ifeq ($(CLANG_TIDY),)
 	@echo "$(YELLOW)Warning: clang-tidy not found$(NC)"
 else
 	@echo "$(BLUE)▶ clang-tidy実行中...$(NC)"
-	@find libs -name '*.cpp' -print0 | xargs -0 -P$$(nproc) -I{} $(CLANG_TIDY) -p $(BUILD_DIR) --warnings-as-errors='*' {}
+	@find libs -name '*.cpp' -print0 | xargs -0 -P$(BUILD_JOBS) -I{} $(CLANG_TIDY) -p $(BUILD_DIR) --warnings-as-errors='*' {}
 	@echo "$(GREEN)✓ clang-tidy完了$(NC)"
 endif
 

@@ -44,6 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Utilities
     curl \
     jq \
+    ccache \
+    ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Install ajv-cli globally for JSON Schema validation
