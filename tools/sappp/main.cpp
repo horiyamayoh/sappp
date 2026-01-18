@@ -5,7 +5,7 @@
  * C++23 modernization:
  * - Using std::print/std::println (C++23)
  * - Using std::string_view where appropriate
- * 
+ *
  * Commands:
  *   capture   - Capture build conditions from compile_commands.json
  *   analyze   - Run static analysis
@@ -16,15 +16,15 @@
  *   version   - Show version information
  */
 
-#include "sappp/version.hpp"
-#include "sappp/common.hpp"
+#include "po_generator.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
+#include "sappp/common.hpp"
 #include "sappp/schema_validate.hpp"
 #include "sappp/validator.hpp"
-#include "po_generator.hpp"
+#include "sappp/version.hpp"
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
-#include "frontend_clang/frontend.hpp"
+    #include "frontend_clang/frontend.hpp"
 #endif
 #include <charconv>
 #include <filesystem>
@@ -39,14 +39,16 @@
 
 namespace {
 
-void print_version() {
+void print_version()
+{
     std::println("sappp {} ({})", sappp::kVersion, sappp::kBuildId);
     std::println("  semantics:    {}", sappp::kSemanticsVersion);
     std::println("  proof_system: {}", sappp::kProofSystemVersion);
     std::println("  profile:      {}", sappp::kProfileVersion);
 }
 
-void print_help() {
+void print_help()
+{
     std::print(R"(SAP++ - Sound, Static Absence-Proving Analyzer for C++
 
 Usage: sappp <command> [options]
@@ -71,7 +73,8 @@ Run 'sappp <command> --help' for command-specific options.
 )");
 }
 
-void print_capture_help() {
+void print_capture_help()
+{
     std::print(R"(Usage: sappp capture [options]
 
 Capture build conditions from compile_commands.json
@@ -87,7 +90,8 @@ Output:
 )");
 }
 
-void print_analyze_help() {
+void print_analyze_help()
+{
     std::print(R"(Usage: sappp analyze [options]
 
 Run static analysis on captured build
@@ -110,7 +114,8 @@ Output:
 )");
 }
 
-void print_validate_help() {
+void print_validate_help()
+{
     std::print(R"(Usage: sappp validate [options]
 
 Validate certificates and confirm SAFE/BUG results
@@ -127,7 +132,8 @@ Output:
 )");
 }
 
-void print_pack_help() {
+void print_pack_help()
+{
     std::print(R"(Usage: sappp pack [options]
 
 Create reproducibility pack
@@ -143,7 +149,8 @@ Output:
 )");
 }
 
-void print_diff_help() {
+void print_diff_help()
+{
     std::print(R"(Usage: sappp diff [options]
 
 Compare before/after analysis results
@@ -159,7 +166,8 @@ Output:
 )");
 }
 
-int cmd_capture(int argc, char** argv) {
+int cmd_capture(int argc, char** argv)
+{
     std::string compile_commands;
     std::string output = "./out";
     std::string repo_root;
@@ -217,7 +225,9 @@ int cmd_capture(int argc, char** argv) {
     }
     auto canonical = sappp::canonical::canonicalize(snapshot->json());
     if (!canonical) {
-        std::println(stderr, "Error: failed to serialize build snapshot: {}", canonical.error().message);
+        std::println(stderr,
+                     "Error: failed to serialize build snapshot: {}",
+                     canonical.error().message);
         return 1;
     }
     out << *canonical << "\n";
@@ -228,7 +238,8 @@ int cmd_capture(int argc, char** argv) {
     return 0;
 }
 
-int cmd_analyze(int argc, char** argv) {
+int cmd_analyze(int argc, char** argv)
+{
     std::string snapshot;
     std::string output = "./out";
     [[maybe_unused]] int jobs = 0;
@@ -253,7 +264,8 @@ int cmd_analyze(int argc, char** argv) {
             output = args[idx + 1];
             skip_next = true;
         } else if ((arg == "--jobs" || arg == "-j") && i + 1 < std::ssize(args)) {
-            std::string_view value = args[idx + 1] ? std::string_view(args[idx + 1]) : std::string_view();
+            std::string_view value =
+                args[idx + 1] ? std::string_view(args[idx + 1]) : std::string_view();
             int parsed = 0;
             auto* begin = value.begin();
             auto* end = value.end();
@@ -277,7 +289,9 @@ int cmd_analyze(int argc, char** argv) {
     }
 
 #if !defined(SAPPP_HAS_CLANG_FRONTEND)
-    std::println(stderr, "Error: frontend_clang is not built. Reconfigure with -DSAPPP_BUILD_CLANG_FRONTEND=ON");
+    std::println(
+        stderr,
+        "Error: frontend_clang is not built. Reconfigure with -DSAPPP_BUILD_CLANG_FRONTEND=ON");
     return 1;
 #else
     (void)jobs;
@@ -333,12 +347,16 @@ int cmd_analyze(int argc, char** argv) {
 
     std::ofstream source_out(source_map_path);
     if (!source_out) {
-        std::println(stderr, "Error: failed to write source map output: {}", source_map_path.string());
+        std::println(stderr,
+                     "Error: failed to write source map output: {}",
+                     source_map_path.string());
         return 1;
     }
     auto source_canonical = sappp::canonical::canonicalize(result->source_map);
     if (!source_canonical) {
-        std::println(stderr, "Error: failed to serialize source map: {}", source_canonical.error().message);
+        std::println(stderr,
+                     "Error: failed to serialize source map: {}",
+                     source_canonical.error().message);
         return 1;
     }
     source_out << *source_canonical << "\n";
@@ -352,7 +370,8 @@ int cmd_analyze(int argc, char** argv) {
 
     const std::filesystem::path po_schema_path =
         std::filesystem::path(schema_dir) / "po.v1.schema.json";
-    if (auto validation = sappp::common::validate_json(*po_list_result, po_schema_path.string()); !validation) {
+    if (auto validation = sappp::common::validate_json(*po_list_result, po_schema_path.string());
+        !validation) {
         std::println(stderr, "Error: po schema validation failed: {}", validation.error().message);
         return 1;
     }
@@ -365,7 +384,9 @@ int cmd_analyze(int argc, char** argv) {
     }
     auto po_canonical = sappp::canonical::canonicalize(*po_list_result);
     if (!po_canonical) {
-        std::println(stderr, "Error: failed to serialize PO list: {}", po_canonical.error().message);
+        std::println(stderr,
+                     "Error: failed to serialize PO list: {}",
+                     po_canonical.error().message);
         return 1;
     }
     po_out << *po_canonical << "\n";
@@ -380,7 +401,8 @@ int cmd_analyze(int argc, char** argv) {
 #endif
 }
 
-int cmd_validate(int argc, char** argv) {
+int cmd_validate(int argc, char** argv)
+{
     std::string input;
     std::string output = "validated_results.json";
     bool strict = false;
@@ -436,7 +458,8 @@ int cmd_validate(int argc, char** argv) {
     return 0;
 }
 
-int cmd_pack(int argc, char** argv) {
+int cmd_pack(int argc, char** argv)
+{
     std::string input;
     std::string output = "pack.tar.gz";
 
@@ -473,7 +496,8 @@ int cmd_pack(int argc, char** argv) {
     return 0;
 }
 
-int cmd_diff(int argc, char** argv) {
+int cmd_diff(int argc, char** argv)
+{
     std::string before;
     std::string after;
     std::string output = "diff.json";
@@ -515,16 +539,18 @@ int cmd_diff(int argc, char** argv) {
     return 0;
 }
 
-int cmd_explain(int argc, char** argv) {
+int cmd_explain(int argc, char** argv)
+{
     std::println("[explain] Not yet implemented");
     (void)argc;
     (void)argv;
     return 0;
 }
 
-} // namespace
+}  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     if (argc < 2) {
         print_help();
         return 1;

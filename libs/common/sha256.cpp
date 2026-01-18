@@ -11,6 +11,7 @@
  */
 
 #include "sappp/common.hpp"
+
 #include <array>
 #include <bit>
 #include <cstddef>
@@ -24,68 +25,79 @@ namespace sappp::common {
 namespace {
 
 // SHA-256 constants (constexpr)
-constexpr std::array<uint32_t, 64> K = {{
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
-    0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
-    0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
-    0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
-    0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-}};
+constexpr std::array<uint32_t, 64> K = {
+    {0x42'8a'2f'98, 0x71'37'44'91, 0xb5'c0'fb'cf, 0xe9'b5'db'a5, 0x39'56'c2'5b, 0x59'f1'11'f1,
+     0x92'3f'82'a4, 0xab'1c'5e'd5, 0xd8'07'aa'98, 0x12'83'5b'01, 0x24'31'85'be, 0x55'0c'7d'c3,
+     0x72'be'5d'74, 0x80'de'b1'fe, 0x9b'dc'06'a7, 0xc1'9b'f1'74, 0xe4'9b'69'c1, 0xef'be'47'86,
+     0x0f'c1'9d'c6, 0x24'0c'a1'cc, 0x2d'e9'2c'6f, 0x4a'74'84'aa, 0x5c'b0'a9'dc, 0x76'f9'88'da,
+     0x98'3e'51'52, 0xa8'31'c6'6d, 0xb0'03'27'c8, 0xbf'59'7f'c7, 0xc6'e0'0b'f3, 0xd5'a7'91'47,
+     0x06'ca'63'51, 0x14'29'29'67, 0x27'b7'0a'85, 0x2e'1b'21'38, 0x4d'2c'6d'fc, 0x53'38'0d'13,
+     0x65'0a'73'54, 0x76'6a'0a'bb, 0x81'c2'c9'2e, 0x92'72'2c'85, 0xa2'bf'e8'a1, 0xa8'1a'66'4b,
+     0xc2'4b'8b'70, 0xc7'6c'51'a3, 0xd1'92'e8'19, 0xd6'99'06'24, 0xf4'0e'35'85, 0x10'6a'a0'70,
+     0x19'a4'c1'16, 0x1e'37'6c'08, 0x27'48'77'4c, 0x34'b0'bc'b5, 0x39'1c'0c'b3, 0x4e'd8'aa'4a,
+     0x5b'9c'ca'4f, 0x68'2e'6f'f3, 0x74'8f'82'ee, 0x78'a5'63'6f, 0x84'c8'78'14, 0x8c'c7'02'08,
+     0x90'be'ff'fa, 0xa4'50'6c'eb, 0xbe'f9'a3'f7, 0xc6'71'78'f2}
+};
 
 // SHA-256 helper functions (all constexpr, using C++23 std::rotr)
-[[nodiscard]] constexpr uint32_t ch(uint32_t x, uint32_t y, uint32_t z) noexcept {
+[[nodiscard]] constexpr uint32_t ch(uint32_t x, uint32_t y, uint32_t z) noexcept
+{
     return (x & y) ^ (~x & z);
 }
 
-[[nodiscard]] constexpr uint32_t maj(uint32_t x, uint32_t y, uint32_t z) noexcept {
+[[nodiscard]] constexpr uint32_t maj(uint32_t x, uint32_t y, uint32_t z) noexcept
+{
     return (x & y) ^ (x & z) ^ (y & z);
 }
 
-[[nodiscard]] constexpr uint32_t sigma0(uint32_t x) noexcept {
+[[nodiscard]] constexpr uint32_t sigma0(uint32_t x) noexcept
+{
     return std::rotr(x, 2U) ^ std::rotr(x, 13U) ^ std::rotr(x, 22U);
 }
 
-[[nodiscard]] constexpr uint32_t sigma1(uint32_t x) noexcept {
+[[nodiscard]] constexpr uint32_t sigma1(uint32_t x) noexcept
+{
     return std::rotr(x, 6U) ^ std::rotr(x, 11U) ^ std::rotr(x, 25U);
 }
 
-[[nodiscard]] constexpr uint32_t gamma0(uint32_t x) noexcept {
+[[nodiscard]] constexpr uint32_t gamma0(uint32_t x) noexcept
+{
     return std::rotr(x, 7U) ^ std::rotr(x, 18U) ^ (x >> 3U);
 }
 
-[[nodiscard]] constexpr uint32_t gamma1(uint32_t x) noexcept {
+[[nodiscard]] constexpr uint32_t gamma1(uint32_t x) noexcept
+{
     return std::rotr(x, 17U) ^ std::rotr(x, 19U) ^ (x >> 10U);
 }
 
-class SHA256 {
+class SHA256
+{
 public:
-    SHA256() : state_{}, buffer_{}, buffer_len_{0}, count_{0} { reset(); }
+    SHA256()
+        : state_{}
+        , buffer_{}
+        , buffer_len_{0}
+        , count_{0}
+    {
+        reset();
+    }
 
-    void reset() {
-        state_[0] = 0x6a09e667;
-        state_[1] = 0xbb67ae85;
-        state_[2] = 0x3c6ef372;
-        state_[3] = 0xa54ff53a;
-        state_[4] = 0x510e527f;
-        state_[5] = 0x9b05688c;
-        state_[6] = 0x1f83d9ab;
-        state_[7] = 0x5be0cd19;
+    void reset()
+    {
+        state_[0] = 0x6a'09'e6'67;
+        state_[1] = 0xbb'67'ae'85;
+        state_[2] = 0x3c'6e'f3'72;
+        state_[3] = 0xa5'4f'f5'3a;
+        state_[4] = 0x51'0e'52'7f;
+        state_[5] = 0x9b'05'68'8c;
+        state_[6] = 0x1f'83'd9'ab;
+        state_[7] = 0x5b'e0'cd'19;
         count_ = 0;
         buffer_len_ = 0;
     }
 
-    void update(std::span<const std::byte> data) {
+    void update(std::span<const std::byte> data)
+    {
         for (auto byte : data) {
             buffer_[buffer_len_++] = std::to_integer<uint8_t>(byte);
             if (buffer_len_ == 64) {
@@ -96,25 +108,24 @@ public:
         }
     }
 
-    void update(std::span<const uint8_t> data) {
-        update(std::as_bytes(data));
-    }
+    void update(std::span<const uint8_t> data) { update(std::as_bytes(data)); }
 
-    void update(std::string_view data) {
-        update(std::as_bytes(std::span(data)));
-    }
+    void update(std::string_view data) { update(std::as_bytes(std::span(data))); }
 
-    std::array<uint8_t, 32> finalize() {
+    std::array<uint8_t, 32> finalize()
+    {
         uint64_t total_bits = count_ + buffer_len_ * 8;
 
         // Padding
         buffer_[buffer_len_++] = 0x80;
         if (buffer_len_ > 56) {
-            while (buffer_len_ < 64) buffer_[buffer_len_++] = 0;
+            while (buffer_len_ < 64)
+                buffer_[buffer_len_++] = 0;
             transform();
             buffer_len_ = 0;
         }
-        while (buffer_len_ < 56) buffer_[buffer_len_++] = 0;
+        while (buffer_len_ < 56)
+            buffer_[buffer_len_++] = 0;
 
         // Length (big-endian)
         for (auto i : std::views::iota(0, 8) | std::views::reverse) {
@@ -136,7 +147,8 @@ public:
     }
 
 private:
-    void transform() {
+    void transform()
+    {
         std::array<uint32_t, 64> w;
 
         // Prepare message schedule using std::byteswap for big-endian conversion
@@ -154,7 +166,8 @@ private:
         }
         for (auto [i, slot] : std::views::enumerate(schedule.subspan(16))) {
             const auto idx = static_cast<std::size_t>(i) + 16uz;
-            slot = gamma1(schedule[idx - 2]) + schedule[idx - 7] + gamma0(schedule[idx - 15]) + schedule[idx - 16];
+            slot = gamma1(schedule[idx - 2]) + schedule[idx - 7] + gamma0(schedule[idx - 15])
+                   + schedule[idx - 16];
         }
 
         // Working variables
@@ -166,12 +179,24 @@ private:
             const auto idx = static_cast<std::size_t>(i);
             uint32_t t1 = h + sigma1(e) + ch(e, f, g) + K[idx] + w_val;
             uint32_t t2 = sigma0(a) + maj(a, b, c);
-            h = g; g = f; f = e; e = d + t1;
-            d = c; c = b; b = a; a = t1 + t2;
+            h = g;
+            g = f;
+            f = e;
+            e = d + t1;
+            d = c;
+            c = b;
+            b = a;
+            a = t1 + t2;
         }
 
-        state_[0] += a; state_[1] += b; state_[2] += c; state_[3] += d;
-        state_[4] += e; state_[5] += f; state_[6] += g; state_[7] += h;
+        state_[0] += a;
+        state_[1] += b;
+        state_[2] += c;
+        state_[3] += d;
+        state_[4] += e;
+        state_[5] += f;
+        state_[6] += g;
+        state_[7] += h;
     }
 
     std::array<uint32_t, 8> state_;
@@ -180,7 +205,8 @@ private:
     uint64_t count_;
 };
 
-[[nodiscard]] std::string to_hex(const std::array<uint8_t, 32>& hash) {
+[[nodiscard]] std::string to_hex(const std::array<uint8_t, 32>& hash)
+{
     std::string result;
     result.reserve(64);
     for (uint8_t b : hash) {
@@ -189,16 +215,18 @@ private:
     return result;
 }
 
-} // namespace
+}  // namespace
 
-std::string sha256(std::string_view data) {
+std::string sha256(std::string_view data)
+{
     SHA256 hasher;
     hasher.update(data);
     return to_hex(hasher.finalize());
 }
 
-std::string sha256_prefixed(std::string_view data) {
+std::string sha256_prefixed(std::string_view data)
+{
     return "sha256:" + sha256(data);
 }
 
-} // namespace sappp::common
+}  // namespace sappp::common

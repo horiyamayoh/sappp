@@ -7,18 +7,20 @@
 
 #include "sappp/common.hpp"
 
-#include <nlohmann/json.hpp>
-
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace sappp::frontend_clang {
 
-struct FrontendResult {
+struct FrontendResult
+{
     nlohmann::json nir;
     nlohmann::json source_map;
 };
 
-class FrontendClang {
+class FrontendClang
+{
 public:
     explicit FrontendClang(std::string schema_dir = "schemas");
 
@@ -28,4 +30,4 @@ private:
     std::string m_schema_dir;
 };
 
-} // namespace sappp::frontend_clang
+}  // namespace sappp::frontend_clang

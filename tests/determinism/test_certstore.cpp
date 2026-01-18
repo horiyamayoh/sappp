@@ -8,35 +8,40 @@
 
 #include "sappp/certstore.hpp"
 
-#include <gtest/gtest.h>
 #include <filesystem>
 #include <fstream>
+
+#include <gtest/gtest.h>
 
 using sappp::certstore::CertStore;
 using json = nlohmann::json;
 
 namespace {
 
-json make_ir_ref_cert() {
+json make_ir_ref_cert()
+{
     return json{
-        {"schema_version", "cert.v1"},
-        {"kind", "IrRef"},
-        {"tu_id", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
-        {"function_uid", "test_function"},
-        {"block_id", "B1"},
-        {"inst_id", "I1"}
+        {"schema_version",                                                                 "cert.v1"},
+        {          "kind",                                                                   "IrRef"},
+        {         "tu_id", "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+        {  "function_uid",                                                           "test_function"},
+        {      "block_id",                                                                      "B1"},
+        {       "inst_id",                                                                      "I1"}
     };
 }
 
 /// RAII helper to create and clean up a temporary directory
-class TempDir {
+class TempDir
+{
 public:
     explicit TempDir(const std::string& name)
-        : m_path(std::filesystem::temp_directory_path() / name) {
+        : m_path(std::filesystem::temp_directory_path() / name)
+    {
         std::filesystem::remove_all(m_path);
         std::filesystem::create_directories(m_path);
     }
-    ~TempDir() {
+    ~TempDir()
+    {
         std::error_code ec;
         std::filesystem::remove_all(m_path, ec);
     }
@@ -49,9 +54,10 @@ private:
     std::filesystem::path m_path;
 };
 
-} // namespace
+}  // namespace
 
-TEST(CertStore, PutGetDeterminism) {
+TEST(CertStore, PutGetDeterminism)
+{
     TempDir temp_dir("sappp_certstore_test");
 
     CertStore store(temp_dir.path().string(), SAPPP_SCHEMA_DIR);

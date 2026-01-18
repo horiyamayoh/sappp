@@ -5,51 +5,58 @@
  * @brief Normalized IR (NIR) data structures
  */
 
-#include <nlohmann/json.hpp>
-
 #include <optional>
 #include <string>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
 namespace sappp::ir {
 
-struct Location {
+struct Location
+{
     std::string file;
     int line = 0;
     int col = 0;
 };
 
-struct Instruction {
+struct Instruction
+{
     std::string id;
     std::string op;
     std::vector<nlohmann::json> args;
     std::optional<Location> src;
 };
 
-struct BasicBlock {
+struct BasicBlock
+{
     std::string id;
     std::vector<Instruction> insts;
 };
 
-struct Edge {
+struct Edge
+{
     std::string from;
     std::string to;
     std::string kind;
 };
 
-struct Cfg {
+struct Cfg
+{
     std::string entry;
     std::vector<BasicBlock> blocks;
     std::vector<Edge> edges;
 };
 
-struct FunctionDef {
+struct FunctionDef
+{
     std::string function_uid;
     std::string mangled_name;
     Cfg cfg;
 };
 
-struct Nir {
+struct Nir
+{
     std::string schema_version;
     nlohmann::json tool;
     std::string generated_at;
@@ -61,15 +68,17 @@ struct Nir {
     std::vector<FunctionDef> functions;
 };
 
-inline void to_json(nlohmann::json& j, const Location& loc) {
+inline void to_json(nlohmann::json& j, const Location& loc)
+{
     j = nlohmann::json{
         {"file", loc.file},
         {"line", loc.line},
-        {"col", loc.col}
+        { "col",  loc.col}
     };
 }
 
-inline void to_json(nlohmann::json& j, const Instruction& inst) {
+inline void to_json(nlohmann::json& j, const Instruction& inst)
+{
     j = nlohmann::json{
         {"id", inst.id},
         {"op", inst.op}
@@ -82,51 +91,56 @@ inline void to_json(nlohmann::json& j, const Instruction& inst) {
     }
 }
 
-inline void to_json(nlohmann::json& j, const BasicBlock& block) {
+inline void to_json(nlohmann::json& j, const BasicBlock& block)
+{
     j = nlohmann::json{
-        {"id", block.id},
+        {   "id",    block.id},
         {"insts", block.insts}
     };
 }
 
-inline void to_json(nlohmann::json& j, const Edge& edge) {
+inline void to_json(nlohmann::json& j, const Edge& edge)
+{
     j = nlohmann::json{
         {"from", edge.from},
-        {"to", edge.to},
+        {  "to",   edge.to},
         {"kind", edge.kind}
     };
 }
 
-inline void to_json(nlohmann::json& j, const Cfg& cfg) {
+inline void to_json(nlohmann::json& j, const Cfg& cfg)
+{
     j = nlohmann::json{
-        {"entry", cfg.entry},
+        { "entry",  cfg.entry},
         {"blocks", cfg.blocks},
-        {"edges", cfg.edges}
+        { "edges",  cfg.edges}
     };
 }
 
-inline void to_json(nlohmann::json& j, const FunctionDef& func) {
+inline void to_json(nlohmann::json& j, const FunctionDef& func)
+{
     j = nlohmann::json{
         {"function_uid", func.function_uid},
         {"mangled_name", func.mangled_name},
-        {"cfg", func.cfg}
+        {         "cfg",          func.cfg}
     };
 }
 
-inline void to_json(nlohmann::json& j, const Nir& nir) {
+inline void to_json(nlohmann::json& j, const Nir& nir)
+{
     j = nlohmann::json{
-        {"schema_version", nir.schema_version},
-        {"tool", nir.tool},
-        {"generated_at", nir.generated_at},
-        {"tu_id", nir.tu_id},
-        {"semantics_version", nir.semantics_version},
+        {      "schema_version",       nir.schema_version},
+        {                "tool",                 nir.tool},
+        {        "generated_at",         nir.generated_at},
+        {               "tu_id",                nir.tu_id},
+        {   "semantics_version",    nir.semantics_version},
         {"proof_system_version", nir.proof_system_version},
-        {"profile_version", nir.profile_version},
-        {"functions", nir.functions}
+        {     "profile_version",      nir.profile_version},
+        {           "functions",            nir.functions}
     };
     if (nir.input_digest.has_value()) {
         j["input_digest"] = *nir.input_digest;
     }
 }
 
-} // namespace sappp::ir
+}  // namespace sappp::ir

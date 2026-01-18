@@ -7,8 +7,9 @@
 
 #include "sappp/common.hpp"
 
-#include <nlohmann/json.hpp>
 #include <string>
+
+#include <nlohmann/json.hpp>
 
 namespace sappp::common {
 
@@ -19,6 +20,7 @@ namespace sappp::common {
  * @param schema_path Path to JSON Schema file
  * @return Empty on success, error on failure
  */
-[[nodiscard]] sappp::VoidResult validate_json(const nlohmann::json& j, const std::string& schema_path);
+[[nodiscard]] sappp::VoidResult validate_json(const nlohmann::json& j,
+                                              const std::string& schema_path);
 
-} // namespace sappp::common
+}  // namespace sappp::common

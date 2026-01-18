@@ -9,13 +9,13 @@
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"
 
-#include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
-
 #include <algorithm>
 #include <ranges>
 #include <string>
 #include <vector>
+
+#include <gtest/gtest.h>
+#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
@@ -33,17 +33,17 @@ class PoMergeDeterminismTest : public ::testing::Test
 protected:
     // Simulate POs from different translation units (could arrive in any order)
     std::vector<json> m_po_batches = {
-        json::array({
-            {{"po_id", "sha256:aaaa"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_c"}},
-            {{"po_id", "sha256:bbbb"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}
-        }),
-        json::array({
-            {{"po_id", "sha256:cccc"}, {"po_kind", "UB.OutOfBounds"}, {"function_uid", "func_b"}},
-            {{"po_id", "sha256:dddd"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_d"}}
-        }),
-        json::array({
-            {{"po_id", "sha256:eeee"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}
-        })
+        json::array(
+            {{{"po_id", "sha256:aaaa"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_c"}},
+                     {{"po_id", "sha256:bbbb"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}}
+            ),
+        json::array(
+            {{{"po_id", "sha256:cccc"}, {"po_kind", "UB.OutOfBounds"}, {"function_uid", "func_b"}},
+                     {{"po_id", "sha256:dddd"}, {"po_kind", "UB.DivZero"}, {"function_uid", "func_d"}}}
+            ),
+        json::array(
+            {{{"po_id", "sha256:eeee"}, {"po_kind", "UB.NullDeref"}, {"function_uid", "func_a"}}}
+            )
     };
 
     [[nodiscard]] json merge_and_sort(const std::vector<json>& batches) const
@@ -60,7 +60,9 @@ protected:
             return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
         });
 
-        return json{{"pos", all_pos}};
+        return json{
+            {"pos", all_pos}
+        };
     }
 };
 
@@ -113,13 +115,11 @@ class UnknownLedgerDeterminismTest : public ::testing::Test
 {
 protected:
     std::vector<json> m_unknown_batches = {
-        json::array({
-            {{"unknown_stable_id", "unk:0003"}, {"unknown_code", "UnsupportedFeature"}},
-            {{"unknown_stable_id", "unk:0001"}, {"unknown_code", "LoopBound"}}
-        }),
-        json::array({
-            {{"unknown_stable_id", "unk:0002"}, {"unknown_code", "ExternalCall"}}
-        })
+        json::array({{{"unknown_stable_id", "unk:0003"}, {"unknown_code", "UnsupportedFeature"}},
+                     {{"unknown_stable_id", "unk:0001"}, {"unknown_code", "LoopBound"}}}
+        ),
+        json::array({{{"unknown_stable_id", "unk:0002"}, {"unknown_code", "ExternalCall"}}}
+        )
     };
 
     [[nodiscard]] json merge_and_sort(const std::vector<json>& batches) const
@@ -133,11 +133,13 @@ protected:
 
         // Stable sort by unknown_stable_id (as per AGENTS.md Section 4.1)
         std::ranges::stable_sort(all_unknowns, [](const json& a, const json& b) {
-            return a.at("unknown_stable_id").get<std::string>() <
-                   b.at("unknown_stable_id").get<std::string>();
+            return a.at("unknown_stable_id").get<std::string>()
+                   < b.at("unknown_stable_id").get<std::string>();
         });
 
-        return json{{"unknowns", all_unknowns}};
+        return json{
+            {"unknowns", all_unknowns}
+        };
     }
 };
 
@@ -166,13 +168,11 @@ class ValidatedResultsDeterminismTest : public ::testing::Test
 {
 protected:
     std::vector<json> m_result_batches = {
-        json::array({
-            {{"po_id", "sha256:zzzz"}, {"category", "BUG"}},
-            {{"po_id", "sha256:aaaa"}, {"category", "SAFE"}}
-        }),
-        json::array({
-            {{"po_id", "sha256:mmmm"}, {"category", "UNKNOWN"}}
-        })
+        json::array({{{"po_id", "sha256:zzzz"}, {"category", "BUG"}},
+                     {{"po_id", "sha256:aaaa"}, {"category", "SAFE"}}}
+        ),
+        json::array({{{"po_id", "sha256:mmmm"}, {"category", "UNKNOWN"}}}
+        )
     };
 
     [[nodiscard]] json merge_and_sort(const std::vector<json>& batches) const
@@ -189,7 +189,9 @@ protected:
             return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
         });
 
-        return json{{"results", all_results}};
+        return json{
+            {"results", all_results}
+        };
     }
 };
 
@@ -216,16 +218,12 @@ TEST_F(ValidatedResultsDeterminismTest, MergeOrderDoesNotAffectResult)
 TEST(DeterminismRepeatTest, RepeatedCanonicalHashIsIdentical)
 {
     json complex_data = {
-        {"version", "1.0.0"},
-        {"pos", json::array({
-            {{"id", "c"}, {"value", 3}},
-            {{"id", "a"}, {"value", 1}},
-            {{"id", "b"}, {"value", 2}}
-        })},
-        {"metadata", {
-            {"z_field", "last"},
-            {"a_field", "first"}
-        }}
+        { "version",                 "1.0.0"                    },
+        {     "pos",
+         json::array({{{"id", "c"}, {"value", 3}},
+         {{"id", "a"}, {"value", 1}},
+         {{"id", "b"}, {"value", 2}}})                          },
+        {"metadata", {{"z_field", "last"}, {"a_field", "first"}}}
     };
 
     // Run 100 times to catch any non-determinism
@@ -237,8 +235,7 @@ TEST(DeterminismRepeatTest, RepeatedCanonicalHashIsIdentical)
         if (i == 0) {
             first_hash = *hash;
         } else {
-            EXPECT_EQ(*hash, first_hash)
-                << "Hash differs at iteration " << i;
+            EXPECT_EQ(*hash, first_hash) << "Hash differs at iteration " << i;
         }
     }
 }

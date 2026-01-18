@@ -11,21 +11,6 @@
 #include "sappp/schema_validate.hpp"
 #include "sappp/version.hpp"
 
-#include <clang/Analysis/CFG.h>
-#include <clang/AST/ASTContext.h>
-#include <clang/AST/ASTConsumer.h>
-#include <clang/AST/Decl.h>
-#include <clang/AST/Expr.h>
-#include <clang/AST/Mangle.h>
-#include <clang/Basic/SourceManager.h>
-#include <clang/Frontend/CompilerInstance.h>
-#include <clang/Frontend/FrontendActions.h>
-#include <clang/Index/USRGeneration.h>
-#include <clang/Tooling/CompilationDatabase.h>
-#include <clang/Tooling/Tooling.h>
-#include <llvm/ADT/SmallString.h>
-#include <llvm/Support/raw_ostream.h>
-
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
@@ -38,23 +23,41 @@
 #include <unordered_map>
 #include <vector>
 
+#include <clang/AST/ASTConsumer.h>
+#include <clang/AST/ASTContext.h>
+#include <clang/AST/Decl.h>
+#include <clang/AST/Expr.h>
+#include <clang/AST/Mangle.h>
+#include <clang/Analysis/CFG.h>
+#include <clang/Basic/SourceManager.h>
+#include <clang/Frontend/CompilerInstance.h>
+#include <clang/Frontend/FrontendActions.h>
+#include <clang/Index/USRGeneration.h>
+#include <clang/Tooling/CompilationDatabase.h>
+#include <clang/Tooling/Tooling.h>
+#include <llvm/ADT/SmallString.h>
+#include <llvm/Support/raw_ostream.h>
+
 namespace sappp::frontend_clang {
 
 namespace {
 
-struct SourceMapEntryKey {
+struct SourceMapEntryKey
+{
     std::string function_uid;
     std::string block_id;
     std::string inst_id;
     nlohmann::json entry;
 };
 
-std::string current_time_utc() {
+std::string current_time_utc()
+{
     const auto now = std::chrono::system_clock::now();
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
-bool is_source_file(const std::string& path) {
+bool is_source_file(const std::string& path)
+{
     auto pos = path.find_last_of('.');
     if (pos == std::string::npos) {
         return false;
@@ -66,19 +69,22 @@ bool is_source_file(const std::string& path) {
     return ext == "c" || ext == "cc" || ext == "cpp" || ext == "cxx" || ext == "c++" || ext == "cp";
 }
 
-struct CompileUnitCommand {
+struct CompileUnitCommand
+{
     std::string file_path;
     std::vector<std::string> args;
 };
 
-sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& compile_unit) {
+sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& compile_unit)
+{
     CompileUnitCommand result;
     result.args = compile_unit.at("argv").get<std::vector<std::string>>();
 
     std::optional<std::size_t> source_index;
     for (auto [i, arg] : std::views::enumerate(result.args)) {
         const auto idx = static_cast<std::size_t>(i);
-        if (arg == "-c" && i + 1 < std::ssize(result.args) && is_source_file(result.args[idx + 1])) {
+        if (arg == "-c" && i + 1 < std::ssize(result.args)
+            && is_source_file(result.args[idx + 1])) {
             source_index = idx + 1;
             break;
         }
@@ -90,7 +96,7 @@ sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& 
 
     if (!source_index.has_value()) {
         return std::unexpected(Error::make("CompileCommandMissingSource",
-            "Unable to locate source file in compile unit argv"));
+                                           "Unable to locate source file in compile unit argv"));
     }
 
     result.file_path = result.args[*source_index];
@@ -98,7 +104,8 @@ sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& 
     return result;
 }
 
-std::string normalize_file_path(const std::string& cwd, const std::string& file_path) {
+std::string normalize_file_path(const std::string& cwd, const std::string& file_path)
+{
     std::filesystem::path path(file_path);
     if (!path.is_absolute()) {
         std::filesystem::path base(cwd);
@@ -109,7 +116,8 @@ std::string normalize_file_path(const std::string& cwd, const std::string& file_
 }
 
 std::optional<ir::Location> make_location(const clang::SourceManager& source_manager,
-                                          clang::SourceLocation loc) {
+                                          clang::SourceLocation loc)
+{
     if (loc.isInvalid()) {
         return std::nullopt;
     }
@@ -130,12 +138,14 @@ std::optional<ir::Location> make_location(const clang::SourceManager& source_man
     return location;
 }
 
-std::string classify_stmt(const clang::Stmt* stmt) {
+std::string classify_stmt(const clang::Stmt* stmt)
+{
     if (clang::isa<clang::ReturnStmt>(stmt)) {
         return "ret";
     }
-    if (clang::isa<clang::CallExpr>(stmt) || clang::isa<clang::CXXMemberCallExpr>(stmt) ||
-        clang::isa<clang::CXXConstructExpr>(stmt) || clang::isa<clang::CXXOperatorCallExpr>(stmt)) {
+    if (clang::isa<clang::CallExpr>(stmt) || clang::isa<clang::CXXMemberCallExpr>(stmt)
+        || clang::isa<clang::CXXConstructExpr>(stmt)
+        || clang::isa<clang::CXXOperatorCallExpr>(stmt)) {
         return "call";
     }
     if (const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(stmt)) {
@@ -156,11 +166,13 @@ std::string classify_stmt(const clang::Stmt* stmt) {
     return "stmt";
 }
 
-class NirBuilder {
+class NirBuilder
+{
 public:
     NirBuilder() = default;
 
-    void build(clang::ASTContext& context) {
+    void build(clang::ASTContext& context)
+    {
         auto mangle_context = std::unique_ptr<clang::MangleContext>(context.createMangleContext());
         const auto& source_manager = context.getSourceManager();
 
@@ -189,11 +201,10 @@ public:
                 mangled_name = func_decl->getNameAsString();
             }
 
-            std::unique_ptr<clang::CFG> cfg = clang::CFG::buildCFG(
-                func_decl,
-                func_decl->getBody(),
-                &context,
-                clang::CFG::BuildOptions());
+            std::unique_ptr<clang::CFG> cfg = clang::CFG::buildCFG(func_decl,
+                                                                   func_decl->getBody(),
+                                                                   &context,
+                                                                   clang::CFG::BuildOptions());
 
             if (!cfg) {
                 continue;
@@ -208,9 +219,9 @@ public:
             }
 
             std::ranges::stable_sort(blocks,
-                                      [](const clang::CFGBlock* a, const clang::CFGBlock* b) {
-                                          return a->getBlockID() < b->getBlockID();
-                                      });
+                                     [](const clang::CFGBlock* a, const clang::CFGBlock* b) {
+                                         return a->getBlockID() < b->getBlockID();
+                                     });
 
             std::unordered_map<const clang::CFGBlock*, std::string> block_ids;
             block_ids.reserve(blocks.size());
@@ -251,16 +262,16 @@ public:
                         if (inst.src.has_value()) {
                             nlohmann::json loc = *inst.src;
                             nlohmann::json entry = {
-                                {"ir_ref", {
-                                    {"function_uid", function_uid},
-                                    {"block_id", nir_block.id},
-                                    {"inst_id", inst.id}
-                                }},
-                                {"spelling_loc", loc},
-                                {"expansion_loc", loc},
-                                {"macro_stack", nlohmann::json::array()}
+                                {       "ir_ref",
+                                 {{"function_uid", function_uid},
+                                 {"block_id", nir_block.id},
+                                 {"inst_id", inst.id}}                   },
+                                { "spelling_loc",                     loc},
+                                {"expansion_loc",                     loc},
+                                {  "macro_stack", nlohmann::json::array()}
                             };
-                            m_source_entries.push_back({function_uid, nir_block.id, inst.id, entry});
+                            m_source_entries.push_back(
+                                {function_uid, nir_block.id, inst.id, entry});
                         }
                     }
                 }
@@ -276,14 +287,13 @@ public:
                     if (inst.src.has_value()) {
                         nlohmann::json loc = *inst.src;
                         nlohmann::json entry = {
-                            {"ir_ref", {
-                                {"function_uid", function_uid},
-                                {"block_id", nir_block.id},
-                                {"inst_id", inst.id}
-                            }},
-                            {"spelling_loc", loc},
-                            {"expansion_loc", loc},
-                            {"macro_stack", nlohmann::json::array()}
+                            {       "ir_ref",
+                             {{"function_uid", function_uid},
+                             {"block_id", nir_block.id},
+                             {"inst_id", inst.id}}                   },
+                            { "spelling_loc",                     loc},
+                            {"expansion_loc",                     loc},
+                            {  "macro_stack", nlohmann::json::array()}
                         };
                         m_source_entries.push_back({function_uid, nir_block.id, inst.id, entry});
                     }
@@ -306,21 +316,19 @@ public:
                 }
             }
 
-            std::ranges::stable_sort(nir_cfg.blocks,
-                                      [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
-                                          return a.id < b.id;
-                                      });
+            std::ranges::stable_sort(
+                nir_cfg.blocks,
+                [](const ir::BasicBlock& a, const ir::BasicBlock& b) { return a.id < b.id; });
 
-            std::ranges::stable_sort(edges,
-                                      [](const ir::Edge& a, const ir::Edge& b) {
-                                          if (a.from != b.from) {
-                                              return a.from < b.from;
-                                          }
-                                          if (a.to != b.to) {
-                                              return a.to < b.to;
-                                          }
-                                          return a.kind < b.kind;
-                                      });
+            std::ranges::stable_sort(edges, [](const ir::Edge& a, const ir::Edge& b) {
+                if (a.from != b.from) {
+                    return a.from < b.from;
+                }
+                if (a.to != b.to) {
+                    return a.to < b.to;
+                }
+                return a.kind < b.kind;
+            });
             nir_cfg.edges = std::move(edges);
 
             ir::FunctionDef nir_func;
@@ -340,26 +348,29 @@ private:
     std::vector<SourceMapEntryKey> m_source_entries;
 };
 
-class NirASTConsumer final : public clang::ASTConsumer {
+class NirASTConsumer final : public clang::ASTConsumer
+{
 public:
     explicit NirASTConsumer(NirBuilder& builder)
-        : m_builder(builder) {}
+        : m_builder(builder)
+    {}
 
-    void HandleTranslationUnit(clang::ASTContext& context) override {
-        m_builder.build(context);
-    }
+    void HandleTranslationUnit(clang::ASTContext& context) override { m_builder.build(context); }
 
 private:
     NirBuilder& m_builder;
 };
 
-class NirFrontendAction final : public clang::ASTFrontendAction {
+class NirFrontendAction final : public clang::ASTFrontendAction
+{
 public:
     explicit NirFrontendAction(NirBuilder& builder)
-        : m_builder(builder) {}
+        : m_builder(builder)
+    {}
 
     std::unique_ptr<clang::ASTConsumer> CreateASTConsumer(clang::CompilerInstance&,
-                                                          llvm::StringRef) override {
+                                                          llvm::StringRef) override
+    {
         return std::make_unique<NirASTConsumer>(m_builder);
     }
 
@@ -367,12 +378,15 @@ private:
     NirBuilder& m_builder;
 };
 
-class NirFrontendActionFactory final : public clang::tooling::FrontendActionFactory {
+class NirFrontendActionFactory final : public clang::tooling::FrontendActionFactory
+{
 public:
     explicit NirFrontendActionFactory(NirBuilder& builder)
-        : m_builder(builder) {}
+        : m_builder(builder)
+    {}
 
-    std::unique_ptr<clang::FrontendAction> create() override {
+    std::unique_ptr<clang::FrontendAction> create() override
+    {
         return std::make_unique<NirFrontendAction>(m_builder);
     }
 
@@ -380,15 +394,18 @@ private:
     NirBuilder& m_builder;
 };
 
-} // namespace
+}  // namespace
 
 FrontendClang::FrontendClang(std::string schema_dir)
-    : m_schema_dir(std::move(schema_dir)) {}
+    : m_schema_dir(std::move(schema_dir))
+{}
 
-sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build_snapshot) const {
+sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build_snapshot) const
+{
     std::filesystem::path schema_dir(m_schema_dir);
-    if (auto result = sappp::common::validate_json(build_snapshot,
-                                                   (schema_dir / "build_snapshot.v1.schema.json").string());
+    if (auto result =
+            sappp::common::validate_json(build_snapshot,
+                                         (schema_dir / "build_snapshot.v1.schema.json").string());
         !result) {
         return std::unexpected(result.error());
     }
@@ -412,8 +429,8 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
 
         std::filesystem::path file_fs(file_path);
         if (!std::filesystem::exists(file_fs)) {
-            return std::unexpected(Error::make("SourceFileNotFound",
-                "Source file not found: " + file_path));
+            return std::unexpected(
+                Error::make("SourceFileNotFound", "Source file not found: " + file_path));
         }
 
         clang::tooling::FixedCompilationDatabase comp_db(cwd, command.args);
@@ -423,8 +440,8 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
         NirFrontendActionFactory factory(builder);
 
         if (tool.run(&factory) != 0) {
-            return std::unexpected(Error::make("ClangToolFailed",
-                "ClangTool failed for source file: " + file_path));
+            return std::unexpected(
+                Error::make("ClangToolFailed", "ClangTool failed for source file: " + file_path));
         }
 
         auto unit_functions = builder.take_functions();
@@ -434,41 +451,36 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
 
         auto unit_entries = builder.take_source_entries();
         source_entries.insert(source_entries.end(),
-                               std::make_move_iterator(unit_entries.begin()),
-                               std::make_move_iterator(unit_entries.end()));
+                              std::make_move_iterator(unit_entries.begin()),
+                              std::make_move_iterator(unit_entries.end()));
     }
 
     if (functions.empty()) {
-        return std::unexpected(Error::make("NirEmpty",
-            "No functions found to emit NIR"));
+        return std::unexpected(Error::make("NirEmpty", "No functions found to emit NIR"));
     }
 
-    std::ranges::stable_sort(functions,
-                              [](const ir::FunctionDef& a, const ir::FunctionDef& b) {
-                                  return a.function_uid < b.function_uid;
-                              });
+    std::ranges::stable_sort(functions, [](const ir::FunctionDef& a, const ir::FunctionDef& b) {
+        return a.function_uid < b.function_uid;
+    });
 
     for (auto& func : functions) {
-        std::ranges::stable_sort(func.cfg.blocks,
-                                 [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
-                                     return a.id < b.id;
-                                 });
+        std::ranges::stable_sort(
+            func.cfg.blocks,
+            [](const ir::BasicBlock& a, const ir::BasicBlock& b) { return a.id < b.id; });
         for (auto& block : func.cfg.blocks) {
-            std::ranges::stable_sort(block.insts,
-                                     [](const ir::Instruction& a, const ir::Instruction& b) {
-                                         return a.id < b.id;
-                                     });
+            std::ranges::stable_sort(
+                block.insts,
+                [](const ir::Instruction& a, const ir::Instruction& b) { return a.id < b.id; });
         }
-        std::ranges::stable_sort(func.cfg.edges,
-                                  [](const ir::Edge& a, const ir::Edge& b) {
-                                      if (a.from != b.from) {
-                                          return a.from < b.from;
-                                      }
-                                      if (a.to != b.to) {
-                                          return a.to < b.to;
-                                      }
-                                      return a.kind < b.kind;
-                                  });
+        std::ranges::stable_sort(func.cfg.edges, [](const ir::Edge& a, const ir::Edge& b) {
+            if (a.from != b.from) {
+                return a.from < b.from;
+            }
+            if (a.to != b.to) {
+                return a.to < b.to;
+            }
+            return a.kind < b.kind;
+        });
     }
 
     std::ranges::stable_sort(source_entries,
@@ -498,8 +510,8 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
     ir::Nir nir;
     nir.schema_version = "nir.v1";
     nir.tool = {
-        {"name", "sappp"},
-        {"version", sappp::kVersion},
+        {    "name",         "sappp"},
+        { "version", sappp::kVersion},
         {"build_id", sappp::kBuildId}
     };
     nir.generated_at = current_time_utc();
@@ -515,15 +527,11 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
     nlohmann::json nir_json = nir;
 
     nlohmann::json source_map_json = {
-        {"schema_version", "source_map.v1"},
-        {"tool", {
-            {"name", "sappp"},
-            {"version", sappp::kVersion},
-            {"build_id", sappp::kBuildId}
-        }},
-        {"generated_at", current_time_utc()},
-        {"tu_id", tu_id},
-        {"entries", nlohmann::json::array()}
+        {"schema_version",                                                                  "source_map.v1"},
+        {          "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
+        {  "generated_at",                                                               current_time_utc()},
+        {         "tu_id",                                                                            tu_id},
+        {       "entries",                                                          nlohmann::json::array()}
     };
 
     auto& entries_array = source_map_json["entries"];
@@ -535,14 +543,15 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
         source_map_json["input_digest"] = build_snapshot.at("input_digest").get<std::string>();
     }
 
-    if (auto result = sappp::common::validate_json(nir_json,
-                                                   (schema_dir / "nir.v1.schema.json").string());
+    if (auto result =
+            sappp::common::validate_json(nir_json, (schema_dir / "nir.v1.schema.json").string());
         !result) {
         return std::unexpected(result.error());
     }
 
-    if (auto result = sappp::common::validate_json(source_map_json,
-                                                   (schema_dir / "source_map.v1.schema.json").string());
+    if (auto result =
+            sappp::common::validate_json(source_map_json,
+                                         (schema_dir / "source_map.v1.schema.json").string());
         !result) {
         return std::unexpected(result.error());
     }
@@ -550,4 +559,4 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
     return FrontendResult{nir_json, source_map_json};
 }
 
-} // namespace sappp::frontend_clang
+}  // namespace sappp::frontend_clang

@@ -10,7 +10,9 @@
  */
 
 #include "sappp/canonical_json.hpp"
+
 #include "sappp/common.hpp"
+
 #include <algorithm>
 #include <format>
 #include <ranges>
@@ -19,9 +21,11 @@ namespace sappp::canonical {
 
 namespace {
 
-sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view path) {
+sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view path)
+{
     if (j.is_number_float()) {
-        return std::unexpected(Error::make("FloatingPointNotAllowed",
+        return std::unexpected(Error::make(
+            "FloatingPointNotAllowed",
             std::format("Floating point numbers not allowed in canonical JSON at: {}", path)));
     }
     if (j.is_object()) {
@@ -45,7 +49,8 @@ sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view pa
 /**
  * @brief Recursively create a sorted copy of JSON (keys in lexicographic order)
  */
-[[nodiscard]] nlohmann::json make_sorted_copy(const nlohmann::json& j) {
+[[nodiscard]] nlohmann::json make_sorted_copy(const nlohmann::json& j)
+{
     if (j.is_object()) {
         // Get keys and sort them using ranges
         std::vector<std::string> keys;
@@ -54,7 +59,7 @@ sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view pa
             keys.push_back(key);
         }
         std::ranges::sort(keys);
-        
+
         // Create ordered object
         nlohmann::json result = nlohmann::json::object();
         for (const auto& key : keys) {
@@ -72,22 +77,24 @@ sappp::VoidResult validate_no_float(const nlohmann::json& j, std::string_view pa
     return j;
 }
 
-} // namespace
+}  // namespace
 
-sappp::Result<std::string> canonicalize(const nlohmann::json& j) {
+sappp::Result<std::string> canonicalize(const nlohmann::json& j)
+{
     // Validate: no floating point
     if (auto result = validate_no_float(j, "$"); !result) {
         return std::unexpected(result.error());
     }
-    
+
     // Sort keys recursively
     nlohmann::json sorted = make_sorted_copy(j);
-    
+
     // Serialize without whitespace
     return sorted.dump(-1, ' ', false, nlohmann::json::error_handler_t::strict);
 }
 
-sappp::Result<std::string> hash_canonical(const nlohmann::json& j) {
+sappp::Result<std::string> hash_canonical(const nlohmann::json& j)
+{
     auto canonical = canonicalize(j);
     if (!canonical) {
         return std::unexpected(canonical.error());
@@ -95,7 +102,8 @@ sappp::Result<std::string> hash_canonical(const nlohmann::json& j) {
     return common::sha256_prefixed(*canonical);
 }
 
-void sort_keys_recursive(nlohmann::json& j) {
+void sort_keys_recursive(nlohmann::json& j)
+{
     if (j.is_object()) {
         // Get keys and sort
         std::vector<std::string> keys;
@@ -103,7 +111,7 @@ void sort_keys_recursive(nlohmann::json& j) {
             keys.push_back(key);
         }
         std::ranges::sort(keys);
-        
+
         // Rebuild object in sorted order
         nlohmann::json sorted = nlohmann::json::object();
         for (const auto& key : keys) {
@@ -118,8 +126,9 @@ void sort_keys_recursive(nlohmann::json& j) {
     }
 }
 
-sappp::VoidResult validate_for_canonical(const nlohmann::json& j) {
+sappp::VoidResult validate_for_canonical(const nlohmann::json& j)
+{
     return validate_no_float(j, "$");
 }
 
-} // namespace sappp::canonical
+}  // namespace sappp::canonical

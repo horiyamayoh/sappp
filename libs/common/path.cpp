@@ -8,6 +8,7 @@
  */
 
 #include "sappp/common.hpp"
+
 #include <algorithm>
 #include <ranges>
 #include <string>
@@ -20,9 +21,10 @@ namespace {
 /**
  * @brief Split a path string into parts using ranges
  */
-[[nodiscard]] std::vector<std::string> split_path(std::string_view path) {
+[[nodiscard]] std::vector<std::string> split_path(std::string_view path)
+{
     std::vector<std::string> parts;
-    
+
     // Use ranges to split by path separators
     for (auto part : path | std::views::split('/')) {
         std::string_view sv(part.begin(), part.end());
@@ -40,19 +42,20 @@ namespace {
 /**
  * @brief Join path parts with '/' separator using ranges
  */
-[[nodiscard]] std::string join_path(const std::vector<std::string>& parts) {
+[[nodiscard]] std::string join_path(const std::vector<std::string>& parts)
+{
     if (parts.empty()) {
         return "";
     }
-    
+
     std::string result;
     // Pre-calculate size for efficiency
-    size_t total_size = parts.size() - 1uz; // separators
+    size_t total_size = parts.size() - 1uz;  // separators
     for (const auto& p : parts) {
         total_size += p.size();
     }
     result.reserve(total_size);
-    
+
     bool first = true;
     for (const auto& p : parts) {
         if (!first) {
@@ -64,38 +67,42 @@ namespace {
     return result;
 }
 
-} // namespace
+}  // namespace
 
-bool is_absolute_path(std::string_view path) {
-    if (path.empty()) return false;
-    
+bool is_absolute_path(std::string_view path)
+{
+    if (path.empty())
+        return false;
+
     // Unix absolute path
-    if (path[0] == '/') return true;
-    
+    if (path[0] == '/')
+        return true;
+
     // Windows absolute path (C:\ or C:/)
-    if (path.size() >= 3 && 
-        ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) &&
-        path[1] == ':' &&
-        (path[2] == '/' || path[2] == '\\')) {
+    if (path.size() >= 3
+        && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z'))
+        && path[1] == ':' && (path[2] == '/' || path[2] == '\\')) {
         return true;
     }
-    
+
     // UNC path
     if (path.size() >= 2 && path[0] == '\\' && path[1] == '\\') {
         return true;
     }
-    
+
     return false;
 }
 
-std::string normalize_path(std::string_view input, std::string_view repo_root) {
-    if (input.empty()) return ".";
-    
+std::string normalize_path(std::string_view input, std::string_view repo_root)
+{
+    if (input.empty())
+        return ".";
+
     std::string path_str(input);
-    
+
     // Replace backslashes with forward slashes
     std::replace(path_str.begin(), path_str.end(), '\\', '/');
-    
+
     // Handle Windows drive letters - strip for normalization
     std::string prefix;
     size_t start = 0;
@@ -109,11 +116,11 @@ std::string normalize_path(std::string_view input, std::string_view repo_root) {
     } else if (!path_str.empty() && path_str[0] == '/') {
         start = 1;
     }
-    
+
     // Split and resolve . and ..
     auto parts = split_path(path_str.substr(start));
     std::vector<std::string> resolved;
-    
+
     for (const auto& part : parts) {
         if (part == ".") {
             continue;
@@ -127,9 +134,9 @@ std::string normalize_path(std::string_view input, std::string_view repo_root) {
             resolved.push_back(part);
         }
     }
-    
+
     std::string normalized = join_path(resolved);
-    
+
     // Add leading prefix for absolute paths
     if (!prefix.empty()) {
         if (normalized.empty()) {
@@ -140,7 +147,7 @@ std::string normalize_path(std::string_view input, std::string_view repo_root) {
     } else if (is_absolute_path(input)) {
         normalized = "/" + normalized;
     }
-    
+
     // Make relative to repo_root if provided
     if (!repo_root.empty()) {
         std::string norm_root = normalize_path(repo_root);
@@ -154,28 +161,29 @@ std::string normalize_path(std::string_view input, std::string_view repo_root) {
             }
         }
     }
-    
+
     return normalized.empty() ? "." : normalized;
 }
 
-std::string make_relative(std::string_view path, std::string_view base) {
+std::string make_relative(std::string_view path, std::string_view base)
+{
     std::string norm_path = normalize_path(path);
     std::string norm_base = normalize_path(base);
-    
+
     auto path_parts = split_path(norm_path);
     auto base_parts = split_path(norm_base);
-    
+
     // Find common prefix
     size_t common = 0;
-    while (common < path_parts.size() && 
-           common < base_parts.size() && 
-           path_parts[common] == base_parts[common]) {
+    while (common < path_parts.size() && common < base_parts.size()
+           && path_parts[common] == base_parts[common]) {
         ++common;
     }
-    
+
     // Build relative path
     std::vector<std::string> result;
-    const auto drop_count = static_cast<std::ranges::range_difference_t<decltype(base_parts)>>(common);
+    const auto drop_count =
+        static_cast<std::ranges::range_difference_t<decltype(base_parts)>>(common);
     for (const auto& _ : base_parts | std::views::drop(drop_count)) {
         (void)_;
         result.push_back("..");
@@ -183,8 +191,8 @@ std::string make_relative(std::string_view path, std::string_view base) {
     for (const auto& part : path_parts | std::views::drop(drop_count)) {
         result.push_back(part);
     }
-    
+
     return result.empty() ? "." : join_path(result);
 }
 
-} // namespace sappp::common
+}  // namespace sappp::common
