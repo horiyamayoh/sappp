@@ -5,8 +5,11 @@
 
 #include "sappp/schema_validate.hpp"
 
+#include <filesystem>
 #include <format>
 #include <fstream>
+#include <memory>
+#include <vector>
 
 #include <valijson/adapters/nlohmann_json_adapter.hpp>
 #include <valijson/schema.hpp>
@@ -104,10 +107,36 @@ sappp::VoidResult validate_json(const nlohmann::json& j, const std::string& sche
 
     valijson::Schema schema;
     valijson::SchemaParser parser;
+    const auto schema_dir = std::filesystem::path(schema_path).parent_path();
+    std::vector<std::unique_ptr<nlohmann::json>> owned_schemas;
+    const auto fetch_doc = [&schema_dir,
+                            &owned_schemas](const std::string& uri) -> const nlohmann::json* {
+        constexpr std::string_view kSchemaPrefix = "sappp:schema/";
+        if (!uri.starts_with(kSchemaPrefix)) {
+            return nullptr;
+        }
+        const auto schema_name = uri.substr(kSchemaPrefix.size());
+        auto schema_file = schema_dir / (schema_name + ".schema.json");
+        std::ifstream schema_file_stream(schema_file);
+        if (!schema_file_stream) {
+            return nullptr;
+        }
+        auto schema_ptr = std::make_unique<nlohmann::json>();
+        try {
+            schema_file_stream >> *schema_ptr;
+        } catch (const std::exception&) {
+            return nullptr;
+        }
+        normalize_schema_defs(*schema_ptr);
+        const auto* resolved_schema = schema_ptr.get();
+        owned_schemas.push_back(std::move(schema_ptr));
+        return resolved_schema;
+    };
+    const auto free_doc = [](const nlohmann::json* schema_ptr) { (void)schema_ptr; };
 
     try {
         valijson::adapters::NlohmannJsonAdapter schema_adapter(schema_json);
-        parser.populateSchema(schema_adapter, schema);
+        parser.populateSchema(schema_adapter, schema, fetch_doc, free_doc);
     } catch (const std::exception& ex) {
         return std::unexpected(
             Error::make("SchemaBuildFailed", std::string("Failed to build schema: ") + ex.what()));
