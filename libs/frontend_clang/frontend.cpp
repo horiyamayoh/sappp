@@ -198,7 +198,7 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
             }
         } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
             if (unary_op->getOpcode() == clang::UO_Deref) {
-                markers.emplace_back("null");
+                markers.emplace_back("deref");
             }
         } else if (clang::isa<clang::ArraySubscriptExpr>(current)) {
             markers.emplace_back("oob");
