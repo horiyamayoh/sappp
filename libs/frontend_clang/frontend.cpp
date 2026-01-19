@@ -44,10 +44,10 @@ namespace {
 
 struct SourceMapEntryKey
 {
-    std::string function_uid{};
-    std::string block_id{};
-    std::string inst_id{};
-    nlohmann::json entry{};
+    std::string function_uid;
+    std::string block_id;
+    std::string inst_id;
+    nlohmann::json entry;
 };
 
 std::string current_time_utc()
@@ -106,14 +106,14 @@ sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& 
 
 struct FilePathContext
 {
-    std::string_view cwd{};
-    std::string_view file_path{};
+    std::string_view cwd;
+    std::string_view file_path;
 };
 
 struct LocationContext
 {
     const clang::SourceManager* source_manager = nullptr;
-    clang::SourceLocation loc{};
+    clang::SourceLocation loc;
 };
 
 std::string normalize_file_path(const FilePathContext& context)
@@ -175,6 +175,46 @@ std::string classify_stmt(const clang::Stmt* stmt)
         return "load";
     }
     return "stmt";
+}
+
+std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
+{
+    std::vector<std::string> markers;
+    if (stmt == nullptr) {
+        return markers;
+    }
+
+    std::vector<const clang::Stmt*> stack;
+    stack.push_back(stmt);
+
+    while (!stack.empty()) {
+        const clang::Stmt* current = stack.back();
+        stack.pop_back();
+        if (const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(current)) {
+            const auto opcode = bin_op->getOpcode();
+            if (opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
+                || opcode == clang::BO_RemAssign) {
+                markers.emplace_back("div0");
+            }
+        } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
+            if (unary_op->getOpcode() == clang::UO_Deref) {
+                markers.emplace_back("null");
+            }
+        } else if (clang::isa<clang::ArraySubscriptExpr>(current)) {
+            markers.emplace_back("oob");
+        }
+
+        for (const auto* child : current->children()) {
+            if (child != nullptr) {
+                stack.push_back(child);
+            }
+        }
+    }
+
+    std::ranges::sort(markers);
+    auto unique_end = std::ranges::unique(markers);
+    markers.erase(unique_end.begin(), markers.end());
+    return markers;
 }
 
 [[nodiscard]] std::string build_function_uid(const clang::FunctionDecl* func_decl)
@@ -284,7 +324,8 @@ void append_entry_block_check(const clang::CFGBlock* block,
     ub_check.id = "I" + std::to_string(inst_index++);
     ub_check.op = "ub.check";
     ub_check.args = {nlohmann::json("UB.DivZero"), nlohmann::json(true)};
-    ub_check.src = make_location({context.source_manager, context.func_decl->getBeginLoc()});
+    ub_check.src = make_location(
+        {.source_manager = context.source_manager, .loc = context.func_decl->getBeginLoc()});
     append_instruction(*context.nir_block,
                        *context.function_uid,
                        *context.block_id,
@@ -302,12 +343,26 @@ void append_stmt_instructions(const clang::CFGBlock* block,
             ir::Instruction inst;
             inst.id = "I" + std::to_string(inst_index++);
             inst.op = classify_stmt(stmt);
-            inst.src = make_location({context.source_manager, stmt->getBeginLoc()});
+            inst.src = make_location(
+                {.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
             append_instruction(*context.nir_block,
                                *context.function_uid,
                                *context.block_id,
                                std::move(inst),
                                *context.source_entries);
+            for (const auto& sink_kind : detect_sink_markers(stmt)) {
+                ir::Instruction sink_inst;
+                sink_inst.id = "I" + std::to_string(inst_index++);
+                sink_inst.op = "sink.marker";
+                sink_inst.args = {nlohmann::json(sink_kind)};
+                sink_inst.src = make_location(
+                    {.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
+                append_instruction(*context.nir_block,
+                                   *context.function_uid,
+                                   *context.block_id,
+                                   std::move(sink_inst),
+                                   *context.source_entries);
+            }
         }
     }
 }
@@ -324,7 +379,8 @@ void append_terminator_instruction(const clang::CFGBlock* block,
     ir::Instruction inst;
     inst.id = "I" + std::to_string(inst_index++);
     inst.op = "branch";
-    inst.src = make_location({context.source_manager, terminator->getBeginLoc()});
+    inst.src =
+        make_location({.source_manager = context.source_manager, .loc = terminator->getBeginLoc()});
     append_instruction(*context.nir_block,
                        *context.function_uid,
                        *context.block_id,
@@ -380,13 +436,13 @@ void append_block_edges(const clang::CFGBlock* block,
     for (const auto* block : blocks) {
         ir::BasicBlock nir_block;
         nir_block.id = block_ids.at(block);
-        BlockInstructionContext context{entry_block,
-                                        func_decl,
-                                        &source_manager,
-                                        &function_uid,
-                                        &nir_block.id,
-                                        &source_entries,
-                                        &nir_block};
+        BlockInstructionContext context{.entry_block = entry_block,
+                                        .func_decl = func_decl,
+                                        .source_manager = &source_manager,
+                                        .function_uid = &function_uid,
+                                        .block_id = &nir_block.id,
+                                        .source_entries = &source_entries,
+                                        .nir_block = &nir_block};
         append_block_instructions(block, context);
         nir_cfg.blocks.push_back(std::move(nir_block));
         append_block_edges(block, block_ids, edges);
@@ -552,7 +608,7 @@ struct UnitAnalysisResult
 
     auto command = *command_result;
     std::string cwd = unit.at("cwd").get<std::string>();
-    std::string file_path = normalize_file_path({cwd, command.file_path});
+    std::string file_path = normalize_file_path({.cwd = cwd, .file_path = command.file_path});
 
     std::filesystem::path file_fs(file_path);
     if (!std::filesystem::exists(file_fs)) {
@@ -752,7 +808,7 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
         return std::unexpected(source_map_json.error());
     }
 
-    return FrontendResult{std::move(*nir_json), std::move(*source_map_json)};
+    return FrontendResult{.nir = std::move(*nir_json), .source_map = std::move(*source_map_json)};
 }
 
 }  // namespace sappp::frontend_clang
