@@ -54,7 +54,7 @@ body:
       label: "入力（前提・依存）"
       description: "依存するファイル/成果物/環境"
       placeholder: |
-        参照ファイル: docs/QUALITY_GATE_STRATEGY.md
+        参照ファイル: AGENTS.md, CONTRIBUTING.md
         依存成果物: build/compile_commands.json
     validations:
       required: true
@@ -75,11 +75,13 @@ body:
       description: "チェックリスト形式で"
       value: |
         - [ ] 変更内容の説明が可能
-        - [ ] ビルド警告ゼロ（WERROR）
-        - [ ] 全テスト通過（ctest）
+        - [ ] 選択したゲートプロファイルでチェック完了（最終は full/ci）
+        - [ ] ビルド警告ゼロ（-DSAPPP_WERROR=ON）
+        - [ ] 全テスト通過（ctest --output-on-failure）
         - [ ] 決定性テスト通過（ctest -R determinism）
         - [ ] スキーマ検証通過（必要時）
         - [ ] C++変更時: clang-format/clang-tidy 実行
+        - [ ] Codex: ./scripts/agent-final-check.sh（ci）通過
     validations:
       required: true
 
@@ -98,10 +100,12 @@ body:
     id: gate_mode
     attributes:
       label: "ゲートモード"
+      description: "完了前にどのプロファイルを通すか"
       options:
-        - "smart"
-        - "full"
-        - "ci"
+        - "quick - 高速チェック（make quick）"
+        - "smart - 変更最適（make smart）"
+        - "full - ローカルフル（./scripts/pre-commit-check.sh）"
+        - "ci - CI互換の厳格チェック（make ci / ./scripts/docker-ci.sh --ci）"
     validations:
       required: true
 
@@ -110,7 +114,11 @@ body:
     attributes:
       label: "重要な環境変数"
       description: "必要なら記載（なければ「なし」）"
-      placeholder: "SAPPP_GATE_MODE=ci"
+      placeholder: |
+        SAPPP_BUILD_JOBS=8
+        SAPPP_GATE_MODE=full
+        SAPPP_PRE_COMMIT_MODE=smart
+        SAPPP_CI_GATE_MODE=ci
     validations:
       required: true
 
@@ -119,7 +127,13 @@ body:
     attributes:
       label: "実行コマンド"
       description: "再現/検証に必要なコマンド"
-      placeholder: "./scripts/docker-ci.sh --ci"
+      placeholder: |
+        make quick
+        make smart
+        ./scripts/pre-commit-check.sh
+        make ci
+        ./scripts/docker-ci.sh --ci
+        # Codex: ./scripts/agent-final-check.sh
     validations:
       required: true
 

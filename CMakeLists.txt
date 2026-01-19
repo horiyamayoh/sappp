@@ -15,6 +15,8 @@ option(SAPPP_BUILD_TESTS "Build tests" ON)
 option(SAPPP_BUILD_DOCS "Build documentation" OFF)
 option(SAPPP_BUILD_CLANG_FRONTEND "Build Clang frontend (requires LLVM/Clang)" OFF)
 option(SAPPP_WERROR "Treat warnings as errors" OFF)
+option(SAPPP_COVERAGE "Enable code coverage (gcov/llvm-cov)" OFF)
+option(SAPPP_BUILD_BENCHMARKS "Build benchmarks" OFF)
 
 # Export compile_commands.json for tooling
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
@@ -254,6 +256,23 @@ endif()
 function(sappp_target_strict_warnings target)
     target_compile_options(${target} PRIVATE ${SAPPP_CXX_FLAGS})
 endfunction()
+
+# ===========================================================================
+# Code Coverage Configuration
+# ===========================================================================
+if(SAPPP_COVERAGE)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        message(STATUS "Enabling coverage with gcov (GCC)")
+        add_compile_options(--coverage -fprofile-arcs -ftest-coverage)
+        add_link_options(--coverage)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(STATUS "Enabling coverage with llvm-cov (Clang)")
+        add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+        add_link_options(-fprofile-instr-generate)
+    else()
+        message(WARNING "Coverage not supported for ${CMAKE_CXX_COMPILER_ID}")
+    endif()
+endif()
 
 # Find dependencies (LLVM/Clang only if frontend enabled)
 if(SAPPP_BUILD_CLANG_FRONTEND)

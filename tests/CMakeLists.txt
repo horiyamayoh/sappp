@@ -10,6 +10,11 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
 
+# テストラベル定義
+# - quick: 高速テスト（30秒以内で完了すべき）
+# - slow: 時間のかかるテスト（E2E、統合テスト等）
+# - determinism: 決定性テスト
+# - benchmark: ベンチマークテスト
 set(SAPPP_QUICK_LABELS
     build_capture
     determinism
@@ -19,15 +24,22 @@ set(SAPPP_QUICK_LABELS
 )
 
 function(sappp_register_gtest target label)
-    set(labels "${label}")
-    if (label IN_LIST SAPPP_QUICK_LABELS)
-        list(APPEND labels quick)
+    # ラベルリストを構築
+    set(test_labels "${label}")
+    
+    # quick ラベルの追加判定
+    list(FIND SAPPP_QUICK_LABELS "${label}" _quick_index)
+    if(NOT _quick_index EQUAL -1)
+        list(APPEND test_labels "quick")
     endif()
-
+    
+    # セミコロン区切りの文字列に変換
+    string(REPLACE ";" "\\;" test_labels_escaped "${test_labels}")
+    
     gtest_discover_tests(${target}
         DISCOVERY_MODE PRE_TEST
         TEST_PREFIX "${label}."
-        PROPERTIES LABELS "${labels}"
+        PROPERTIES LABELS "${test_labels_escaped}"
     )
 endfunction()
 
@@ -48,6 +60,9 @@ add_subdirectory(po)
 
 # Validator tests
 add_subdirectory(validator)
+
+# Benchmark tests
+add_subdirectory(benchmarks)
 
 # Frontend (Clang) tests
 if(SAPPP_BUILD_CLANG_FRONTEND)

@@ -33,7 +33,10 @@ SAP++ への貢献ガイドです。開発を始める前に必ずお読みく�
 Docker だけで CI と同等のチェックを実行できます。
 
 ```bash
-# フルチェック（コミット前 / CI再現）
+# full（ローカルフル）
+./scripts/docker-ci.sh
+
+# ci（CI互換の厳格チェック）
 ./scripts/docker-ci.sh --ci
 
 # 高速チェック（作業中）
@@ -109,7 +112,9 @@ make smart
 # コミット（pre-commit hook が smart チェック + スタンプ保存）
 git commit -m "変更内容"
 
-# 必要ならDockerでCI互換チェック（CI再現）
+# 必要ならCI互換チェック（ローカル/Docker）
+make ci
+# または
 make docker-ci
 
 # プッシュ（pre-push hook はスタンプ確認のみ）
@@ -132,8 +137,8 @@ SAPPP_USE_CCACHE=0 make quick
 make help           # コマンド一覧
 make quick          # 高速チェック（作業中）
 make smart          # 変更内容に応じたチェック
-make ci             # フルCIチェック（コミット前）
-make docker-ci      # Docker環境でフルCIチェック
+make ci             # CI互換の厳格チェック
+make docker-ci      # Docker環境でCI互換チェック
 make build          # ビルドのみ
 make test           # テストのみ
 make format         # clang-format 適用
@@ -144,13 +149,14 @@ make tidy           # clang-tidy 実行
 
 ## ✅ 品質ゲート
 
-すべての変更は以下のゲートを通過する必要があります：
+すべての変更は以下のゲートを通過する必要があります（詳細は
+[docs/QUALITY_GATE_STRATEGY.md](docs/QUALITY_GATE_STRATEGY.md) を参照）：
 
-| ゲート | タイミング | 内容 |
-|-------|----------|------|
-| **L0: Quick** | 任意（作業中） | format + build + quick test（30秒以内） |
-| **L1: Commit Gate** | pre-commit | 変更内容に応じた build/test/tidy/スキーマ検証 |
-| **L2: Remote CI** | push後 | Dockerで `pre-commit-check.sh --ci` を実行（ローカルと同一ゲート） |
+| ゲート | タイミング | プロファイル | 内容 |
+|-------|----------|-------------|------|
+| **L0: Quick** | 任意（作業中） | quick | format + GCC build + quick tests |
+| **L1: Commit** | pre-commit | smart | 変更内容に応じた build/test/tidy/スキーマ検証 |
+| **L2: Release/CI** | push前/CI | full/ci | Clang build + determinism + schema まで含むフルゲート |
 
 ### 必須要件
 

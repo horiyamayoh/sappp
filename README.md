@@ -32,8 +32,10 @@ code .
 ```bash
 git clone https://github.com/horiyamayoh/sappp.git
 cd sappp
-./scripts/docker-ci.sh --quick  # 高速チェック
-./scripts/docker-ci.sh          # フルチェック
+./scripts/docker-ci.sh --quick  # quick (高速)
+./scripts/docker-ci.sh --smart  # smart (変更最適)
+./scripts/docker-ci.sh          # full (ローカルフル)
+./scripts/docker-ci.sh --ci     # ci (CI互換の厳格チェック)
 ```
 
 ### 方法3: ローカルビルド
@@ -53,8 +55,6 @@ ctest --test-dir build --output-on-failure
 
 ## 開発環境
 
-## 開発環境
-
 | 方法 | 特徴 | 推奨度 |
 |-----|------|-------|
 | **Dev Container** | CI と完全同一環境、VS Code 統合 | ⭐⭐⭐ |
@@ -66,12 +66,13 @@ ctest --test-dir build --output-on-failure
 ```bash
 make help           # コマンド一覧
 make quick          # 高速チェック（作業中）
-make ci             # ローカルフルチェック（コミット前）
-make docker-ci      # Docker CI（フルチェック）
+make smart          # 変更内容に応じたチェック
+make ci             # CI互換の厳格チェック
+make docker-ci      # Docker CI（CI互換）
 make install-hooks  # Git hooks インストール
 ```
 
-詳細は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。
+ゲートの詳細は [docs/QUALITY_GATE_STRATEGY.md](docs/QUALITY_GATE_STRATEGY.md) を参照してください。
 
 ## ビルド
 

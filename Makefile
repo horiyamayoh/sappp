@@ -3,8 +3,8 @@
 # 使い方:
 #   make help       # コマンド一覧を表示
 #   make quick      # 高速チェック（作業中に推奨）
-#   make ci         # フルCIチェック（コミット前推奨）
-#   make docker-ci  # Docker環境でフルCIチェック
+#   make ci         # CI互換の厳格チェック（ローカル）
+#   make docker-ci  # Docker環境でCI互換チェック
 #
 # このMakefileはCI/ローカルで共通のコマンドを提供します。
 
@@ -59,21 +59,34 @@ help:
 	@echo "$(YELLOW)SAP++ Build System$(NC)"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 	@echo ""
-	@echo "$(BLUE)開発ワークフロー:$(NC)"
-	@echo "  make quick       高速チェック（30秒以内、作業中に推奨）"
-	@echo "  make smart       変更内容に応じて最小化したチェック"
-	@echo "  make ci          フルCIチェック（コミット前推奨）"
-	@echo "  make docker-ci   Docker環境でフルCIチェック（確実）"
+	@echo "$(BLUE)開発ワークフロー（3段階ゲート）:$(NC)"
+	@echo "  make quick       L0: 高速チェック（30秒以内、作業中に推奨）"
+	@echo "  make smart       L1: コミットゲート（変更最適）"
+	@echo "  make ci          L2: CI互換の厳格チェック（ローカル）"
+	@echo "  make docker-ci   L2: Docker CI（CI環境を完全再現）"
 	@echo ""
-	@echo "$(BLUE)ビルド:$(NC)"
+	@echo "$(BLUE)追加のチェックモード:$(NC)"
+	@echo "  ./scripts/pre-commit-check.sh  full ゲート（ローカルフル）"
+	@echo ""
+	@echo "$(BLUE)ビルド & テスト:$(NC)"
 	@echo "  make build       プロジェクトをビルド"
-	@echo "  make test        テストを実行"
+	@echo "  make test        全テストを実行"
+	@echo "  make test-quick  高速テストのみ（quickラベル）"
+	@echo "  make test-determinism  決定性テストのみ"
+	@echo "  make test-scripts      スクリプトセルフテストを実行"
 	@echo "  make clean       ビルドディレクトリを削除"
 	@echo ""
 	@echo "$(BLUE)コード品質:$(NC)"
 	@echo "  make format      clang-formatを適用（自動修正）"
 	@echo "  make format-check フォーマットをチェック（修正しない）"
 	@echo "  make tidy        clang-tidyを実行"
+	@echo ""
+	@echo "$(BLUE)カバレッジ & ベンチマーク:$(NC)"
+	@echo "  make coverage          カバレッジレポート生成（HTML）"
+	@echo "  make coverage-open     カバレッジレポートをブラウザで開く"
+	@echo "  make benchmarks        ベンチマーク実行"
+	@echo "  make benchmarks-baseline  ベースライン保存"
+	@echo "  make benchmarks-compare   ベースラインと比較"
 	@echo ""
 	@echo "$(BLUE)セットアップ:$(NC)"
 	@echo "  make install-hooks Git hooksをインストール"
@@ -84,7 +97,7 @@ help:
 	@echo "  1. make check-env       # 環境確認"
 	@echo "  2. make install-hooks   # Git hooks インストール"
 	@echo "  3. （コーディング）"
-	@echo "  4. git commit           # pre-commit hookがフルチェック"
+	@echo "  4. git commit           # pre-commit hookが smart チェック"
 	@echo "  5. git push             # pre-push hookがスタンプ確認"
 	@echo ""
 
@@ -101,13 +114,13 @@ smart:
 	@./scripts/pre-commit-check.sh --smart
 
 # ===========================================================================
-# フルCIチェック（コミット前）
+# CI互換の厳格チェック
 # ===========================================================================
 ci:
 	@./scripts/pre-commit-check.sh --ci
 
 # ===========================================================================
-# Docker CIチェック（確実）
+# Docker CIチェック（CI互換）
 # ===========================================================================
 docker-ci:
 	@./scripts/docker-ci.sh --ci
@@ -157,40 +170,49 @@ test-determinism: build
 	@ctest --test-dir $(BUILD_DIR) -R determinism --output-on-failure -j$(BUILD_JOBS)
 	@echo "$(GREEN)✓ 決定性テスト完了$(NC)"
 
-# ===========================================================================
-# コード品質
-# ===========================================================================
-CLANG_FORMAT := $(shell command -v clang-format-19 2>/dev/null || command -v clang-format 2>/dev/null || echo "")
-CLANG_TIDY := $(shell command -v clang-tidy-19 2>/dev/null || command -v clang-tidy 2>/dev/null || echo "")
+test-scripts:
+	@echo "$(BLUE)▶ スクリプトセルフテスト実行中...$(NC)"
+	@./scripts/lib/test-common.sh
+	@echo "$(GREEN)✓ スクリプトセルフテスト完了$(NC)"
 
-CPP_FILES := $(shell find libs tools tests include -name '*.cpp' -o -name '*.hpp' -o -name '*.h' 2>/dev/null)
+test-quick:
+	@echo "$(BLUE)▶ 高速テスト実行中（quickラベル）...$(NC)"
+	@ctest --test-dir $(BUILD_DIR) -L quick --output-on-failure -j$(BUILD_JOBS)
+	@echo "$(GREEN)✓ 高速テスト完了$(NC)"
+
+# ===========================================================================
+# コード品質（単一スクリプトで対象範囲を一元管理）
+# ===========================================================================
 
 format:
-ifeq ($(CLANG_FORMAT),)
-	@echo "$(YELLOW)Warning: clang-format not found$(NC)"
-else
-	@echo "$(BLUE)▶ フォーマット適用中...$(NC)"
-	@$(CLANG_FORMAT) -i $(CPP_FILES)
-	@echo "$(GREEN)✓ フォーマット完了$(NC)"
-endif
+	@# 単一スクリプトで対象範囲を一元管理
+	@./scripts/run-clang-format.sh --fix
 
 format-check:
-ifeq ($(CLANG_FORMAT),)
-	@echo "$(YELLOW)Warning: clang-format not found$(NC)"
-else
-	@echo "$(BLUE)▶ フォーマットチェック中...$(NC)"
-	@$(CLANG_FORMAT) --dry-run --Werror $(CPP_FILES)
-	@echo "$(GREEN)✓ フォーマットOK$(NC)"
-endif
+	@# 単一スクリプトで対象範囲を一元管理
+	@./scripts/run-clang-format.sh --check
 
 tidy: configure
-ifeq ($(CLANG_TIDY),)
-	@echo "$(YELLOW)Warning: clang-tidy not found$(NC)"
-else
-	@echo "$(BLUE)▶ clang-tidy実行中...$(NC)"
-	@find libs -name '*.cpp' -print0 | xargs -0 -P$(BUILD_JOBS) -I{} $(CLANG_TIDY) -p $(BUILD_DIR) --warnings-as-errors='*' {}
-	@echo "$(GREEN)✓ clang-tidy完了$(NC)"
-endif
+	@# 単一スクリプトで対象範囲を一元管理
+	@./scripts/run-clang-tidy.sh --build-dir $(BUILD_DIR) --jobs $(BUILD_JOBS)
+
+# ===========================================================================
+# カバレッジ & ベンチマーク
+# ===========================================================================
+coverage:
+	@./scripts/run-coverage.sh --html
+
+coverage-open:
+	@./scripts/run-coverage.sh --html --open
+
+benchmarks:
+	@./scripts/run-benchmarks.sh
+
+benchmarks-baseline:
+	@./scripts/run-benchmarks.sh --baseline
+
+benchmarks-compare:
+	@./scripts/run-benchmarks.sh --compare
 
 # ===========================================================================
 # セットアップ
@@ -203,8 +225,8 @@ install-hooks:
 # ===========================================================================
 clean:
 	@echo "$(BLUE)▶ クリーンアップ中...$(NC)"
-	@rm -rf $(BUILD_DIR) build-clang
+	@rm -rf $(BUILD_DIR) build-clang build-coverage
 	@echo "$(GREEN)✓ クリーンアップ完了$(NC)"
 
 distclean: clean
-	@rm -rf .cache
+	@rm -rf .cache .benchmarks

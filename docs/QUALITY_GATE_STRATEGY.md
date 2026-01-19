@@ -1,76 +1,101 @@
-# Quality Gate Strategy (SAP++)
+# 品質ゲート戦略 (SAP++)
 
-This document defines the quality gate tiers, their intent, and the recommended
-commands for local and CI use. The goal is deterministic, CI-parity checks while
-keeping developer feedback fast and avoiding duplicate work.
+本書は、品質ゲートのプロファイル定義、ゲート階層への対応関係、
+およびローカル/CI で使用する正のコマンドを定義します。
+決定性と CI パリティを担保しつつ、開発者フィードバックを速く、
+予測可能に保つことが目的です。
 
-## Goals
+## 目的
 
-- CI parity: local "full/ci" checks mirror remote CI behavior.
-- Fast feedback: "quick" and "smart" modes reduce turnaround time.
-- Determinism: warnings-as-errors, determinism tests, and schema validation
-  are always enforced in CI mode.
-- Transparency: stamp metadata records mode, tidy scope, and skipped steps.
+- CI パリティ: ローカルの `ci` チェックは GitHub Actions と同等にする
+- 迅速なフィードバック: `quick` と `smart` で反復速度を確保する
+- 決定性: warning-as-error、決定性テスト、スキーマ検証は `full/ci` で常に実施
+- 透明性: スタンプにモード、tidy 範囲、スキップ項目を記録する
 
-## Gate Levels
+## ゲートプロファイル（単一の正）
 
-- L0 (Quick): fast checks for active development.
-  - Format on changed files
-  - Incremental GCC build + quick tests
-  - Command: `./scripts/quick-check.sh`
+下記スクリプトが正の実装です。
 
-- L1 (Smart): change-aware checks before committing.
-  - Format on changed files
-  - GCC build + full tests (only if build-relevant files changed)
-  - Determinism tests (only if build-relevant files changed)
-  - clang-tidy on changed C++ (full when headers change)
-  - Schema validation only when schemas change
-  - Command: `./scripts/pre-commit-check.sh --smart`
+- `quick`: `./scripts/quick-check.sh`（または `make quick`, `./scripts/docker-ci.sh --quick`）
+  - clang-format: 変更された C++ のみ
+  - GCC ビルド: Debug + WERROR
+  - テスト: quick ラベルがあればそれのみ、なければ全テスト
+  - 決定性テスト/clang-tidy/スキーマ検証/Clang ビルドは実行しない
 
-- L2 (CI): strict, CI-equivalent checks.
-  - Format on all C++ sources
-  - GCC build + full tests
-  - Determinism tests
-  - Clang build + tests
-  - clang-tidy on all `libs/**/*.cpp`
-  - Schema validation
-  - Command: `./scripts/pre-commit-check.sh --ci` or
-    `./scripts/docker-ci.sh --ci`
+- `smart`: `./scripts/pre-commit-check.sh --smart`（または `make smart`, `./scripts/docker-ci.sh --smart`）
+  - 変更内容に応じたゲート
+  - clang-format: C++/ヘッダ変更時のみ
+  - GCC ビルド/テスト + 決定性: ビルド影響のある変更時のみ
+  - clang-tidy: 変更された C++ のみ
+  - ヘッダのみの変更では tidy 範囲は拡張しない（`--tidy-all` または full/ci を使用）
+  - スキーマ検証: schemas 変更時のみ
+  - Clang ビルド: デフォルトでスキップ（`--with-clang` で強制）
+  - ツール不足（clang-tidy/ajv）は smart ではスキップ扱い
 
-CI uses the same Docker-based gate as local development to prevent drift.
-The mode can be controlled with `SAPPP_CI_GATE_MODE` (`smart`/`full`/`ci`)
-or via workflow_dispatch input.
+- `full`: `./scripts/pre-commit-check.sh`（デフォルト）または `./scripts/docker-ci.sh`
+  - clang-format: 対象ソース全体
+  - GCC ビルド/テスト + 決定性
+  - Clang ビルド/テスト
+  - clang-tidy: 対象全体（libs/tools/include）
+  - スキーマ検証
+  - skip フラグは許可されるが、スタンプは `partial` に降格
 
-## Stamps
+- `ci`: `./scripts/pre-commit-check.sh --ci`（または `make ci`, `./scripts/docker-ci.sh --ci`）
+  - `full` と同一のチェックだが skip フラグは拒否
+  - tidy_scope は強制的に `all`
+  - CI パリティの厳格モード
 
-Successful checks write a stamp file (default: `.git/sappp/ci-stamp.json`) with
-these fields:
+## ゲート階層
+
+- L0（Quick）: ローカル反復
+  - プロファイル: `quick`
+  - コマンド: `make quick`
+
+- L1（Commit）: 変更内容に応じた pre-commit
+  - プロファイル: `smart`（pre-commit hook のデフォルト）
+  - コマンド: `make smart`
+
+- L2（Release/CI）: push 前/CI でのフルパリティ
+  - プロファイル: `ci`（厳格）または `full`（ローカルフル、skip 可）
+  - コマンド: `make ci`（ローカル）または `./scripts/docker-ci.sh --ci`（Docker）
+
+CI はローカルと同じ Docker ベースのゲートを使用し、乖離を防ぎます。
+CI のゲート選択は `SAPPP_CI_GATE_MODE`（`smart`/`full`/`ci`）
+または workflow_dispatch 入力で制御します。
+
+## スタンプ
+
+成功したチェックはスタンプファイル（既定: `.git/sappp/ci-stamp.json`）を出力します。
+主なフィールドは以下です。
 
 - `check_mode`: quick/smart/full/ci/partial
 - `tidy_scope`: changed/all
-- `skipped_steps`: comma-delimited skipped steps
+- `skipped_steps`: スキップ項目のカンマ区切り
 
-The pre-push check validates the stamp and rejects modes not in its allow-list
-(default: `full,ci`). Override via:
+pre-push はスタンプを検証し、許可リストにないモードは拒否します
+（既定: `full,ci`）。上書き例:
 
 - `SAPPP_PRE_PUSH_REQUIRE=full,ci,smart`
 - `./scripts/pre-push-check.sh --require=full,ci,smart`
 
-Install hooks once (`make install-hooks`). The pre-push hook is treated as
-required and is flagged by `make check-env` if missing.
+フックは一度だけインストールします（`make install-hooks`）。
+pre-push hook は必須扱いで、未インストールは `make check-env` で検知されます。
 
-## Recommended Workflow
+## 推奨ワークフロー
 
-1. `make quick` while iterating
-2. `make smart` before committing (default pre-commit hook)
-3. `make ci` before pushing or when CI parity is required
+1. `make quick`（作業中）
+2. `make smart`（コミット前）
+3. `make ci`（push 前または CI パリティが必要なとき）
 
-## Docker Usage
+## Docker 利用
 
-- CI parity: `./scripts/docker-ci.sh --ci`
-- Stamp write: `./scripts/docker-ci.sh --stamp`
-- Cache is enabled by default (ccache + host build).
-- Disable cache: `./scripts/docker-ci.sh --no-cache`
-- Use tmpfs while keeping ccache: `./scripts/docker-ci.sh --tmpfs`
-- Docker builds use `build-docker` / `build-docker-clang` by default to avoid
-  host cache conflicts (override via `SAPPP_BUILD_DIR` / `SAPPP_BUILD_CLANG_DIR`).
+- Full（ローカルフル）: `./scripts/docker-ci.sh`
+- CI パリティ（厳格）: `./scripts/docker-ci.sh --ci`
+- Smart: `./scripts/docker-ci.sh --smart`
+- Quick: `./scripts/docker-ci.sh --quick`
+- スタンプ出力: `./scripts/docker-ci.sh --stamp`
+- キャッシュは既定で有効（ccache + host build）
+- 無効化: `./scripts/docker-ci.sh --no-cache`
+- tmpfs 利用: `./scripts/docker-ci.sh --tmpfs`
+- Docker ビルドは既定で `build-docker` / `build-docker-clang` を使用
+  （上書き: `SAPPP_BUILD_DIR` / `SAPPP_BUILD_CLANG_DIR`）

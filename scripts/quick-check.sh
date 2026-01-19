@@ -10,17 +10,13 @@
 
 set -euo pipefail
 
-# 色付き出力
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
 # スクリプトのディレクトリからプロジェクトルートを取得
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
+
+# 共通ライブラリ読み込み
+source "$SCRIPT_DIR/lib/common.sh"
 
 # オプション
 CHECK_ALL=false
@@ -42,47 +38,16 @@ for arg in "$@"; do
     esac
 done
 
-# 並列度
-if command -v nproc &> /dev/null; then
-    DEFAULT_JOBS="$(nproc)"
-else
-    DEFAULT_JOBS=1
-fi
-BUILD_JOBS="${SAPPP_BUILD_JOBS:-$DEFAULT_JOBS}"
+# 並列度（共通ライブラリ使用）
+BUILD_JOBS="$(get_build_jobs)"
 
-# CMakeジェネレータ
-if command -v ninja &> /dev/null; then
-    GENERATOR="-G Ninja"
-else
-    GENERATOR=""
-fi
+# CMakeジェネレータ（共通ライブラリ使用）
+GENERATOR="$(get_cmake_generator)"
 
-# ccache（デフォルト有効。無効化は SAPPP_USE_CCACHE=0）
-if [ -z "${SAPPP_USE_CCACHE:-}" ]; then
-    SAPPP_USE_CCACHE=1
-fi
-CMAKE_LAUNCHER_OPTS=""
-if [ "${SAPPP_USE_CCACHE}" = "1" ] && command -v ccache &> /dev/null; then
-    CMAKE_LAUNCHER_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
-fi
+# ccache オプション（共通ライブラリ使用）
+CMAKE_LAUNCHER_OPTS="$(get_ccache_cmake_opts)"
 
-has_compiler_warnings() {
-    local log_file="$1"
-    if command -v rg &> /dev/null; then
-        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
-    else
-        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
-    fi
-}
-
-print_compiler_warnings() {
-    local log_file="$1"
-    if command -v rg &> /dev/null; then
-        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
-    else
-        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
-    fi
-}
+# has_compiler_warnings / print_compiler_warnings は共通ライブラリから使用
 
 # 開始時刻
 START_TIME=$(date +%s)
@@ -92,27 +57,12 @@ echo -e "${YELLOW}━━━ SAP++ Quick Check ━━━${NC}"
 # ===========================================================================
 # 1. 変更ファイルの検出
 # ===========================================================================
-if [ "$CHECK_ALL" = true ]; then
-    CHANGED_CPP=$(find libs tools tests include \( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) -print 2>/dev/null | head -100)
-else
-    # git diff で変更ファイルを検出（staged + unstaged）
-    CHANGED_CPP=""
-    if git rev-parse --git-dir > /dev/null 2>&1; then
-        if git rev-parse --verify HEAD > /dev/null 2>&1; then
-            CHANGED_CPP=$( { git diff --name-only --diff-filter=ACMR HEAD -- libs tools tests include; \
-                git diff --name-only --cached --diff-filter=ACMR HEAD -- libs tools tests include; } | sort -u )
-        else
-            CHANGED_CPP=$(git ls-files -- libs tools tests include 2>/dev/null || true)
-        fi
-    fi
+TARGET_DIRS="$SAPPP_SOURCE_DIRS $SAPPP_TEST_DIR"
 
-    if [ -n "$CHANGED_CPP" ]; then
-        if command -v rg &> /dev/null; then
-            CHANGED_CPP=$(echo "$CHANGED_CPP" | rg -e '\.(cpp|hpp|h)$' || true)
-        else
-            CHANGED_CPP=$(echo "$CHANGED_CPP" | grep -E '\.(cpp|hpp|h)$' || true)
-        fi
-    fi
+if [ "$CHECK_ALL" = true ]; then
+    CHANGED_CPP=$(collect_all_cpp_files "$TARGET_DIRS" "" | head -100)
+else
+    CHANGED_CPP=$(collect_changed_cpp_files "$TARGET_DIRS")
 fi
 
 if [ -z "$CHANGED_CPP" ]; then
@@ -121,36 +71,26 @@ if [ -z "$CHANGED_CPP" ]; then
 fi
 
 # ===========================================================================
-# 2. clang-format チェック
+# 2. clang-format チェック（単一スクリプトに委譲）
 # ===========================================================================
 echo -e "\n${BLUE}▶ Format Check${NC}"
 
 if [ -n "$CHANGED_CPP" ]; then
-    if command -v clang-format-19 &> /dev/null; then
-        CLANG_FORMAT=clang-format-19
-    elif command -v clang-format &> /dev/null; then
-        CLANG_FORMAT=clang-format
-    else
-        echo -e "${YELLOW}Warning: clang-format not found, skipping${NC}"
-        CLANG_FORMAT=""
+    FORMAT_SCOPE="--changed"
+    if [ "$CHECK_ALL" = true ]; then
+        FORMAT_SCOPE="--all"
     fi
     
-    if [ -n "$CLANG_FORMAT" ]; then
-        FORMAT_ERRORS=0
-        for file in $CHANGED_CPP; do
-            if [ -f "$file" ]; then
-                if ! $CLANG_FORMAT --dry-run --Werror "$file" 2>/dev/null; then
-                    echo -e "${RED}  ✗ $file${NC}"
-                    FORMAT_ERRORS=$((FORMAT_ERRORS + 1))
-                fi
-            fi
-        done
-        
-        if [ $FORMAT_ERRORS -gt 0 ]; then
-            echo -e "${RED}Format errors found. Run: ${CLANG_FORMAT} -i <files>${NC}"
-            exit 1
-        fi
+    if ./scripts/run-clang-format.sh --check $FORMAT_SCOPE 2>/dev/null; then
         echo -e "${GREEN}✓ Format check passed${NC}"
+    else
+        exit_code=$?
+        if [ $exit_code -eq 1 ]; then
+            echo -e "${RED}Format errors found. Run: ./scripts/run-clang-format.sh --fix${NC}"
+            exit 1
+        else
+            echo -e "${YELLOW}Warning: clang-format not found, skipping${NC}"
+        fi
     fi
 else
     echo -e "${GREEN}✓ No files to check${NC}"
@@ -170,13 +110,13 @@ mkdir -p "$LOG_DIR"
 if [ ! -f "$BUILD_DIR/Makefile" ] && [ ! -f "$BUILD_DIR/build.ninja" ]; then
     echo "Configuring CMake..."
     
-    # コンパイラ検出
-    if command -v g++-14 &> /dev/null; then
-        CXX=g++-14
-        CC=gcc-14
-    else
-        CXX=g++
-        CC=gcc
+    # コンパイラ検出（共通ライブラリ使用）
+    CXX="$(detect_gcc14)"
+    CC="$(detect_gcc14_c)"
+    
+    if [ -z "$CXX" ]; then
+        CXX="g++"
+        CC="gcc"
     fi
     
     if ! cmake -S . -B "$BUILD_DIR" $GENERATOR \

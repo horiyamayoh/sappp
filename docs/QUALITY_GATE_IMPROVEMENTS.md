@@ -1,33 +1,35 @@
-# Quality Gate Improvements
+# 品質ゲート改善の概要
 
-This document summarizes the quality-gate updates and the issues they address.
+本書は品質ゲートの更新点と、その背景にある課題を要約します。
+定義と正のコマンドは `docs/QUALITY_GATE_STRATEGY.md` を参照してください。
 
-## Issues Addressed
+## 対応した課題
 
-- Local success but remote failure (clang-tidy parity and tool gating)
-- clang-tidy strictness causing frequent friction
-- Excessive repeat work on small changes
-- Ad-hoc gate behavior without a single strategy
+- ローカルで成功しても CI で失敗する（clang-tidy のパリティとツール判定）
+- clang-tidy の厳格さによる過剰な摩擦
+- 小さな変更での繰り返し作業の増大
+- 統一戦略のないアドホックなゲート挙動
 
-## Key Changes
+## 主要な変更
 
-- Added gate profiles: `quick`, `smart`, `full`, and `ci`.
-- Default pre-commit mode is now `smart` (change-aware, faster feedback).
-- `--ci` mode enforces CI parity and forbids skip flags.
-- clang-tidy uses Clang compile_commands in CI to match local behavior.
-- Docker CI can now write stamps (`--stamp`) for pre-push validation.
-- Docker caching is enabled by default (ccache + host build). Disable with
-  `--no-cache` or `--tmpfs` when isolation is preferred.
-- Docker uses dedicated build dirs (`build-docker`, `build-docker-clang`) to
-  avoid host/CI cache path mismatches.
-- pre-push hook is treated as required (missing hook is flagged by check-env).
-- Stamp now records mode, tidy scope, and skipped steps.
-- Skipped steps are explicitly reported and downgrade full/ci stamps to partial.
-- GitHub CI runs the same Docker gate script as local for parity.
-- CI gate mode can be controlled via `SAPPP_CI_GATE_MODE` or workflow_dispatch.
+- ゲートプロファイルを追加: `quick`, `smart`, `full`, `ci`
+- pre-commit のデフォルトを `smart` に変更（変更最適・高速）
+- `full` は `pre-commit-check.sh` / `docker-ci.sh` のデフォルト（ローカルフル）
+- `ci` は CI パリティを強制し、skip フラグを禁止
+- clang-tidy は CI で Clang の compile_commands を優先使用
+- Docker CI でスタンプ出力が可能に（`--stamp`）
+- Docker キャッシュは既定で有効（ccache + host build）
+  - 必要に応じて `--no-cache` / `--tmpfs` で無効化
+- Docker は専用ビルドディレクトリ（`build-docker`, `build-docker-clang`）を使用
+- pre-push hook は必須扱い（未インストールは check-env で検知）
+- スタンプにモード/範囲/スキップ項目を記録
+- スキップ項目がある場合、full/ci のスタンプは `partial` に降格
+- GitHub CI はローカルと同じ Docker ゲートを使用してパリティを確保
+- CI のゲートモードは `SAPPP_CI_GATE_MODE` / workflow_dispatch で制御可能
 
-## Compatibility Notes
+## 互換性メモ
 
-- CI keeps all strict checks; local "smart" is intended for iteration speed.
-- Use `make ci` or `./scripts/docker-ci.sh --ci` before push for parity.
-- If tools are missing in `full/ci`, the check fails (no false success).
+- CI は常に厳格。ローカル `smart` は反復速度重視。
+- push 前は `make ci`（ローカル）または `./scripts/docker-ci.sh --ci`（Docker）で
+  パリティを確認すること。
+- `full/ci` でツールが不足している場合は失敗とする（偽の成功は許可しない）。

@@ -10,17 +10,13 @@
 
 set -euo pipefail
 
-# 色付き出力
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
 # スクリプトのディレクトリからプロジェクトルートを取得
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_ROOT"
+
+# 共通ライブラリ読み込み
+source "$SCRIPT_DIR/lib/common.sh"
 
 # オプション解析
 MODE="${SAPPP_GATE_MODE:-full}" # full|smart|quick|ci
@@ -191,38 +187,25 @@ if [ "$CI_MODE" = true ]; then
 fi
 
 # 並列度
-if command -v nproc &> /dev/null; then
-    DEFAULT_JOBS="$(nproc)"
-else
-    DEFAULT_JOBS=1
-fi
-BUILD_JOBS="${SAPPP_BUILD_JOBS:-$DEFAULT_JOBS}"
+# 並列度（共通ライブラリ使用）
+BUILD_JOBS="$(get_build_jobs)"
 
-# CMakeジェネレータ
-if command -v ninja &> /dev/null; then
-    GENERATOR="-G Ninja"
-else
-    GENERATOR=""
-fi
+# CMakeジェネレータ（共通ライブラリ使用）
+GENERATOR="$(get_cmake_generator)"
 
-# ccache（デフォルト有効。無効化は SAPPP_USE_CCACHE=0）
-if [ -z "${SAPPP_USE_CCACHE:-}" ]; then
-    SAPPP_USE_CCACHE=1
-fi
-CMAKE_LAUNCHER_OPTS=""
-if [ "${SAPPP_USE_CCACHE}" = "1" ] && command -v ccache &> /dev/null; then
-    CMAKE_LAUNCHER_OPTS="-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
-fi
+# ccache オプション（共通ライブラリ使用）
+CMAKE_LAUNCHER_OPTS="$(get_ccache_cmake_opts)"
 
 filter_paths() {
     local pattern="$1"
-    if command -v rg &> /dev/null; then
+    if [ -n "$(detect_ripgrep)" ]; then
         rg -e "$pattern"
     else
         grep -E "$pattern"
     fi
 }
 
+# collect_changed_files は共通ライブラリの collect_changed_cpp_files を使用
 collect_changed_files() {
     if ! git rev-parse --git-dir > /dev/null 2>&1; then
         return 0
@@ -249,23 +232,7 @@ collect_changed_files() {
     echo "$files"
 }
 
-has_compiler_warnings() {
-    local log_file="$1"
-    if command -v rg &> /dev/null; then
-        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
-    else
-        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" > /dev/null
-    fi
-}
-
-print_compiler_warnings() {
-    local log_file="$1"
-    if command -v rg &> /dev/null; then
-        rg -n ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
-    else
-        grep -nE ":[0-9]+:[0-9]+: warning:" "$log_file" | head -20
-    fi
-}
+# has_compiler_warnings / print_compiler_warnings は共通ライブラリから使用
 
 write_stamp() {
     if [ "$NO_STAMP" = true ] || [ -z "$STAMP_FILE" ]; then
@@ -370,34 +337,8 @@ if [ "$SMART_MODE" = true ] && [ "$DETECTED_CHANGES" = false ]; then
     fi
 fi
 
-collect_tidy_files() {
-    local files=""
-    # テストファイルと frontend_clang は clang-tidy 対象外
-    # - tests: テストは何でもありにする
-    # - frontend_clang: Clang AST API の制約で警告対応が困難
-    local target_dirs="libs tools include"
-    local exclude_pattern="libs/frontend_clang/"
-    
-    if [ "$TIDY_SCOPE" = "all" ]; then
-        find $target_dirs \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -print \
-            | grep -v "$exclude_pattern" | sort -u
-        return 0
-    fi
-
-    if [ -n "$CHANGED_CPP" ]; then
-        files=$(printf '%s\n' "$CHANGED_CPP" | filter_paths '^(libs|tools|include)/' | sort -u || true)
-    elif [ -n "$CHANGED_HEADERS" ]; then
-        files=$(find $target_dirs \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) -print | sort -u)
-    else
-        files=""
-    fi
-
-    if [ -n "$files" ]; then
-        files=$(printf '%s\n' "$files" | grep -v "$exclude_pattern" || true)
-    fi
-
-    echo "$files"
-}
+# clang-tidy 対象ファイル収集は scripts/run-clang-tidy.sh に委譲
+# 単一ソース化により Makefile / pre-commit-check.sh / CI の不整合を防止
 
 run_check() {
     local name="$1"
@@ -435,7 +376,7 @@ if [ "$DETECTED_CHANGES" = true ]; then
 fi
 
 # ===========================================================================
-# 1. clang-format チェック
+# 1. clang-format チェック（単一スクリプトに委譲）
 # ===========================================================================
 run_check "Format Check (clang-format)" '
     if [ "$SMART_MODE" = true ] && [ "$HAS_CPP_CHANGES" = false ] && [ "$HAS_HEADER_CHANGES" = false ]; then
@@ -443,31 +384,27 @@ run_check "Format Check (clang-format)" '
         exit 2
     fi
 
-    if command -v clang-format-19 &> /dev/null; then
-        CLANG_FORMAT=clang-format-19
-    elif command -v clang-format &> /dev/null; then
-        CLANG_FORMAT=clang-format
-    else
-        if [ "$STRICT_TOOLS" = true ]; then
-            echo "Error: clang-format not found"
-            exit 1
-        fi
-        echo "Warning: clang-format not found, skipping"
-        exit 2
+    # 単一スクリプトで対象範囲を一元管理
+    FORMAT_SCOPE="--all"
+    if [ "$SMART_MODE" = true ]; then
+        FORMAT_SCOPE="--changed"
     fi
 
-    if [ "$SMART_MODE" = true ] && [ "$DETECTED_CHANGES" = true ]; then
-        TARGET_FILES=$(printf "%s\n" "$CHANGED_CPP" "$CHANGED_HEADERS" | filter_paths "\\.(cpp|hpp|h)$" | sort -u || true)
-        if [ -z "$TARGET_FILES" ]; then
-            echo "No C++ files to check"
+    ./scripts/run-clang-format.sh --check $FORMAT_SCOPE || {
+        local status=$?
+        if [ $status -eq 0 ]; then
+            exit 0
+        elif [ $status -eq 2 ]; then
+            # clang-format not found
+            if [ "$STRICT_TOOLS" = true ]; then
+                echo "Error: clang-format not found"
+                exit 1
+            fi
             exit 2
+        else
+            exit 1
         fi
-        printf "%s\n" "$TARGET_FILES" | tr "\\n" "\\0" | xargs -0 $CLANG_FORMAT --dry-run --Werror
-    else
-        find libs tools tests include \
-            \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" \) \
-            -print0 2>/dev/null | xargs -0 $CLANG_FORMAT --dry-run --Werror
-    fi
+    }
 '
 
 # ===========================================================================
@@ -608,6 +545,7 @@ fi
 
 # ===========================================================================
 # 6. clang-tidy（オプション）
+#    単一スクリプト run-clang-tidy.sh に委譲（対象範囲の一元管理）
 # ===========================================================================
 if [ "$SKIP_TIDY" = true ]; then
     run_check "Static Analysis (clang-tidy)" '
@@ -621,46 +559,37 @@ else
             exit 2
         fi
 
-        if command -v clang-tidy-19 &> /dev/null; then
-            CLANG_TIDY=clang-tidy-19
-        elif command -v clang-tidy &> /dev/null; then
-            CLANG_TIDY=clang-tidy
-        else
-            if [ "$STRICT_TOOLS" = true ]; then
-                echo "Error: clang-tidy not found"
+        # 単一スクリプトで対象範囲を一元管理
+        TIDY_MODE="--all"
+        if [ "$TIDY_SCOPE" = "changed" ]; then
+            TIDY_MODE="--changed"
+        fi
+
+        # SAPPP_BUILD_DIR / SAPPP_BUILD_CLANG_DIR は run-clang-tidy.sh が参照
+        export SAPPP_BUILD_DIR="$BUILD_DIR"
+        export SAPPP_BUILD_CLANG_DIR="$BUILD_CLANG_DIR"
+        export SAPPP_BUILD_JOBS="$BUILD_JOBS"
+
+        ./scripts/run-clang-tidy.sh $TIDY_MODE || {
+            local status=$?
+            if [ $status -eq 0 ]; then
+                exit 0
+            elif [ $status -eq 2 ]; then
+                # clang-tidy not found（非strict時）
+                if [ "$STRICT_TOOLS" = true ]; then
+                    echo "Error: clang-tidy not found"
+                    exit 1
+                fi
+                exit 2
+            else
                 exit 1
             fi
-            echo "Warning: clang-tidy not found, skipping"
-            exit 2
-        fi
-
-        CHANGED_FILES=$(collect_tidy_files)
-        if [ -z "$CHANGED_FILES" ]; then
-            echo "No C++ files to check"
-            exit 2
-        fi
-
-        echo "Checking files:"
-        echo "$CHANGED_FILES"
-
-        # Use Clang build directory if available, otherwise use GCC build with extra args to suppress GCC-specific flags
-        TIDY_BUILD_DIR="$BUILD_DIR"
-        TIDY_EXTRA_ARGS=""
-        if [ -d "$BUILD_CLANG_DIR" ] && [ -f "$BUILD_CLANG_DIR/compile_commands.json" ]; then
-            TIDY_BUILD_DIR="$BUILD_CLANG_DIR"
-        else
-            # Suppress GCC-specific unknown warning options when using GCC compile_commands
-            TIDY_EXTRA_ARGS="--extra-arg=-Wno-unknown-warning-option --extra-arg=-Wno-error=unknown-warning-option"
-        fi
-
-        printf "%s\n" "$CHANGED_FILES" | tr "\\n" "\\0" | \
-            xargs -0 -P"$BUILD_JOBS" -I{} $CLANG_TIDY -p "$TIDY_BUILD_DIR" \
-                --warnings-as-errors="*" $TIDY_EXTRA_ARGS {}
+        }
     '
 fi
 
 # ===========================================================================
-# 7. スキーマ検証（オプション）
+# 7. スキーマ検証（単一スクリプトに委譲）
 # ===========================================================================
 if [ "$SKIP_SCHEMA" = true ]; then
     run_check "Schema Validation" '
@@ -674,34 +603,22 @@ else
             exit 2
         fi
 
-        if ! command -v ajv &> /dev/null; then
-            if [ "$STRICT_TOOLS" = true ]; then
-                echo "Error: ajv-cli not found"
+        # 単一スクリプトで検証を一元管理
+        ./scripts/run-schema-validation.sh || {
+            local status=$?
+            if [ $status -eq 0 ]; then
+                exit 0
+            elif [ $status -eq 2 ]; then
+                # ajv not found
+                if [ "$STRICT_TOOLS" = true ]; then
+                    echo "Error: ajv-cli not found"
+                    exit 1
+                fi
+                exit 2
+            else
                 exit 1
             fi
-            echo "Warning: ajv-cli not found, skipping"
-            exit 2
-        fi
-
-        # NOTE: ajv-formats is required for date-time format validation
-        # Build reference list for cross-schema references (excluding the schema being validated)
-        SCHEMA_OK=true
-        for schema in schemas/*.schema.json; do
-            refs=""
-            for ref_schema in schemas/*.schema.json; do
-                if [ "$ref_schema" != "$schema" ]; then
-                    refs="$refs -r $ref_schema"
-                fi
-            done
-            echo "Validating: $schema"
-            if ! ajv compile -s "$schema" --spec=draft2020 -c ajv-formats $refs; then
-                SCHEMA_OK=false
-                break
-            fi
-        done
-        if [ "$SCHEMA_OK" = false ]; then
-            false
-        fi
+        }
     '
 fi
 
