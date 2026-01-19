@@ -20,6 +20,7 @@
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"
+#include "sappp/report/explain.hpp"
 #include "sappp/schema_validate.hpp"
 #include "sappp/validator.hpp"
 #include "sappp/version.hpp"
@@ -30,6 +31,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <print>
 #include <ranges>
 #include <span>
@@ -167,6 +169,24 @@ Output:
 )");
 }
 
+void print_explain_help()
+{
+    std::print(R"(Usage: sappp explain [options]
+
+Explain UNKNOWN entries in human-readable form
+
+Options:
+  --unknown FILE           Path to unknown_ledger.json (required)
+  --validated FILE         Path to validated_results.json (optional)
+  --po PO_ID               Filter by PO ID
+  --unknown-id ID          Filter by unknown_stable_id
+  --format text|json       Output format (default: text)
+  --out FILE               Output file (required for json)
+  --schema-dir DIR         Path to schema directory (default: ./schemas)
+  --help, -h               Show this help
+)");
+}
+
 struct CaptureOptions
 {
     std::string compile_commands;
@@ -200,6 +220,18 @@ struct PackOptions
     bool show_help;
 };
 
+struct ExplainOptions
+{
+    std::string unknown_path;
+    std::optional<std::string> validated_path;
+    std::optional<std::string> po_id;
+    std::optional<std::string> unknown_id;
+    std::optional<std::string> output;
+    std::string schema_dir;
+    sappp::report::ExplainFormat format;
+    bool show_help;
+};
+
 struct DiffOptions
 {
     std::string before;
@@ -218,8 +250,11 @@ struct AnalyzePaths
     std::filesystem::path po_path;
 };
 
-[[nodiscard]] sappp::Result<std::string>
-read_option_value(std::span<char*> args, std::size_t index, std::string_view option)
+// CLI parsing signature is stable.
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+[[nodiscard]] auto read_option_value(std::span<char*> args,
+                                     std::size_t index,
+                                     std::string_view option) -> sappp::Result<std::string>
 {
     const std::size_t value_index = index + 1;
     if (value_index >= args.size()) {
@@ -322,11 +357,13 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
 }
 #endif
 
-[[nodiscard]] sappp::Result<bool> set_analyze_option(std::string_view arg,
-                                                     std::span<char*> args,
-                                                     std::size_t idx,
-                                                     AnalyzeOptions& options,
-                                                     bool& skip_next)
+[[nodiscard]] auto set_analyze_option(std::string_view arg,
+                                      // CLI parsing signature is stable.
+                                      // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+                                      std::span<char*> args,
+                                      std::size_t idx,
+                                      AnalyzeOptions& options,
+                                      bool& skip_next) -> sappp::Result<bool>
 {
     if (arg == "--snapshot") {
         auto value = read_option_value(args, idx, arg);
@@ -335,7 +372,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.snapshot = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--output" || arg == "-o") {
         auto value = read_option_value(args, idx, arg);
@@ -344,7 +381,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.output = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--jobs" || arg == "-j") {
         auto value = read_option_value(args, idx, arg);
@@ -357,7 +394,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.jobs = *parsed;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--schema-dir") {
         auto value = read_option_value(args, idx, arg);
@@ -366,16 +403,18 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.schema_dir = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
 
-[[nodiscard]] sappp::Result<bool> set_validate_option(std::string_view arg,
-                                                      std::span<char*> args,
-                                                      std::size_t idx,
-                                                      ValidateOptions& options,
-                                                      bool& skip_next)
+[[nodiscard]] auto set_validate_option(std::string_view arg,
+                                       // CLI parsing signature is stable.
+                                       // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+                                       std::span<char*> args,
+                                       std::size_t idx,
+                                       ValidateOptions& options,
+                                       bool& skip_next) -> sappp::Result<bool>
 {
     if (arg == "--input" || arg == "--in") {
         auto value = read_option_value(args, idx, arg);
@@ -384,7 +423,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.input = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--output" || arg == "-o") {
         auto value = read_option_value(args, idx, arg);
@@ -393,7 +432,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.output = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--schema-dir") {
         auto value = read_option_value(args, idx, arg);
@@ -402,13 +441,13 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         options.schema_dir = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--strict") {
         options.strict = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
 
 [[nodiscard]] sappp::Result<CaptureOptions> parse_capture_args(std::span<char*> args)
@@ -562,6 +601,105 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
                 return std::unexpected(value.error());
             }
             options.output = *value;
+            skip_next = true;
+            continue;
+        }
+    }
+    return options;
+}
+
+[[nodiscard]] sappp::Result<ExplainOptions> parse_explain_args(std::span<char*> args)
+{
+    ExplainOptions options{.unknown_path = std::string{},
+                           .validated_path = std::nullopt,
+                           .po_id = std::nullopt,
+                           .unknown_id = std::nullopt,
+                           .output = std::nullopt,
+                           .schema_dir = "schemas",
+                           .format = sappp::report::ExplainFormat::kText,
+                           .show_help = false};
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        if (arg_ptr == nullptr) {
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg(arg_ptr);
+        if (arg == "--help" || arg == "-h") {
+            options.show_help = true;
+            continue;
+        }
+        if (arg == "--unknown") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.unknown_path = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--validated") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.validated_path = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--po") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.po_id = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--unknown-id") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.unknown_id = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--format") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            if (*value == "text") {
+                options.format = sappp::report::ExplainFormat::kText;
+            } else if (*value == "json") {
+                options.format = sappp::report::ExplainFormat::kJson;
+            } else {
+                return std::unexpected(
+                    sappp::Error::make("InvalidArgument", "Invalid --format value: " + *value));
+            }
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--out") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.output = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--schema-dir") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.schema_dir = *value;
             skip_next = true;
             continue;
         }
@@ -755,6 +893,37 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
     std::println("  output: {}", options.output);
     return 0;
 }
+
+[[nodiscard]] int run_explain(const ExplainOptions& options)
+{
+    sappp::report::ExplainOptions report_options{
+        .unknown_path = std::filesystem::path(options.unknown_path),
+        .validated_path = options.validated_path
+                              ? std::optional<std::filesystem::path>(*options.validated_path)
+                              : std::nullopt,
+        .po_id = options.po_id,
+        .unknown_id = options.unknown_id,
+        .output_path =
+            options.output ? std::optional<std::filesystem::path>(*options.output) : std::nullopt,
+        .schema_dir = options.schema_dir,
+        .format = options.format,
+    };
+    auto output = sappp::report::explain_unknowns(report_options);
+    if (!output) {
+        std::println(stderr, "Error: explain failed: {}", output.error().message);
+        return 1;
+    }
+    if (auto write = sappp::report::write_explain_output(report_options, *output); !write) {
+        std::println(stderr, "Error: explain output failed: {}", write.error().message);
+        return 1;
+    }
+
+    std::println("[explain] {}", output->summary);
+    if (options.output) {
+        std::println("  output: {}", *options.output);
+    }
+    return 0;
+}
 int cmd_capture(int argc, char** argv)
 {
     auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
@@ -857,10 +1026,22 @@ int cmd_diff(int argc, char** argv)
 
 int cmd_explain(int argc, char** argv)
 {
-    std::println("[explain] Not yet implemented");
-    (void)argc;
-    (void)argv;
-    return 0;
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    auto options = parse_explain_args(args);
+    if (!options) {
+        std::println(stderr, "Error: {}", options.error().message);
+        return 1;
+    }
+    if (options->show_help) {
+        print_explain_help();
+        return 0;
+    }
+    if (options->unknown_path.empty()) {
+        std::println(stderr, "Error: --unknown is required");
+        print_explain_help();
+        return 1;
+    }
+    return run_explain(*options);
 }
 
 }  // namespace

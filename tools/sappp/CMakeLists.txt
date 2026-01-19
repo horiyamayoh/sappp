@@ -9,6 +9,7 @@ target_link_libraries(sappp PRIVATE
     sappp_canonical
     sappp_build_capture
     sappp_po
+    sappp_report
     sappp_validator
     nlohmann_json::nlohmann_json
 )

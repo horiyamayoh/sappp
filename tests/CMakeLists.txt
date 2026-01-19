@@ -49,6 +49,9 @@ add_subdirectory(po)
 # Validator tests
 add_subdirectory(validator)
 
+# Report tests
+add_subdirectory(report)
+
 # Frontend (Clang) tests
 if(SAPPP_BUILD_CLANG_FRONTEND)
     add_subdirectory(frontend_clang)
