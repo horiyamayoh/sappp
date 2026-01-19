@@ -177,6 +177,22 @@ std::string classify_stmt(const clang::Stmt* stmt)
     return "stmt";
 }
 
+/**
+ * Detects "sink" markers in the given Clang statement subtree.
+ *
+ * This function deliberately performs a conservative over-approximation:
+ * it treats all potentially dangerous operations (such as division/modulo,
+ * pointer dereferences, and array subscripts) as possible undefined
+ * behavior (UB) sinks, regardless of whether they are actually problematic
+ * in the concrete program. As a result, the returned marker set may contain
+ * many false positives.
+ *
+ * Downstream analyses are expected to refine these results and filter out
+ * false positives using additional semantic information (e.g., range
+ * analysis, alias information, or domain-specific constraints). The role of
+ * this function is to provide a simple, conservative starting point rather
+ * than a precise classification of UB.
+ */
 std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
 {
     std::vector<std::string> markers;
