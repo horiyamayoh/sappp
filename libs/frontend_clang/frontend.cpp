@@ -201,7 +201,7 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
                 markers.emplace_back("deref");
             }
         } else if (clang::isa<clang::ArraySubscriptExpr>(current)) {
-            markers.emplace_back("oob");
+            markers.emplace_back("array_access");
         }
 
         for (const auto* child : current->children()) {
