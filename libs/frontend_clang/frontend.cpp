@@ -194,7 +194,7 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
             const auto opcode = bin_op->getOpcode();
             if (opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
                 || opcode == clang::BO_RemAssign) {
-                markers.emplace_back("div0");
+                markers.emplace_back("div_or_mod_zero");
             }
         } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
             if (unary_op->getOpcode() == clang::UO_Deref) {
