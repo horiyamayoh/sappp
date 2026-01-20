@@ -42,6 +42,16 @@ nlohmann::json make_valid_unknown_json()
     };
 }
 
+nlohmann::json make_valid_specdb_snapshot()
+{
+    return nlohmann::json{
+        {"schema_version",                      "specdb_snapshot.v1"},
+        {          "tool", {{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                    "2024-01-01T00:00:00Z"},
+        {     "contracts",                   nlohmann::json::array()}
+    };
+}
+
 }  // namespace
 
 TEST(SchemaValidateTest, ValidUnknownSchemaPasses)
@@ -58,6 +68,28 @@ TEST(SchemaValidateTest, InvalidUnknownSchemaFails)
     invalid["schema_version"] = "unknown.v2";
 
     auto result = sappp::common::validate_json(invalid, schema_path("unknown.v1.schema.json"));
+
+    EXPECT_FALSE(result);
+    ASSERT_FALSE(result);
+    EXPECT_FALSE(result.error().message.empty());
+}
+
+TEST(SchemaValidateTest, ValidSpecdbSnapshotPasses)
+{
+    nlohmann::json valid = make_valid_specdb_snapshot();
+    auto result =
+        sappp::common::validate_json(valid, schema_path("specdb_snapshot.v1.schema.json"));
+
+    EXPECT_TRUE(result);
+}
+
+TEST(SchemaValidateTest, InvalidSpecdbSnapshotFails)
+{
+    nlohmann::json invalid = make_valid_specdb_snapshot();
+    invalid.erase("contracts");
+
+    auto result =
+        sappp::common::validate_json(invalid, schema_path("specdb_snapshot.v1.schema.json"));
 
     EXPECT_FALSE(result);
     ASSERT_FALSE(result);

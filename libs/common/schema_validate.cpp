@@ -5,8 +5,10 @@
 
 #include "sappp/schema_validate.hpp"
 
+#include <filesystem>
 #include <format>
 #include <fstream>
+#include <string_view>
 
 #include <valijson/adapters/nlohmann_json_adapter.hpp>
 #include <valijson/schema.hpp>
@@ -105,9 +107,43 @@ sappp::VoidResult validate_json(const nlohmann::json& j, const std::string& sche
     valijson::Schema schema;
     valijson::SchemaParser parser;
 
+    const std::filesystem::path schema_dir = std::filesystem::path(schema_path).parent_path();
+    auto fetch_doc = [&schema_dir](const std::string& uri) -> const nlohmann::json* {
+        constexpr std::string_view kSchemaPrefix = "sappp:schema/";
+        std::filesystem::path resolved_path;
+        if (uri.starts_with(kSchemaPrefix)) {
+            auto name = uri.substr(kSchemaPrefix.size());
+            resolved_path = schema_dir / (std::string(name) + ".schema.json");
+        } else {
+            std::filesystem::path uri_path(uri);
+            resolved_path = uri_path.is_absolute() ? uri_path : (schema_dir / uri_path);
+        }
+
+        std::ifstream in(resolved_path);
+        if (!in) {
+            return nullptr;
+        }
+
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) // valijson requires raw pointers.
+        auto* doc = new nlohmann::json();
+        try {
+            in >> *doc;
+        } catch (const std::exception&) {
+            // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) // valijson requires raw pointers.
+            delete doc;
+            return nullptr;
+        }
+        normalize_schema_defs(*doc);
+        return doc;
+    };
+    auto free_doc = [](const nlohmann::json* doc) noexcept {
+        // NOLINTNEXTLINE(cppcoreguidelines-owning-memory) // valijson requires raw pointers.
+        delete doc;
+    };
+
     try {
         valijson::adapters::NlohmannJsonAdapter schema_adapter(schema_json);
-        parser.populateSchema(schema_adapter, schema);
+        parser.populateSchema(schema_adapter, schema, fetch_doc, free_doc);
     } catch (const std::exception& ex) {
         return std::unexpected(
             Error::make("SchemaBuildFailed", std::string("Failed to build schema: ") + ex.what()));

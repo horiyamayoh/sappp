@@ -137,6 +137,7 @@ Output:
   <output>/analyzer/unknown_ledger.json
   <output>/certstore/
   <output>/config/analysis_config.json
+  <output>/specdb/snapshot.json
 )");
 }
 
@@ -260,11 +261,13 @@ struct AnalyzePaths
     std::filesystem::path certstore_objects_dir;
     std::filesystem::path certstore_index_dir;
     std::filesystem::path config_dir;
+    std::filesystem::path specdb_dir;
     std::filesystem::path nir_path;
     std::filesystem::path source_map_path;
     std::filesystem::path po_path;
     std::filesystem::path unknown_ledger_path;
     std::filesystem::path analysis_config_path;
+    std::filesystem::path specdb_snapshot_path;
 };
 
 [[nodiscard]] sappp::Result<std::string>
@@ -441,6 +444,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     auto certstore_objects_dir = certstore_dir / "objects";
     auto certstore_index_dir = certstore_dir / "index";
     auto config_dir = output_dir / "config";
+    auto specdb_dir = output_dir / "specdb";
     if (auto result = ensure_directory(frontend_dir, "frontend"); !result) {
         return std::unexpected(result.error());
     }
@@ -459,11 +463,15 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     if (auto result = ensure_directory(config_dir, "config"); !result) {
         return std::unexpected(result.error());
     }
+    if (auto result = ensure_directory(specdb_dir, "specdb"); !result) {
+        return std::unexpected(result.error());
+    }
     auto nir_path = frontend_dir / "nir.json";
     auto source_map_path = frontend_dir / "source_map.json";
     auto po_path = po_dir / "po_list.json";
     auto unknown_ledger_path = analyzer_dir / "unknown_ledger.json";
     auto analysis_config_path = config_dir / "analysis_config.json";
+    auto specdb_snapshot_path = specdb_dir / "snapshot.json";
     return AnalyzePaths{output_dir,
                         frontend_dir,
                         po_dir,
@@ -472,11 +480,13 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
                         certstore_objects_dir,
                         certstore_index_dir,
                         config_dir,
+                        specdb_dir,
                         nir_path,
                         source_map_path,
                         po_path,
                         unknown_ledger_path,
-                        analysis_config_path};
+                        analysis_config_path,
+                        specdb_snapshot_path};
 }
 
 [[nodiscard]] sappp::Result<nlohmann::json> load_analysis_config(const AnalyzeOptions& options)
@@ -518,6 +528,36 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     return config_json;
 }
 
+[[nodiscard]] sappp::Result<nlohmann::json> load_specdb_snapshot(const AnalyzeOptions& options)
+{
+    std::filesystem::path schema_dir(options.schema_dir);
+    const auto schema_path = (schema_dir / "specdb_snapshot.v1.schema.json").string();
+    if (!options.spec.empty()) {
+        auto snapshot_json = read_json_file(options.spec);
+        if (!snapshot_json) {
+            return std::unexpected(snapshot_json.error());
+        }
+        if (auto validation = sappp::common::validate_json(*snapshot_json, schema_path);
+            !validation) {
+            return std::unexpected(validation.error());
+        }
+        return *snapshot_json;
+    }
+
+    constexpr std::string_view kEmptyGeneratedAt = "1970-01-01T00:00:00Z";
+    nlohmann::json snapshot_json = {
+        {"schema_version",           "specdb_snapshot.v1"},
+        {          "tool",           tool_metadata_json()},
+        {  "generated_at", std::string(kEmptyGeneratedAt)},
+        {     "contracts",        nlohmann::json::array()}
+    };
+
+    if (auto validation = sappp::common::validate_json(snapshot_json, schema_path); !validation) {
+        return std::unexpected(validation.error());
+    }
+    return snapshot_json;
+}
+
 [[nodiscard]] sappp::Result<nlohmann::json>
 build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& options)
 {
@@ -543,6 +583,49 @@ build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& 
         return std::unexpected(validation.error());
     }
     return unknown_json;
+}
+
+[[nodiscard]] sappp::VoidResult write_analysis_config_output(const AnalyzePaths& paths,
+                                                             const AnalyzeOptions& options)
+{
+    auto analysis_config = load_analysis_config(options);
+    if (!analysis_config) {
+        return std::unexpected(analysis_config.error());
+    }
+    if (auto write = write_canonical_json_file(paths.analysis_config_path, *analysis_config);
+        !write) {
+        return std::unexpected(write.error());
+    }
+    return {};
+}
+
+[[nodiscard]] sappp::VoidResult write_specdb_snapshot_output(const AnalyzePaths& paths,
+                                                             const AnalyzeOptions& options)
+{
+    auto specdb_snapshot = load_specdb_snapshot(options);
+    if (!specdb_snapshot) {
+        return std::unexpected(specdb_snapshot.error());
+    }
+    if (auto write = write_canonical_json_file(paths.specdb_snapshot_path, *specdb_snapshot);
+        !write) {
+        return std::unexpected(write.error());
+    }
+    return {};
+}
+
+[[nodiscard]] sappp::VoidResult write_unknown_ledger_output(const AnalyzePaths& paths,
+                                                            const nlohmann::json& nir_json,
+                                                            const AnalyzeOptions& options)
+{
+    auto unknown_ledger = build_unknown_ledger_json(nir_json, options);
+    if (!unknown_ledger) {
+        return std::unexpected(unknown_ledger.error());
+    }
+    if (auto write = write_canonical_json_file(paths.unknown_ledger_path, *unknown_ledger);
+        !write) {
+        return std::unexpected(write.error());
+    }
+    return {};
 }
 #endif
 
@@ -1079,35 +1162,18 @@ build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& 
         return exit_code_for_error(write.error());
     }
 
-    auto analysis_config = load_analysis_config(options);
-    if (!analysis_config) {
-        std::println(stderr,
-                     "Error: analysis_config validation failed: {}",
-                     analysis_config.error().message);
-        return exit_code_for_error(analysis_config.error());
+    if (auto write_result = write_analysis_config_output(*paths, options); !write_result) {
+        std::println(stderr, "Error: analysis_config failed: {}", write_result.error().message);
+        return exit_code_for_error(write_result.error());
     }
-
-    if (auto write = write_canonical_json_file(paths->analysis_config_path, *analysis_config);
-        !write) {
-        std::println(stderr,
-                     "Error: failed to serialize analysis config: {}",
-                     write.error().message);
-        return exit_code_for_error(write.error());
+    if (auto write_result = write_specdb_snapshot_output(*paths, options); !write_result) {
+        std::println(stderr, "Error: specdb snapshot failed: {}", write_result.error().message);
+        return exit_code_for_error(write_result.error());
     }
-
-    auto unknown_ledger = build_unknown_ledger_json(result->nir, options);
-    if (!unknown_ledger) {
-        std::println(stderr,
-                     "Error: unknown ledger validation failed: {}",
-                     unknown_ledger.error().message);
-        return exit_code_for_error(unknown_ledger.error());
-    }
-    if (auto write = write_canonical_json_file(paths->unknown_ledger_path, *unknown_ledger);
-        !write) {
-        std::println(stderr,
-                     "Error: failed to serialize unknown ledger: {}",
-                     write.error().message);
-        return exit_code_for_error(write.error());
+    if (auto write_result = write_unknown_ledger_output(*paths, result->nir, options);
+        !write_result) {
+        std::println(stderr, "Error: unknown ledger failed: {}", write_result.error().message);
+        return exit_code_for_error(write_result.error());
     }
 
     std::println("[analyze] Wrote frontend outputs");
@@ -1118,6 +1184,7 @@ build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& 
     std::println("  po: {}", paths->po_path.string());
     std::println("  unknown_ledger: {}", paths->unknown_ledger_path.string());
     std::println("  analysis_config: {}", paths->analysis_config_path.string());
+    std::println("  specdb_snapshot: {}", paths->specdb_snapshot_path.string());
     return static_cast<int>(ExitCode::kOk);
 #endif
 }
