@@ -705,7 +705,8 @@ void sort_source_entries(std::vector<SourceMapEntryKey>& source_entries)
 [[nodiscard]] sappp::Result<nlohmann::json> build_nir_json(const nlohmann::json& build_snapshot,
                                                            std::string_view tu_id,
                                                            std::vector<ir::FunctionDef> functions,
-                                                           const std::filesystem::path& schema_dir)
+                                                           const std::filesystem::path& schema_dir,
+                                                           const sappp::VersionTriple& versions)
 {
     ir::Nir nir;
     nir.schema_version = "nir.v1";
@@ -716,9 +717,9 @@ void sort_source_entries(std::vector<SourceMapEntryKey>& source_entries)
     };
     nir.generated_at = current_time_utc();
     nir.tu_id = std::string(tu_id);
-    nir.semantics_version = sappp::kSemanticsVersion;
-    nir.proof_system_version = sappp::kProofSystemVersion;
-    nir.profile_version = sappp::kProfileVersion;
+    nir.semantics_version = versions.semantics;
+    nir.proof_system_version = versions.proof_system;
+    nir.profile_version = versions.profile;
     if (build_snapshot.contains("input_digest")) {
         nir.input_digest = build_snapshot.at("input_digest").get<std::string>();
     }
@@ -771,7 +772,8 @@ FrontendClang::FrontendClang(std::string schema_dir)
     : m_schema_dir(std::move(schema_dir))
 {}
 
-sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build_snapshot) const
+sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build_snapshot,
+                                                     const sappp::VersionTriple& versions) const
 {
     std::filesystem::path schema_dir(m_schema_dir);
     if (auto result = validate_build_snapshot_schema(build_snapshot, schema_dir); !result) {
@@ -814,7 +816,8 @@ sappp::Result<FrontendResult> FrontendClang::analyze(const nlohmann::json& build
     }
     const auto& tu_id = *tu_id_result;
 
-    auto nir_json = build_nir_json(build_snapshot, tu_id, std::move(functions), schema_dir);
+    auto nir_json =
+        build_nir_json(build_snapshot, tu_id, std::move(functions), schema_dir, versions);
     if (!nir_json) {
         return std::unexpected(nir_json.error());
     }

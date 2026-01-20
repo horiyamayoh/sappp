@@ -657,9 +657,10 @@ ValidationError rule_violation_error(const std::string& message)
 
 }  // namespace
 
-Validator::Validator(std::string input_dir, std::string schema_dir)
+Validator::Validator(std::string input_dir, std::string schema_dir, sappp::VersionTriple versions)
     : m_input_dir(std::move(input_dir))
     , m_schema_dir(std::move(schema_dir))
+    , m_versions(std::move(versions))
 {}
 
 sappp::Result<nlohmann::json> Validator::validate(bool strict)
@@ -706,9 +707,9 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
         {        "generated_at",                                                           current_time_rfc3339()},
         {               "tu_id",                                                                            tu_id},
         {             "results",                                                                          results},
-        {   "semantics_version",                                                         sappp::kSemanticsVersion},
-        {"proof_system_version",                                                       sappp::kProofSystemVersion},
-        {     "profile_version",                                                           sappp::kProfileVersion}
+        {   "semantics_version",                                                             m_versions.semantics},
+        {"proof_system_version",                                                          m_versions.proof_system},
+        {     "profile_version",                                                               m_versions.profile}
     };
 
     if (auto result =

@@ -6,6 +6,7 @@
  */
 
 #include "sappp/common.hpp"
+#include "sappp/version.hpp"
 
 #include <string>
 
@@ -16,7 +17,9 @@ namespace sappp::validator {
 class Validator
 {
 public:
-    explicit Validator(std::string input_dir, std::string schema_dir = "schemas");
+    explicit Validator(std::string input_dir,
+                       std::string schema_dir = "schemas",
+                       sappp::VersionTriple versions = sappp::default_version_triple());
 
     [[nodiscard]] sappp::Result<nlohmann::json> validate(bool strict);
     [[nodiscard]] sappp::VoidResult write_results(const nlohmann::json& results,
@@ -25,6 +28,7 @@ public:
 private:
     std::string m_input_dir;
     std::string m_schema_dir;
+    sappp::VersionTriple m_versions;
 };
 
 }  // namespace sappp::validator
