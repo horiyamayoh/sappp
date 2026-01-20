@@ -192,7 +192,10 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
 
     bind_po_or_fail(store, po_id, root_hash);
 
-    return {po_id, tu_id, root_hash, bug_hash};
+    return CertBundle{.po_id = po_id,
+                      .tu_id = tu_id,
+                      .root_hash = root_hash,
+                      .bug_trace_hash = bug_hash};
 }
 
 SafeCertBundle build_safe_cert_store(const fs::path& input_dir,
@@ -226,7 +229,10 @@ SafeCertBundle build_safe_cert_store(const fs::path& input_dir,
 
     bind_po_or_fail(store, po_id, root_hash);
 
-    return {po_id, tu_id, root_hash, safety_hash};
+    return SafeCertBundle{.po_id = po_id,
+                          .tu_id = tu_id,
+                          .root_hash = root_hash,
+                          .safety_proof_hash = safety_hash};
 }
 
 sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload)
@@ -335,6 +341,51 @@ TEST(ValidatorTest, DowngradesOnMissingSafetyPredicate)
     std::string schema_dir = SAPPP_SCHEMA_DIR;
 
     build_safe_cert_store(temp_dir.path(), schema_dir, false);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "UNKNOWN");
+    EXPECT_EQ(entry.at("validator_status"), "ProofCheckFailed");
+    EXPECT_EQ(entry.at("downgrade_reason_code"), "ProofCheckFailed");
+}
+
+TEST(ValidatorTest, DowngradesOnInconsistentAbstractState)
+{
+    TempDir temp_dir("sappp_validator_safe_inconsistent_state");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-safe-abs");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-safe-abs");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr);
+    nlohmann::json ir_cert = make_ir_cert(tu_id);
+
+    nlohmann::json state = {
+        {"predicates",     nlohmann::json::array({predicate_expr})                  },
+        {  "nullness",
+         nlohmann::json::array(
+         {{{"var", "p"}, {"value", "null"}}, {{"var", "p"}, {"value", "non-null"}}})}
+    };
+    nlohmann::json safety_proof = make_safety_proof(state);
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string safety_hash = put_cert_or_fail(store, safety_proof, "safety_proof");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, safety_hash, "SAFE");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
 
     sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
     auto results = validator.validate(false);

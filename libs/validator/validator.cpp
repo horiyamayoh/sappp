@@ -19,6 +19,7 @@
 #include <iterator>
 #include <optional>
 #include <ranges>
+#include <unordered_map>
 #include <vector>
 
 namespace sappp::validator {
@@ -358,6 +359,9 @@ struct PredicateInput
     const nlohmann::json* predicate_expr = nullptr;
 };
 
+[[nodiscard]] bool json_matches_expected(const nlohmann::json& expected,
+                                         const nlohmann::json& actual);
+
 [[nodiscard]] bool predicate_in_state(const PredicateInput& input)
 {
     const nlohmann::json& state = *input.state;
@@ -365,8 +369,8 @@ struct PredicateInput
         return false;
     }
     const auto& predicates = state.at("predicates");
-    return std::ranges::any_of(predicates, [&](const auto& predicate) noexcept {
-        return predicate == *input.predicate_expr;
+    return std::ranges::any_of(predicates, [&](const auto& predicate) {
+        return json_matches_expected(*input.predicate_expr, predicate);
     });
 }
 
@@ -384,6 +388,155 @@ struct PointPredicateInput
     }
     return predicate_in_state(
         {.state = &point.at("state"), .predicate_expr = input.predicate_expr});
+}
+
+[[nodiscard]] bool json_matches_expected(const nlohmann::json& expected,
+                                         const nlohmann::json& actual)
+{
+    if (expected.type() != actual.type()) {
+        return false;
+    }
+    if (expected.is_object()) {
+        for (auto it = expected.begin(); it != expected.end(); ++it) {
+            const auto& key = it.key();
+            if (!actual.contains(key)) {
+                return false;
+            }
+            if (!json_matches_expected(it.value(), actual.at(key))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (expected.is_array()) {
+        if (!actual.is_array() || expected.size() != actual.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+            if (!json_matches_expected(expected.at(i), actual.at(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+    return expected == actual;
+}
+
+struct AbstractStateCheckResult
+{
+    bool ok = true;
+    std::string reason;
+};
+
+[[nodiscard]] std::optional<int> infinity_int_value(const nlohmann::json& value)
+{
+    if (value.is_number_integer()) {
+        return value.get<int>();
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool is_inf_value(const nlohmann::json& value, std::string_view expected)
+{
+    return value.is_string() && value.get<std::string>() == expected;
+}
+
+[[nodiscard]] bool interval_is_valid(const nlohmann::json& lo, const nlohmann::json& hi)
+{
+    if (is_inf_value(lo, "inf") || is_inf_value(hi, "-inf")) {
+        return false;
+    }
+    auto lo_value = infinity_int_value(lo);
+    auto hi_value = infinity_int_value(hi);
+    if (lo_value && hi_value) {
+        return *lo_value <= *hi_value;
+    }
+    return true;
+}
+
+[[nodiscard]] std::optional<std::string> check_duplicate_entries(const nlohmann::json& state,
+                                                                 std::string_view field,
+                                                                 std::string_view key_field,
+                                                                 std::string_view value_field)
+{
+    if (!state.contains(field)) {
+        return std::nullopt;
+    }
+    if (!state.at(field).is_array()) {
+        return std::string(field) + " must be an array";
+    }
+    std::unordered_map<std::string, std::string> seen;
+    for (const auto& entry : state.at(field)) {
+        if (!entry.contains(key_field) || !entry.contains(value_field)) {
+            return std::string(field) + " entry missing required fields";
+        }
+        std::string key = entry.at(key_field).get<std::string>();
+        std::string value = entry.at(value_field).get<std::string>();
+        auto it = seen.find(key);
+        if (it == seen.end()) {
+            seen.emplace(key, value);
+            continue;
+        }
+        if (it->second != value) {
+            return std::string(field) + " has conflicting entries for " + key;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::string> check_numeric_intervals(const nlohmann::json& state)
+{
+    if (!state.contains("numeric")) {
+        return std::nullopt;
+    }
+    if (!state.at("numeric").is_array()) {
+        return std::string("numeric must be an array");
+    }
+    std::unordered_map<std::string, std::pair<nlohmann::json, nlohmann::json>> seen;
+    for (const auto& entry : state.at("numeric")) {
+        if (!entry.contains("var") || !entry.contains("lo") || !entry.contains("hi")) {
+            return std::string("numeric entry missing required fields");
+        }
+        std::string var = entry.at("var").get<std::string>();
+        const auto& lo = entry.at("lo");
+        const auto& hi = entry.at("hi");
+        if (!interval_is_valid(lo, hi)) {
+            return std::string("numeric interval is invalid for ") + var;
+        }
+        auto it = seen.find(var);
+        if (it == seen.end()) {
+            seen.emplace(var, std::make_pair(lo, hi));
+            continue;
+        }
+        if (it->second.first != lo || it->second.second != hi) {
+            return std::string("numeric has conflicting intervals for ") + var;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] AbstractStateCheckResult validate_state_consistency(const nlohmann::json& state)
+{
+    AbstractStateCheckResult result;
+    if (!state.is_object()) {
+        return {.ok = false, .reason = "State is not an object"};
+    }
+
+    if (auto conflict = check_duplicate_entries(state, "nullness", "var", "value")) {
+        return {.ok = false, .reason = *conflict};
+    }
+    if (auto conflict = check_duplicate_entries(state, "lifetime", "obj", "value")) {
+        return {.ok = false, .reason = *conflict};
+    }
+    if (auto conflict = check_duplicate_entries(state, "init", "var", "value")) {
+        return {.ok = false, .reason = *conflict};
+    }
+
+    if (auto conflict = check_numeric_intervals(state)) {
+        return {.ok = false, .reason = *conflict};
+    }
+
+    return result;
 }
 
 [[nodiscard]] PredicateCheck check_predicate_implied(const nlohmann::json& evidence,
@@ -423,6 +576,23 @@ struct SafeEvidenceInputs
     const nlohmann::json* evidence = nullptr;
 };
 
+[[nodiscard]] std::optional<ValidationError> validate_safety_points(const nlohmann::json& evidence)
+{
+    if (!evidence.contains("points") || !evidence.at("points").is_array()) {
+        return proof_failed_error("SafetyProof points missing");
+    }
+    for (const auto& point : evidence.at("points")) {
+        if (!point.contains("state")) {
+            return proof_failed_error("SafetyProof point missing state");
+        }
+        auto check = validate_state_consistency(point.at("state"));
+        if (!check.ok) {
+            return proof_failed_error("SafetyProof state invalid: " + check.reason);
+        }
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] std::optional<ValidationError>
 validate_safe_evidence(const ValidationContext& context, const SafeEvidenceInputs& inputs)
 {
@@ -442,6 +612,10 @@ validate_safe_evidence(const ValidationContext& context, const SafeEvidenceInput
     }
 
     if (auto error = validate_contracts(context, depends)) {
+        return error;
+    }
+
+    if (auto error = validate_safety_points(evidence)) {
         return error;
     }
 
