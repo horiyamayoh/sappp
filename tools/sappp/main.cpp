@@ -568,10 +568,18 @@ prepare_pack_root(const std::filesystem::path& base_dir)
         std::filesystem::temp_directory_path() / std::format("sappp_{}_{}", label, suffix);
     std::error_code ec;
     std::filesystem::remove_all(temp_dir, ec);
+    if (ec) {
+        return std::unexpected(
+            sappp::Error::make("IOError",
+                               "Failed to remove existing temp dir '" + temp_dir.string()
+                                   + "': " + ec.message()));
+    }
     std::filesystem::create_directories(temp_dir, ec);
     if (ec) {
         return std::unexpected(
-            sappp::Error::make("IOError", "Failed to create temp dir: " + ec.message()));
+            sappp::Error::make("IOError",
+                               "Failed to create temp dir '" + temp_dir.string()
+                                   + "': " + ec.message()));
     }
     return temp_dir;
 }
