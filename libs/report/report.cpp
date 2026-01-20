@@ -16,12 +16,12 @@ namespace sappp::report {
 
 namespace {
 
-[[nodiscard]] std::string_view category_of(const nlohmann::json& result)
+[[nodiscard]] std::string category_of(const nlohmann::json& result)
 {
     if (!result.contains("category")) {
         return "UNKNOWN";
     }
-    return result.at("category").get_ref<const std::string&>();
+    return result.at("category").get<std::string>();
 }
 
 [[nodiscard]] std::optional<std::string> certificate_root_of(const nlohmann::json& result)
