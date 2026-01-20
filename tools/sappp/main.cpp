@@ -1637,11 +1637,16 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     std::filesystem::path certstore_dst = *pack_root / "certstore";
     if (std::filesystem::exists(certstore_src)) {
         std::vector<std::filesystem::path> cert_files;
-        for (const auto& entry : std::filesystem::recursive_directory_iterator(certstore_src)) {
-            if (!entry.is_regular_file()) {
-                continue;
+        try {
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(certstore_src)) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                cert_files.push_back(entry.path());
             }
-            cert_files.push_back(entry.path());
+        } catch (const std::filesystem::filesystem_error& e) {
+            std::println(stderr, "Error iterating certstore directory '{}': {}", certstore_src.generic_string(), e.what());
+            return EXIT_FAILURE;
         }
         std::ranges::stable_sort(cert_files, [](const auto& lhs, const auto& rhs) {
             return lhs.generic_string() < rhs.generic_string();
