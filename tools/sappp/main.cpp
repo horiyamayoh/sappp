@@ -21,6 +21,7 @@
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
 #include "sappp/common.hpp"
+#include "sappp/report.hpp"
 #include "sappp/schema_validate.hpp"
 #include "sappp/validator.hpp"
 #include "sappp/version.hpp"
@@ -29,10 +30,13 @@
 #endif
 #include <charconv>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <optional>
 #include <print>
 #include <ranges>
 #include <span>
@@ -167,13 +171,16 @@ void print_pack_help()
 Create reproducibility pack
 
 Options:
-  --input DIR               Input directory containing analysis outputs (required)
+  --input DIR, --in DIR     Input directory containing analysis outputs (required)
   --output FILE, -o         Output file (default: pack.tar.gz)
+  --manifest FILE           Manifest output (default: manifest.json)
+  --repro-level LEVEL       Repro asset level (L0/L1/L2/L3)
+  --include-analyzer-candidates  Include analyzer cert candidates
   --help, -h                Show this help
 
 Output:
   <output>.tar.gz
-  <output>.manifest.json
+  manifest.json
 )");
 }
 
@@ -184,13 +191,30 @@ void print_diff_help()
 Compare before/after analysis results
 
 Options:
-  --before FILE             Path to before validated_results.json (required)
-  --after FILE              Path to after validated_results.json (required)
+  --before FILE             Path to before pack.tar.gz or directory (required)
+  --after FILE              Path to after pack.tar.gz or directory (required)
   --output FILE, -o         Output file (default: diff.json)
   --help, -h                Show this help
 
 Output:
   diff.json
+)");
+}
+
+void print_explain_help()
+{
+    std::print(R"(Usage: sappp explain [options]
+
+Explain UNKNOWN entries
+
+Options:
+  --unknown FILE           Path to unknown_ledger.json (required)
+  --validated FILE         Path to validated_results.json (optional)
+  --po PO_ID               Filter by PO ID
+  --unknown-id UNKNOWN_ID  Filter by unknown stable ID
+  --format FORMAT          Output format: text|json (default: text)
+  --out FILE               Output file for JSON (format=json only)
+  --help, -h               Show this help
 )");
 }
 
@@ -241,6 +265,9 @@ struct PackOptions
 {
     std::string input;
     std::string output;
+    std::string manifest;
+    std::string repro_level;
+    bool include_analyzer_candidates;
     bool show_help;
 };
 
@@ -248,6 +275,17 @@ struct DiffOptions
 {
     std::string before;
     std::string after;
+    std::string output;
+    bool show_help;
+};
+
+struct ExplainOptions
+{
+    std::string unknown;
+    std::string validated;
+    std::string po_id;
+    std::string unknown_id;
+    std::string format;
     std::string output;
     bool show_help;
 };
@@ -271,6 +309,7 @@ struct AnalyzePaths
     std::filesystem::path specdb_snapshot_path;
 };
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI signature matches call sites.
 [[nodiscard]] sappp::Result<std::string>
 read_option_value(std::span<char*> args, std::size_t index, std::string_view option)
 {
@@ -288,6 +327,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
     }
     return std::string(value_ptr);
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 [[nodiscard]] sappp::Result<int> parse_jobs_value(std::string_view value)
 {
@@ -303,6 +343,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
     return parsed;
 }
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_logging_option(std::string_view arg,
                                                      std::span<char*> args,
                                                      std::size_t idx,
@@ -312,12 +353,12 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
     if (arg == "-v" || arg == "--verbose") {
         logging.verbose = true;
         logging.quiet = false;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "-q" || arg == "--quiet") {
         logging.quiet = true;
         logging.verbose = false;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--json-logs") {
         auto value = read_option_value(args, idx, arg);
@@ -326,11 +367,13 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         logging.json_logs = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_version_option(std::string_view arg,
                                                      std::span<char*> args,
                                                      std::size_t idx,
@@ -344,7 +387,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         versions.semantics = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--proof") {
         auto value = read_option_value(args, idx, arg);
@@ -353,7 +396,7 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         versions.proof_system = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--profile") {
         auto value = read_option_value(args, idx, arg);
@@ -362,10 +405,11 @@ read_option_value(std::span<char*> args, std::size_t index, std::string_view opt
         }
         versions.profile = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 3 };
 
@@ -381,7 +425,6 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     return static_cast<int>(ExitCode::kInputError);
 }
 
-#if defined(SAPPP_HAS_CLANG_FRONTEND)
 [[nodiscard]] sappp::Result<nlohmann::json> read_json_file(const std::filesystem::path& path)
 {
     std::ifstream in(path);
@@ -399,7 +442,6 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     }
     return payload;
 }
-#endif
 
 [[nodiscard]] sappp::VoidResult write_canonical_json_file(const std::filesystem::path& path,
                                                           const nlohmann::json& payload)
@@ -432,6 +474,194 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
             std::string("Failed to create ") + std::string(label) + " directory: " + ec.message()));
     }
     return {};
+}
+
+[[nodiscard]] sappp::Result<std::string> read_file_binary(const std::filesystem::path& path)
+{
+    std::ifstream in(path, std::ios::binary);
+    if (!in) {
+        return std::unexpected(
+            sappp::Error::make("IOError", "Failed to read file: " + path.string()));
+    }
+    std::string content{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
+    if (!in.good() && !in.eof()) {
+        return std::unexpected(
+            sappp::Error::make("IOError", "Failed to read file: " + path.string()));
+    }
+    return content;
+}
+
+[[nodiscard]] sappp::Result<std::string> sha256_for_file(const std::filesystem::path& path)
+{
+    auto content = read_file_binary(path);
+    if (!content) {
+        return std::unexpected(content.error());
+    }
+    return sappp::common::sha256_prefixed(*content);
+}
+
+[[nodiscard]] sappp::Result<std::string>
+input_digest_from_build_snapshot(const nlohmann::json& snapshot)
+{
+    if (snapshot.contains("input_digest")) {
+        return snapshot.at("input_digest").get<std::string>();
+    }
+    return sappp::canonical::hash_canonical(snapshot);
+}
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - Signature groups path + schema.
+[[nodiscard]] sappp::Result<nlohmann::json>
+read_and_validate_json(const std::filesystem::path& path,
+                       const std::filesystem::path& schema_dir,
+                       std::string_view schema_name)
+{
+    auto json = read_json_file(path);
+    if (!json) {
+        return std::unexpected(json.error());
+    }
+    auto schema_path = (schema_dir / schema_name).string();
+    if (auto validation = sappp::common::validate_json(*json, schema_path); !validation) {
+        return std::unexpected(
+            sappp::Error::make("SchemaInvalid",
+                               std::string(schema_name) + ": " + validation.error().message));
+    }
+    return *json;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+[[nodiscard]] sappp::VoidResult copy_file_checked(const std::filesystem::path& source,
+                                                  const std::filesystem::path& destination)
+{
+    std::error_code ec;
+    std::filesystem::copy_file(source,
+                               destination,
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec) {
+        return std::unexpected(sappp::Error::make("IOError",
+                                                  "Failed to copy file: " + source.string() + " -> "
+                                                      + destination.string() + ": "
+                                                      + ec.message()));
+    }
+    return {};
+}
+
+[[nodiscard]] sappp::Result<std::filesystem::path>
+prepare_pack_root(const std::filesystem::path& base_dir)
+{
+    std::filesystem::path pack_root = base_dir / "pack";
+    if (auto result = ensure_directory(pack_root, "pack"); !result) {
+        return std::unexpected(result.error());
+    }
+    return pack_root;
+}
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - Label/seed pairing is explicit.
+[[nodiscard]] sappp::Result<std::filesystem::path> prepare_temp_dir(std::string_view label,
+                                                                    std::string_view seed)
+{
+    const auto hash = sappp::common::sha256_prefixed(seed);
+    const auto suffix = hash.substr(hash.size() - 12);
+    std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path() / std::format("sappp_{}_{}", label, suffix);
+    std::error_code ec;
+    std::filesystem::remove_all(temp_dir, ec);
+    std::filesystem::create_directories(temp_dir, ec);
+    if (ec) {
+        return std::unexpected(
+            sappp::Error::make("IOError", "Failed to create temp dir: " + ec.message()));
+    }
+    return temp_dir;
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+[[nodiscard]] sappp::Result<nlohmann::json>
+build_pack_manifest(const std::vector<nlohmann::json>& files,
+                    const nlohmann::json& build_snapshot,
+                    std::string_view repro_level)
+{
+    auto digest = input_digest_from_build_snapshot(build_snapshot);
+    if (!digest) {
+        return std::unexpected(digest.error());
+    }
+
+    nlohmann::json manifest = {
+        {      "schema_version",         "pack_manifest.v1"},
+        {                "tool",       tool_metadata_json()},
+        {        "generated_at",         current_time_utc()},
+        {   "semantics_version",   sappp::kSemanticsVersion},
+        {"proof_system_version", sappp::kProofSystemVersion},
+        {     "profile_version",     sappp::kProfileVersion},
+        {        "input_digest",                    *digest},
+        {         "repro_level",   std::string(repro_level)},
+        {               "files",      nlohmann::json(files)}
+    };
+
+    return manifest;
+}
+
+[[nodiscard]] sappp::Result<nlohmann::json> build_diff_side(const nlohmann::json& manifest,
+                                                            const nlohmann::json& results,
+                                                            std::string_view results_digest)
+{
+    auto input_digest = manifest.value("input_digest", results.value("input_digest", ""));
+    if (input_digest.empty()) {
+        return std::unexpected(
+            sappp::Error::make("MissingField", "input_digest is missing in manifest/results"));
+    }
+    std::string semantics =
+        manifest.value("semantics_version", results.value("semantics_version", ""));
+    std::string proof =
+        manifest.value("proof_system_version", results.value("proof_system_version", ""));
+    std::string profile = manifest.value("profile_version", results.value("profile_version", ""));
+    if (semantics.empty() || proof.empty() || profile.empty()) {
+        return std::unexpected(
+            sappp::Error::make("MissingField", "version info missing for diff side"));
+    }
+    return nlohmann::json{
+        {        "input_digest",     std::move(input_digest)},
+        {   "semantics_version",        std::move(semantics)},
+        {"proof_system_version",            std::move(proof)},
+        {     "profile_version",          std::move(profile)},
+        {      "results_digest", std::string(results_digest)}
+    };
+}
+
+[[nodiscard]] std::string diff_reason_for(const nlohmann::json& before, const nlohmann::json& after)
+{
+    if (before.value("semantics_version", "") != after.value("semantics_version", "")) {
+        return "SemanticsUpdated";
+    }
+    if (before.value("proof_system_version", "") != after.value("proof_system_version", "")) {
+        return "ProofRuleUpdated";
+    }
+    if (before.value("profile_version", "") != after.value("profile_version", "")) {
+        return "ProfileUpdated";
+    }
+    if (before.value("input_digest", "") != after.value("input_digest", "")) {
+        return "InputDigestChanged";
+    }
+    return {};
+}
+
+[[nodiscard]] sappp::Result<std::filesystem::path>
+extract_pack_if_needed(const std::filesystem::path& input_path)
+{
+    if (input_path.extension() != ".gz") {
+        return input_path;
+    }
+    auto temp_dir = prepare_temp_dir("pack", input_path.string());
+    if (!temp_dir) {
+        return std::unexpected(temp_dir.error());
+    }
+
+    const auto command =
+        std::format(R"(tar -xzf "{}" -C "{}")", input_path.string(), temp_dir->string());
+    if (std::system(command.c_str()) != 0) {
+        return std::unexpected(
+            sappp::Error::make("IOError", "Failed to extract pack: " + input_path.string()));
+    }
+    return *temp_dir / "pack";
 }
 
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
@@ -589,6 +819,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
 
 #endif
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_analyze_primary_option(std::string_view arg,
                                                              std::span<char*> args,
                                                              std::size_t idx,
@@ -602,7 +833,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.build = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--out" || arg == "--output" || arg == "-o") {
         auto value = read_option_value(args, idx, arg);
@@ -611,7 +842,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.output = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--spec") {
         auto value = read_option_value(args, idx, arg);
@@ -620,11 +851,13 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.spec = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_analyze_job_option(std::string_view arg,
                                                          std::span<char*> args,
                                                          std::size_t idx,
@@ -632,7 +865,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
                                                          bool& skip_next)
 {
     if (arg != "--jobs" && arg != "-j") {
-        return false;
+        return sappp::Result<bool>{false};
     }
     auto value = read_option_value(args, idx, arg);
     if (!value) {
@@ -644,9 +877,11 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     }
     options.jobs = *parsed;
     skip_next = true;
-    return true;
+    return sappp::Result<bool>{true};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_analyze_extra_option(std::string_view arg,
                                                            std::span<char*> args,
                                                            std::size_t idx,
@@ -660,7 +895,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.schema_dir = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--analysis-config") {
         auto value = read_option_value(args, idx, arg);
@@ -669,7 +904,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.analysis_config = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--emit-sarif") {
         auto value = read_option_value(args, idx, arg);
@@ -678,7 +913,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.emit_sarif = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--repro-level") {
         auto value = read_option_value(args, idx, arg);
@@ -687,11 +922,13 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.repro_level = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_analyze_option(std::string_view arg,
                                                      std::span<char*> args,
                                                      std::size_t idx,
@@ -703,18 +940,20 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         return std::unexpected(handled.error());
     }
     if (*handled) {
-        return true;
+        return sappp::Result<bool>{true};
     }
     handled = set_analyze_job_option(arg, args, idx, options, skip_next);
     if (!handled) {
         return std::unexpected(handled.error());
     }
     if (*handled) {
-        return true;
+        return sappp::Result<bool>{true};
     }
     return set_analyze_extra_option(arg, args, idx, options, skip_next);
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_validate_option(std::string_view arg,
                                                       std::span<char*> args,
                                                       std::size_t idx,
@@ -728,7 +967,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.input = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--out" || arg == "--output" || arg == "-o") {
         auto value = read_option_value(args, idx, arg);
@@ -737,7 +976,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.output = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--schema-dir") {
         auto value = read_option_value(args, idx, arg);
@@ -746,15 +985,17 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.schema_dir = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--strict") {
         options.strict = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
 [[nodiscard]] sappp::Result<bool> set_capture_option(std::string_view arg,
                                                      std::span<char*> args,
                                                      std::size_t idx,
@@ -768,7 +1009,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.compile_commands = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--out" || arg == "--output" || arg == "-o") {
         auto value = read_option_value(args, idx, arg);
@@ -777,7 +1018,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.output_path = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
     if (arg == "--repo-root") {
         auto value = read_option_value(args, idx, arg);
@@ -786,10 +1027,11 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
         }
         options.repo_root = *value;
         skip_next = true;
-        return true;
+        return sappp::Result<bool>{true};
     }
-    return false;
+    return sappp::Result<bool>{false};
 }
+// NOLINTEND(bugprone-easily-swappable-parameters)
 
 [[nodiscard]] sappp::Result<CaptureOptions> parse_capture_args(std::span<char*> args)
 {
@@ -943,7 +1185,12 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
 
 [[nodiscard]] sappp::Result<PackOptions> parse_pack_args(std::span<char*> args)
 {
-    PackOptions options{.input = std::string{}, .output = "pack.tar.gz", .show_help = false};
+    PackOptions options{.input = std::string{},
+                        .output = "pack.tar.gz",
+                        .manifest = "manifest.json",
+                        .repro_level = "L0",
+                        .include_analyzer_candidates = false,
+                        .show_help = false};
     bool skip_next = false;
     for (auto [i, arg_ptr] : std::views::enumerate(args)) {
         if (skip_next) {
@@ -959,7 +1206,7 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
             options.show_help = true;
             continue;
         }
-        if (arg == "--input") {
+        if (arg == "--input" || arg == "--in") {
             auto value = read_option_value(args, idx, arg);
             if (!value) {
                 return std::unexpected(value.error());
@@ -975,6 +1222,28 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
             }
             options.output = *value;
             skip_next = true;
+            continue;
+        }
+        if (arg == "--manifest") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.manifest = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--repro-level") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.repro_level = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--include-analyzer-candidates") {
+            options.include_analyzer_candidates = true;
             continue;
         }
     }
@@ -1021,6 +1290,88 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
             continue;
         }
         if (arg == "--output" || arg == "-o") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.output = *value;
+            skip_next = true;
+            continue;
+        }
+    }
+    return options;
+}
+
+[[nodiscard]] sappp::Result<ExplainOptions> parse_explain_args(std::span<char*> args)
+{
+    ExplainOptions options{.unknown = std::string{},
+                           .validated = std::string{},
+                           .po_id = std::string{},
+                           .unknown_id = std::string{},
+                           .format = "text",
+                           .output = std::string{},
+                           .show_help = false};
+    bool skip_next = false;
+    for (auto [i, arg_ptr] : std::views::enumerate(args)) {
+        if (skip_next) {
+            skip_next = false;
+            continue;
+        }
+        if (arg_ptr == nullptr) {
+            continue;
+        }
+        const auto idx = static_cast<std::size_t>(i);
+        std::string_view arg(arg_ptr);
+        if (arg == "--help" || arg == "-h") {
+            options.show_help = true;
+            continue;
+        }
+        if (arg == "--unknown") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.unknown = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--validated") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.validated = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--po") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.po_id = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--unknown-id") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.unknown_id = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--format") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.format = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--out") {
             auto value = read_option_value(args, idx, arg);
             if (!value) {
                 return std::unexpected(value.error());
@@ -1191,21 +1542,352 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     return static_cast<int>(ExitCode::kOk);
 }
 
+// NOLINTNEXTLINE(readability-function-size) - CLI routine keeps pack flow together.
 [[nodiscard]] int run_pack(const PackOptions& options)
 {
-    std::println("[pack] Not yet implemented");
+    const std::filesystem::path input_dir(options.input);
+    const std::filesystem::path schema_dir("schemas");
+
+    auto temp_dir = prepare_temp_dir("pack", options.input);
+    if (!temp_dir) {
+        std::println(stderr, "Error: {}", temp_dir.error().message);
+        return exit_code_for_error(temp_dir.error());
+    }
+    auto pack_root = prepare_pack_root(*temp_dir);
+    if (!pack_root) {
+        std::println(stderr, "Error: {}", pack_root.error().message);
+        return exit_code_for_error(pack_root.error());
+    }
+
+    struct PackItem
+    {
+        std::filesystem::path source;
+        std::filesystem::path dest;
+        std::string schema;
+    };
+
+    std::vector<PackItem> required_files = {
+        {               input_dir / "build_snapshot.json",
+         *pack_root / "inputs" / "build_snapshot.json",
+         "build_snapshot.v1.schema.json"   },
+        {             input_dir / "frontend" / "nir.json",
+         *pack_root / "frontend" / "nir.json",
+         "nir.v1.schema.json"              },
+        {      input_dir / "frontend" / "source_map.json",
+         *pack_root / "frontend" / "source_map.json",
+         "source_map.v1.schema.json"       },
+        {               input_dir / "po" / "po_list.json",
+         *pack_root / "po" / "po_list.json",
+         "po.v1.schema.json"               },
+        {  input_dir / "analyzer" / "unknown_ledger.json",
+         *pack_root / "analyzer" / "unknown_ledger.json",
+         "unknown.v1.schema.json"          },
+        {          input_dir / "specdb" / "snapshot.json",
+         *pack_root / "specdb" / "snapshot.json",
+         "specdb_snapshot.v1.schema.json"  },
+        {input_dir / "results" / "validated_results.json",
+         *pack_root / "results" / "validated_results.json",
+         "validated_results.v1.schema.json"},
+        {   input_dir / "config" / "analysis_config.json",
+         *pack_root / "config" / "analysis_config.json",
+         "analysis_config.v1.schema.json"  },
+    };
+
+    std::vector<nlohmann::json> file_entries;
+
+    for (const auto& item : required_files) {
+        if (auto result = ensure_directory(item.dest.parent_path(), "pack item"); !result) {
+            std::println(stderr, "Error: {}", result.error().message);
+            return exit_code_for_error(result.error());
+        }
+        auto json = read_and_validate_json(item.source, schema_dir, item.schema);
+        if (!json) {
+            std::println(stderr, "Error: {}", json.error().message);
+            return exit_code_for_error(json.error());
+        }
+        if (auto copied = copy_file_checked(item.source, item.dest); !copied) {
+            std::println(stderr, "Error: {}", copied.error().message);
+            return exit_code_for_error(copied.error());
+        }
+        auto digest = sha256_for_file(item.dest);
+        if (!digest) {
+            std::println(stderr, "Error: {}", digest.error().message);
+            return exit_code_for_error(digest.error());
+        }
+        auto size = std::filesystem::file_size(item.dest);
+        file_entries.push_back(nlohmann::json{
+            {"path", std::filesystem::relative(item.dest, *pack_root).generic_string()},
+            {"sha256", *digest},
+            {"size_bytes", static_cast<std::int64_t>(size)}
+        });
+    }
+
+    std::filesystem::path certstore_src = input_dir / "certstore";
+    std::filesystem::path certstore_dst = *pack_root / "certstore";
+    if (std::filesystem::exists(certstore_src)) {
+        std::vector<std::filesystem::path> cert_files;
+        for (const auto& entry : std::filesystem::recursive_directory_iterator(certstore_src)) {
+            if (!entry.is_regular_file()) {
+                continue;
+            }
+            cert_files.push_back(entry.path());
+        }
+        std::ranges::stable_sort(cert_files, [](const auto& lhs, const auto& rhs) {
+            return lhs.generic_string() < rhs.generic_string();
+        });
+        for (const auto& path : cert_files) {
+            auto relative = std::filesystem::relative(path, certstore_src);
+            auto dest = certstore_dst / relative;
+            if (auto result = ensure_directory(dest.parent_path(), "certstore"); !result) {
+                std::println(stderr, "Error: {}", result.error().message);
+                return exit_code_for_error(result.error());
+            }
+            if (auto copied = copy_file_checked(path, dest); !copied) {
+                std::println(stderr, "Error: {}", copied.error().message);
+                return exit_code_for_error(copied.error());
+            }
+            auto digest = sha256_for_file(dest);
+            if (!digest) {
+                std::println(stderr, "Error: {}", digest.error().message);
+                return exit_code_for_error(digest.error());
+            }
+            auto size = std::filesystem::file_size(dest);
+            file_entries.push_back(nlohmann::json{
+                {"path", std::filesystem::relative(dest, *pack_root).generic_string()},
+                {"sha256", *digest},
+                {"size_bytes", static_cast<std::int64_t>(size)}
+            });
+        }
+    }
+
+    if (options.include_analyzer_candidates) {
+        std::filesystem::path candidates_src = input_dir / "analyzer" / "cert_candidates";
+        std::filesystem::path candidates_dst = *pack_root / "analyzer" / "cert_candidates";
+        if (std::filesystem::exists(candidates_src)) {
+            for (const auto& entry :
+                 std::filesystem::recursive_directory_iterator(candidates_src)) {
+                if (!entry.is_regular_file()) {
+                    continue;
+                }
+                auto relative = std::filesystem::relative(entry.path(), candidates_src);
+                auto dest = candidates_dst / relative;
+                if (auto result = ensure_directory(dest.parent_path(), "cert_candidates");
+                    !result) {
+                    std::println(stderr, "Error: {}", result.error().message);
+                    return exit_code_for_error(result.error());
+                }
+                if (auto copied = copy_file_checked(entry.path(), dest); !copied) {
+                    std::println(stderr, "Error: {}", copied.error().message);
+                    return exit_code_for_error(copied.error());
+                }
+                auto digest = sha256_for_file(dest);
+                if (!digest) {
+                    std::println(stderr, "Error: {}", digest.error().message);
+                    return exit_code_for_error(digest.error());
+                }
+                auto size = std::filesystem::file_size(dest);
+                file_entries.push_back(nlohmann::json{
+                    {"path", std::filesystem::relative(dest, *pack_root).generic_string()},
+                    {"sha256", *digest},
+                    {"size_bytes", static_cast<std::int64_t>(size)}
+                });
+            }
+        }
+    }
+
+    std::filesystem::path semantics_path = *pack_root / "semantics" / "sem.v1.md";
+    if (auto result = ensure_directory(semantics_path.parent_path(), "semantics"); !result) {
+        std::println(stderr, "Error: {}", result.error().message);
+        return exit_code_for_error(result.error());
+    }
+    {
+        std::ofstream out(semantics_path);
+        if (!out) {
+            std::println(stderr, "Error: failed to write semantics stub");
+            return static_cast<int>(ExitCode::kInputError);
+        }
+        out << "# sem.v1\n\nThis is a placeholder semantics document.\n";
+    }
+    auto semantics_digest = sha256_for_file(semantics_path);
+    if (!semantics_digest) {
+        std::println(stderr, "Error: {}", semantics_digest.error().message);
+        return exit_code_for_error(semantics_digest.error());
+    }
+    file_entries.push_back(nlohmann::json{
+        {"path", std::filesystem::relative(semantics_path, *pack_root).generic_string()},
+        {"sha256", *semantics_digest},
+        {"size_bytes", static_cast<std::int64_t>(std::filesystem::file_size(semantics_path))}
+    });
+
+    std::ranges::stable_sort(file_entries,
+                             [](const nlohmann::json& lhs, const nlohmann::json& rhs) {
+                                 return lhs.at("path").get<std::string>()
+                                        < rhs.at("path").get<std::string>();
+                             });
+
+    auto build_snapshot_json = read_and_validate_json(input_dir / "build_snapshot.json",
+                                                      schema_dir,
+                                                      "build_snapshot.v1.schema.json");
+    if (!build_snapshot_json) {
+        std::println(stderr, "Error: {}", build_snapshot_json.error().message);
+        return exit_code_for_error(build_snapshot_json.error());
+    }
+
+    auto manifest = build_pack_manifest(file_entries, *build_snapshot_json, options.repro_level);
+    if (!manifest) {
+        std::println(stderr, "Error: {}", manifest.error().message);
+        return exit_code_for_error(manifest.error());
+    }
+
+    auto manifest_schema = (schema_dir / "pack_manifest.v1.schema.json").string();
+    if (auto validation = sappp::common::validate_json(*manifest, manifest_schema); !validation) {
+        std::println(stderr, "Error: manifest schema invalid: {}", validation.error().message);
+        return exit_code_for_error(validation.error());
+    }
+
+    std::filesystem::path manifest_in_pack = *pack_root / "manifest.json";
+    if (auto write = write_canonical_json_file(manifest_in_pack, *manifest); !write) {
+        std::println(stderr, "Error: {}", write.error().message);
+        return exit_code_for_error(write.error());
+    }
+    if (auto write = write_canonical_json_file(options.manifest, *manifest); !write) {
+        std::println(stderr, "Error: {}", write.error().message);
+        return exit_code_for_error(write.error());
+    }
+
+    const std::string command =
+        std::format("GZIP=-n tar -czf \"{}\" --sort=name --mtime='UTC 1970-01-01' "
+                    "--owner=0 --group=0 --numeric-owner -C \"{}\" pack",
+                    options.output,
+                    temp_dir->string());
+    if (std::system(command.c_str()) != 0) {
+        std::println(stderr, "Error: failed to create tar.gz");
+        return static_cast<int>(ExitCode::kInputError);
+    }
+
+    std::println("[pack] Wrote pack");
     std::println("  input: {}", options.input);
     std::println("  output: {}", options.output);
-    return 0;
+    std::println("  manifest: {}", options.manifest);
+    return static_cast<int>(ExitCode::kOk);
 }
 
+// NOLINTNEXTLINE(readability-function-size) - CLI routine keeps diff flow together.
 [[nodiscard]] int run_diff(const DiffOptions& options)
 {
-    std::println("[diff] Not yet implemented");
+    const std::filesystem::path schema_dir("schemas");
+    auto before_root = extract_pack_if_needed(options.before);
+    if (!before_root) {
+        std::println(stderr, "Error: {}", before_root.error().message);
+        return exit_code_for_error(before_root.error());
+    }
+    auto after_root = extract_pack_if_needed(options.after);
+    if (!after_root) {
+        std::println(stderr, "Error: {}", after_root.error().message);
+        return exit_code_for_error(after_root.error());
+    }
+
+    auto before_results =
+        read_and_validate_json(*before_root / "results" / "validated_results.json",
+                               schema_dir,
+                               "validated_results.v1.schema.json");
+    if (!before_results) {
+        std::println(stderr, "Error: {}", before_results.error().message);
+        return exit_code_for_error(before_results.error());
+    }
+    auto after_results = read_and_validate_json(*after_root / "results" / "validated_results.json",
+                                                schema_dir,
+                                                "validated_results.v1.schema.json");
+    if (!after_results) {
+        std::println(stderr, "Error: {}", after_results.error().message);
+        return exit_code_for_error(after_results.error());
+    }
+
+    nlohmann::json before_manifest;
+    nlohmann::json after_manifest;
+    if (auto manifest = read_json_file(*before_root / "manifest.json"); manifest) {
+        before_manifest = *manifest;
+    }
+    if (auto manifest = read_json_file(*after_root / "manifest.json"); manifest) {
+        after_manifest = *manifest;
+    }
+    if (!before_manifest.contains("input_digest")) {
+        auto build_snapshot = read_json_file(*before_root / "inputs" / "build_snapshot.json");
+        if (!build_snapshot) {
+            build_snapshot = read_json_file(*before_root / "build_snapshot.json");
+        }
+        if (build_snapshot) {
+            if (auto digest = input_digest_from_build_snapshot(*build_snapshot); digest) {
+                before_manifest["input_digest"] = *digest;
+            }
+        }
+    }
+    if (!after_manifest.contains("input_digest")) {
+        auto build_snapshot = read_json_file(*after_root / "inputs" / "build_snapshot.json");
+        if (!build_snapshot) {
+            build_snapshot = read_json_file(*after_root / "build_snapshot.json");
+        }
+        if (build_snapshot) {
+            if (auto digest = input_digest_from_build_snapshot(*build_snapshot); digest) {
+                after_manifest["input_digest"] = *digest;
+            }
+        }
+    }
+
+    auto before_digest = sappp::canonical::hash_canonical(*before_results);
+    if (!before_digest) {
+        std::println(stderr, "Error: {}", before_digest.error().message);
+        return exit_code_for_error(before_digest.error());
+    }
+    auto after_digest = sappp::canonical::hash_canonical(*after_results);
+    if (!after_digest) {
+        std::println(stderr, "Error: {}", after_digest.error().message);
+        return exit_code_for_error(after_digest.error());
+    }
+
+    auto before_side = build_diff_side(before_manifest, *before_results, *before_digest);
+    if (!before_side) {
+        std::println(stderr, "Error: {}", before_side.error().message);
+        return exit_code_for_error(before_side.error());
+    }
+    auto after_side = build_diff_side(after_manifest, *after_results, *after_digest);
+    if (!after_side) {
+        std::println(stderr, "Error: {}", after_side.error().message);
+        return exit_code_for_error(after_side.error());
+    }
+
+    const std::string reason = diff_reason_for(*before_side, *after_side);
+    auto changes = sappp::report::build_diff_changes(*before_results, *after_results, reason);
+    if (!changes) {
+        std::println(stderr, "Error: {}", changes.error().message);
+        return exit_code_for_error(changes.error());
+    }
+
+    nlohmann::json diff_json = {
+        {"schema_version",            "diff.v1"},
+        {          "tool", tool_metadata_json()},
+        {  "generated_at",   current_time_utc()},
+        {        "before",         *before_side},
+        {         "after",          *after_side},
+        {       "changes",             *changes}
+    };
+
+    auto diff_schema = (schema_dir / "diff.v1.schema.json").string();
+    if (auto validation = sappp::common::validate_json(diff_json, diff_schema); !validation) {
+        std::println(stderr, "Error: diff schema invalid: {}", validation.error().message);
+        return exit_code_for_error(validation.error());
+    }
+
+    if (auto write = write_canonical_json_file(options.output, diff_json); !write) {
+        std::println(stderr, "Error: failed to write diff: {}", write.error().message);
+        return exit_code_for_error(write.error());
+    }
+
+    std::println("[diff] Wrote diff.json");
     std::println("  before: {}", options.before);
     std::println("  after: {}", options.after);
     std::println("  output: {}", options.output);
-    return 0;
+    return static_cast<int>(ExitCode::kOk);
 }
 int cmd_capture(int argc, char** argv)
 {
@@ -1289,6 +1971,11 @@ int cmd_pack(int argc, char** argv)
         print_pack_help();
         return static_cast<int>(ExitCode::kCliError);
     }
+    if (options->repro_level != "L0" && options->repro_level != "L1" && options->repro_level != "L2"
+        && options->repro_level != "L3") {
+        std::println(stderr, "Error: --repro-level must be L0/L1/L2/L3");
+        return static_cast<int>(ExitCode::kCliError);
+    }
     return run_pack(*options);
 }
 
@@ -1312,12 +1999,110 @@ int cmd_diff(int argc, char** argv)
     return run_diff(*options);
 }
 
+// NOLINTNEXTLINE(readability-function-size) - CLI routine keeps explain flow together.
 int cmd_explain(int argc, char** argv)
 {
-    std::println("[explain] Not yet implemented");
-    (void)argc;
-    (void)argv;
-    return 0;
+    auto args = std::span<char*>(argv, static_cast<std::size_t>(argc));
+    auto options = parse_explain_args(args);
+    if (!options) {
+        std::println(stderr, "Error: {}", options.error().message);
+        return exit_code_for_error(options.error());
+    }
+    if (options->show_help) {
+        print_explain_help();
+        return static_cast<int>(ExitCode::kOk);
+    }
+    if (options->unknown.empty()) {
+        std::println(stderr, "Error: --unknown is required");
+        print_explain_help();
+        return static_cast<int>(ExitCode::kCliError);
+    }
+    if (options->format != "text" && options->format != "json") {
+        std::println(stderr, "Error: --format must be text or json");
+        return static_cast<int>(ExitCode::kCliError);
+    }
+
+    const std::filesystem::path schema_dir("schemas");
+    auto unknown_ledger =
+        read_and_validate_json(options->unknown, schema_dir, "unknown.v1.schema.json");
+    if (!unknown_ledger) {
+        std::println(stderr, "Error: {}", unknown_ledger.error().message);
+        return exit_code_for_error(unknown_ledger.error());
+    }
+
+    std::optional<nlohmann::json> validated_results;
+    if (!options->validated.empty()) {
+        auto validated = read_and_validate_json(options->validated,
+                                                schema_dir,
+                                                "validated_results.v1.schema.json");
+        if (!validated) {
+            std::println(stderr, "Error: {}", validated.error().message);
+            return exit_code_for_error(validated.error());
+        }
+        validated_results = *validated;
+    }
+
+    auto filtered = sappp::report::filter_unknowns(
+        *unknown_ledger,
+        validated_results,
+        options->po_id.empty() ? std::nullopt : std::optional<std::string_view>(options->po_id),
+        options->unknown_id.empty() ? std::nullopt
+                                    : std::optional<std::string_view>(options->unknown_id));
+    if (!filtered) {
+        std::println(stderr, "Error: {}", filtered.error().message);
+        return exit_code_for_error(filtered.error());
+    }
+
+    if (options->format == "json") {
+        nlohmann::json explain_json = {
+            {"schema_version",         "explain.v1"},
+            {          "tool", tool_metadata_json()},
+            {  "generated_at",   current_time_utc()},
+            {      "unknowns",            *filtered}
+        };
+        if (!options->output.empty()) {
+            if (auto write = write_canonical_json_file(options->output, explain_json); !write) {
+                std::println(stderr, "Error: {}", write.error().message);
+                return exit_code_for_error(write.error());
+            }
+        } else {
+            auto canonical = sappp::canonical::canonicalize(explain_json);
+            if (!canonical) {
+                std::println(stderr, "Error: {}", canonical.error().message);
+                return exit_code_for_error(canonical.error());
+            }
+            std::println("{}", *canonical);
+        }
+        return static_cast<int>(ExitCode::kOk);
+    }
+
+    for (const auto& entry : *filtered) {
+        std::println("UNKNOWN {}", entry.value("unknown_stable_id", ""));
+        std::println("  po_id: {}", entry.value("po_id", ""));
+        std::println("  code: {}", entry.value("unknown_code", ""));
+        if (entry.contains("missing_lemma")) {
+            const auto& lemma = entry.at("missing_lemma");
+            std::println("  missing_lemma: {}", lemma.value("pretty", ""));
+            if (lemma.contains("symbols")) {
+                std::println("    symbols:");
+                for (const auto& sym : lemma.at("symbols")) {
+                    std::println("      - {}", sym.get<std::string>());
+                }
+            }
+        }
+        if (entry.contains("refinement_plan")) {
+            const auto& plan = entry.at("refinement_plan");
+            std::println("  refinement: {}", plan.value("message", ""));
+            if (plan.contains("actions")) {
+                std::println("    actions:");
+                for (const auto& action : plan.at("actions")) {
+                    std::println("      - {}", action.value("action", ""));
+                }
+            }
+        }
+    }
+
+    return static_cast<int>(ExitCode::kOk);
 }
 
 }  // namespace

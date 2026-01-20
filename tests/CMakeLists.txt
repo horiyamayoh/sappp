@@ -19,6 +19,7 @@ set(SAPPP_QUICK_LABELS
     build_capture
     determinism
     po
+    report
     schemas
     validator
 )
@@ -51,6 +52,9 @@ add_subdirectory(build_capture)
 
 # Determinism tests
 add_subdirectory(determinism)
+
+# Report tests
+add_subdirectory(report)
 
 # End-to-end tests
 add_subdirectory(end_to_end)
