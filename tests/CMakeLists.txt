@@ -8,7 +8,9 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 include(GoogleTest)
-set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE PRE_TEST)
+include(CTest)
+enable_testing()
+set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE POST_BUILD)
 
 # テストラベル定義
 # - quick: 高速テスト（30秒以内で完了すべき）
@@ -38,7 +40,7 @@ function(sappp_register_gtest target label)
     string(REPLACE ";" "\\;" test_labels_escaped "${test_labels}")
     
     gtest_discover_tests(${target}
-        DISCOVERY_MODE PRE_TEST
+        DISCOVERY_MODE POST_BUILD
         TEST_PREFIX "${label}."
         PROPERTIES LABELS "${test_labels_escaped}"
     )
