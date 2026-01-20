@@ -377,10 +377,18 @@ collect_ordered_pos(const nlohmann::json& po_list)
                                                        const nlohmann::json& tool_obj,
                                                        std::string_view tu_id)
 {
+    std::string generated_at = current_time_utc();
+    if (nir_json.contains("generated_at") && nir_json.at("generated_at").is_string()) {
+        generated_at = nir_json.at("generated_at").get<std::string>();
+    } else if (po_list_json.contains("generated_at")
+               && po_list_json.at("generated_at").is_string()) {
+        generated_at = po_list_json.at("generated_at").get<std::string>();
+    }
+
     nlohmann::json unknown_ledger = {
         {      "schema_version",            "unknown.v1"},
         {                "tool",                tool_obj},
-        {        "generated_at",      current_time_utc()},
+        {        "generated_at",            generated_at},
         {               "tu_id",      std::string(tu_id)},
         {            "unknowns", nlohmann::json::array()},
         {   "semantics_version",      versions.semantics},
