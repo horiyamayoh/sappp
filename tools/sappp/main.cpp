@@ -561,7 +561,9 @@ prepare_pack_root(const std::filesystem::path& base_dir)
                                                                     std::string_view seed)
 {
     const auto hash = sappp::common::sha256_prefixed(seed);
-    const auto suffix = hash.substr(hash.size() - 12);
+    const auto suffix_length =
+        hash.size() < static_cast<std::size_t>(12) ? hash.size() : static_cast<std::size_t>(12);
+    const auto suffix = hash.substr(hash.size() - suffix_length);
     std::filesystem::path temp_dir =
         std::filesystem::temp_directory_path() / std::format("sappp_{}_{}", label, suffix);
     std::error_code ec;
