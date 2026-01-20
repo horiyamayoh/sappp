@@ -33,7 +33,7 @@ Checks: >
 
 WarningsAsErrors: '*'
 
-HeaderFilterRegex: '.*/sappp/.*'
+HeaderFilterRegex: '^(?!.*(/build/|/build-clang/)).*'
 
 CheckOptions:
   # Naming conventions (Google C++ Style Guide based)

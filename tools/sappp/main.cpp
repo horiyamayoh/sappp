@@ -16,6 +16,7 @@
  *   version   - Show version information
  */
 
+#include "analyzer.hpp"
 #include "po_generator.hpp"
 #include "sappp/build_capture.hpp"
 #include "sappp/canonical_json.hpp"
@@ -558,33 +559,6 @@ enum class ExitCode { kOk = 0, kCliError = 1, kInputError = 2, kInternalError = 
     return snapshot_json;
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json>
-build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& options)
-{
-    nlohmann::json unknown_json = {
-        {      "schema_version",                  "unknown.v1"},
-        {                "tool",           nir_json.at("tool")},
-        {        "generated_at",            current_time_utc()},
-        {               "tu_id",          nir_json.at("tu_id")},
-        {            "unknowns",       nlohmann::json::array()},
-        {   "semantics_version",    options.versions.semantics},
-        {"proof_system_version", options.versions.proof_system},
-        {     "profile_version",      options.versions.profile}
-    };
-
-    if (nir_json.contains("input_digest")) {
-        unknown_json["input_digest"] = nir_json.at("input_digest");
-    }
-
-    const std::filesystem::path schema_path =
-        std::filesystem::path(options.schema_dir) / "unknown.v1.schema.json";
-    if (auto validation = sappp::common::validate_json(unknown_json, schema_path.string());
-        !validation) {
-        return std::unexpected(validation.error());
-    }
-    return unknown_json;
-}
-
 [[nodiscard]] sappp::VoidResult write_analysis_config_output(const AnalyzePaths& paths,
                                                              const AnalyzeOptions& options)
 {
@@ -613,20 +587,6 @@ build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& 
     return {};
 }
 
-[[nodiscard]] sappp::VoidResult write_unknown_ledger_output(const AnalyzePaths& paths,
-                                                            const nlohmann::json& nir_json,
-                                                            const AnalyzeOptions& options)
-{
-    auto unknown_ledger = build_unknown_ledger_json(nir_json, options);
-    if (!unknown_ledger) {
-        return std::unexpected(unknown_ledger.error());
-    }
-    if (auto write = write_canonical_json_file(paths.unknown_ledger_path, *unknown_ledger);
-        !write) {
-        return std::unexpected(write.error());
-    }
-    return {};
-}
 #endif
 
 [[nodiscard]] sappp::Result<bool> set_analyze_primary_option(std::string_view arg,
@@ -1170,10 +1130,19 @@ build_unknown_ledger_json(const nlohmann::json& nir_json, const AnalyzeOptions& 
         std::println(stderr, "Error: specdb snapshot failed: {}", write_result.error().message);
         return exit_code_for_error(write_result.error());
     }
-    if (auto write_result = write_unknown_ledger_output(*paths, result->nir, options);
-        !write_result) {
-        std::println(stderr, "Error: unknown ledger failed: {}", write_result.error().message);
-        return exit_code_for_error(write_result.error());
+    sappp::analyzer::Analyzer analyzer({.schema_dir = options.schema_dir,
+                                        .certstore_dir = paths->certstore_dir.string(),
+                                        .versions = options.versions});
+    auto analyzer_output = analyzer.analyze(result->nir, *po_list_result);
+    if (!analyzer_output) {
+        std::println(stderr, "Error: analyzer failed: {}", analyzer_output.error().message);
+        return exit_code_for_error(analyzer_output.error());
+    }
+    if (auto write =
+            write_canonical_json_file(paths->unknown_ledger_path, analyzer_output->unknown_ledger);
+        !write) {
+        std::println(stderr, "Error: unknown ledger failed: {}", write.error().message);
+        return exit_code_for_error(write.error());
     }
 
     std::println("[analyze] Wrote frontend outputs");
