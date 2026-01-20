@@ -1710,6 +1710,11 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
             return static_cast<int>(ExitCode::kInputError);
         }
         out << "# sem.v1\n\nThis is a placeholder semantics document.\n";
+        out.flush();
+        if (!out) {
+            std::println(stderr, "Error: failed to flush semantics stub to disk");
+            return static_cast<int>(ExitCode::kInputError);
+        }
     }
     auto semantics_digest = sha256_for_file(semantics_path);
     if (!semantics_digest) {
