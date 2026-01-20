@@ -6,6 +6,7 @@
  */
 
 #include "sappp/common.hpp"
+#include "sappp/version.hpp"
 
 #include <string>
 
@@ -24,7 +25,9 @@ class FrontendClang
 public:
     explicit FrontendClang(std::string schema_dir = "schemas");
 
-    [[nodiscard]] sappp::Result<FrontendResult> analyze(const nlohmann::json& build_snapshot) const;
+    [[nodiscard]] sappp::Result<FrontendResult>
+    analyze(const nlohmann::json& build_snapshot,
+            const sappp::VersionTriple& versions = sappp::default_version_triple()) const;
 
 private:
     std::string m_schema_dir;
