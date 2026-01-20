@@ -647,7 +647,8 @@ build_pack_manifest(const std::vector<nlohmann::json>& files,
 [[nodiscard]] sappp::Result<std::filesystem::path>
 extract_pack_if_needed(const std::filesystem::path& input_path)
 {
-    if (input_path.extension() != ".gz") {
+    const auto filename = input_path.filename().string();
+    if (!filename.ends_with(".tar.gz")) {
         return input_path;
     }
     auto temp_dir = prepare_temp_dir("pack", input_path.string());
