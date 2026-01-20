@@ -11,6 +11,7 @@ target_link_libraries(sappp PRIVATE
     sappp_po
     sappp_analyzer
     sappp_validator
+    sappp_report
     nlohmann_json::nlohmann_json
 )
 
