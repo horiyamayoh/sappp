@@ -424,7 +424,7 @@ struct PointPredicateInput
 
 struct AbstractStateCheckResult
 {
-    bool ok = true;
+    bool ok;
     std::string reason;
 };
 
@@ -517,7 +517,6 @@ struct AbstractStateCheckResult
 
 [[nodiscard]] AbstractStateCheckResult validate_state_consistency(const nlohmann::json& state)
 {
-    AbstractStateCheckResult result;
     if (!state.is_object()) {
         return {.ok = false, .reason = "State is not an object"};
     }
@@ -536,7 +535,7 @@ struct AbstractStateCheckResult
         return {.ok = false, .reason = *conflict};
     }
 
-    return result;
+    return {.ok = true, .reason = ""};
 }
 
 [[nodiscard]] PredicateCheck check_predicate_implied(const nlohmann::json& evidence,
