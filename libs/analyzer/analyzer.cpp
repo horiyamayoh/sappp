@@ -265,21 +265,69 @@ make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const
 [[nodiscard]] nlohmann::json make_proof_root(const std::string& po_hash,
                                              const std::string& ir_hash,
                                              const std::string& evidence_hash,
+                                             const std::optional<std::string>& depgraph_hash,
                                              const std::string& result_kind,
                                              const sappp::VersionTriple& versions)
 {
+    nlohmann::json depends = {
+        {   "semantics_version",    versions.semantics},
+        {"proof_system_version", versions.proof_system},
+        {     "profile_version",      versions.profile}
+    };
+    if (depgraph_hash) {
+        depends["assumptions"] =
+            nlohmann::json::array({std::string("depgraph_ref=") + *depgraph_hash});
+    }
     return nlohmann::json{
-        {"schema_version",    "cert.v1"                          },
+        {"schema_version",                              "cert.v1"},
         {          "kind",                            "ProofRoot"},
         {            "po",       nlohmann::json{{"ref", po_hash}}},
         {            "ir",       nlohmann::json{{"ref", ir_hash}}},
         {        "result",                            result_kind},
         {      "evidence", nlohmann::json{{"ref", evidence_hash}}},
-        {       "depends",
-         nlohmann::json{{"semantics_version", versions.semantics},
-         {"proof_system_version", versions.proof_system},
-         {"profile_version", versions.profile}}                  },
+        {       "depends",                     std::move(depends)},
         {    "hash_scope",                        "hash_scope.v1"}
+    };
+}
+
+[[nodiscard]] nlohmann::json make_dependency_graph(const std::string& po_hash,
+                                                   const std::string& ir_hash,
+                                                   const std::string& evidence_hash)
+{
+    std::vector<std::string> nodes = {po_hash, ir_hash, evidence_hash};
+    std::ranges::sort(nodes);
+
+    std::vector<nlohmann::json> edges;
+    edges.push_back(nlohmann::json{
+        {"from",  po_hash},
+        {  "to",  ir_hash},
+        {"role", "anchor"}
+    });
+    edges.push_back(nlohmann::json{
+        {"from",       po_hash},
+        {  "to", evidence_hash},
+        {"role",    "evidence"}
+    });
+
+    std::ranges::stable_sort(edges, [](const nlohmann::json& a, const nlohmann::json& b) {
+        const auto& a_from = a.at("from").get_ref<const std::string&>();
+        const auto& b_from = b.at("from").get_ref<const std::string&>();
+        if (a_from != b_from) {
+            return a_from < b_from;
+        }
+        const auto& a_to = a.at("to").get_ref<const std::string&>();
+        const auto& b_to = b.at("to").get_ref<const std::string&>();
+        if (a_to != b_to) {
+            return a_to < b_to;
+        }
+        return a.at("role").get<std::string>() < b.at("role").get<std::string>();
+    });
+
+    return nlohmann::json{
+        {"schema_version",         "cert.v1"},
+        {          "kind", "DependencyGraph"},
+        {         "nodes",  std::move(nodes)},
+        {         "edges",  std::move(edges)}
     };
 }
 
@@ -548,9 +596,16 @@ process_po(const nlohmann::json& po, std::size_t index, const PoProcessingContex
         return std::unexpected(evidence_hash.error());
     }
 
+    nlohmann::json depgraph = make_dependency_graph(*po_hash, *ir_hash, *evidence_hash);
+    auto depgraph_hash = put_cert(*context.cert_store, depgraph);
+    if (!depgraph_hash) {
+        return std::unexpected(depgraph_hash.error());
+    }
+
     nlohmann::json root = make_proof_root(*po_hash,
                                           *ir_hash,
                                           *evidence_hash,
+                                          std::optional<std::string>(*depgraph_hash),
                                           evidence_result->result_kind,
                                           *context.versions);
     auto root_hash = put_cert(*context.cert_store, root);
