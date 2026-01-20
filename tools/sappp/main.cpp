@@ -569,17 +569,15 @@ prepare_pack_root(const std::filesystem::path& base_dir)
     std::error_code ec;
     std::filesystem::remove_all(temp_dir, ec);
     if (ec) {
-        return std::unexpected(
-            sappp::Error::make("IOError",
-                               "Failed to remove existing temp dir '" + temp_dir.string()
-                                   + "': " + ec.message()));
+        return std::unexpected(sappp::Error::make("IOError",
+                                                  "Failed to remove existing temp dir '"
+                                                      + temp_dir.string() + "': " + ec.message()));
     }
     std::filesystem::create_directories(temp_dir, ec);
     if (ec) {
-        return std::unexpected(
-            sappp::Error::make("IOError",
-                               "Failed to create temp dir '" + temp_dir.string()
-                                   + "': " + ec.message()));
+        return std::unexpected(sappp::Error::make("IOError",
+                                                  "Failed to create temp dir '" + temp_dir.string()
+                                                      + "': " + ec.message()));
     }
     return temp_dir;
 }
@@ -1044,6 +1042,169 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
+[[nodiscard]] sappp::Result<bool> set_pack_option(std::string_view arg,
+                                                  std::span<char*> args,
+                                                  std::size_t idx,
+                                                  PackOptions& options,
+                                                  bool& skip_next)
+{
+    if (arg == "--input" || arg == "--in") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.input = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--output" || arg == "-o") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.output = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--manifest") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.manifest = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--repro-level") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.repro_level = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--include-analyzer-candidates") {
+        options.include_analyzer_candidates = true;
+        return sappp::Result<bool>{true};
+    }
+    return sappp::Result<bool>{false};
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
+[[nodiscard]] sappp::Result<bool> set_explain_input_option(std::string_view arg,
+                                                           std::span<char*> args,
+                                                           std::size_t idx,
+                                                           ExplainOptions& options,
+                                                           bool& skip_next)
+{
+    if (arg == "--unknown") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.unknown = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--validated") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.validated = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    return sappp::Result<bool>{false};
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
+[[nodiscard]] sappp::Result<bool> set_explain_filter_option(std::string_view arg,
+                                                            std::span<char*> args,
+                                                            std::size_t idx,
+                                                            ExplainOptions& options,
+                                                            bool& skip_next)
+{
+    if (arg == "--po") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.po_id = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--unknown-id") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.unknown_id = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    return sappp::Result<bool>{false};
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
+[[nodiscard]] sappp::Result<bool> set_explain_output_option(std::string_view arg,
+                                                            std::span<char*> args,
+                                                            std::size_t idx,
+                                                            ExplainOptions& options,
+                                                            bool& skip_next)
+{
+    if (arg == "--format") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.format = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--out") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.output = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    return sappp::Result<bool>{false};
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
+// NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
+[[nodiscard]] sappp::Result<bool> set_explain_option(std::string_view arg,
+                                                     std::span<char*> args,
+                                                     std::size_t idx,
+                                                     ExplainOptions& options,
+                                                     bool& skip_next)
+{
+    auto handled = set_explain_input_option(arg, args, idx, options, skip_next);
+    if (!handled) {
+        return std::unexpected(handled.error());
+    }
+    if (*handled) {
+        return sappp::Result<bool>{true};
+    }
+    handled = set_explain_filter_option(arg, args, idx, options, skip_next);
+    if (!handled) {
+        return std::unexpected(handled.error());
+    }
+    if (*handled) {
+        return sappp::Result<bool>{true};
+    }
+    return set_explain_output_option(arg, args, idx, options, skip_next);
+}
+// NOLINTEND(bugprone-easily-swappable-parameters)
+
 [[nodiscard]] sappp::Result<CaptureOptions> parse_capture_args(std::span<char*> args)
 {
     CaptureOptions options{.compile_commands = std::string{},
@@ -1217,44 +1378,11 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
             options.show_help = true;
             continue;
         }
-        if (arg == "--input" || arg == "--in") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.input = *value;
-            skip_next = true;
-            continue;
+        auto handled = set_pack_option(arg, args, idx, options, skip_next);
+        if (!handled) {
+            return std::unexpected(handled.error());
         }
-        if (arg == "--output" || arg == "-o") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.output = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--manifest") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.manifest = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--repro-level") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.repro_level = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--include-analyzer-candidates") {
-            options.include_analyzer_candidates = true;
+        if (*handled) {
             continue;
         }
     }
@@ -1337,58 +1465,11 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
             options.show_help = true;
             continue;
         }
-        if (arg == "--unknown") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.unknown = *value;
-            skip_next = true;
-            continue;
+        auto handled = set_explain_option(arg, args, idx, options, skip_next);
+        if (!handled) {
+            return std::unexpected(handled.error());
         }
-        if (arg == "--validated") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.validated = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--po") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.po_id = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--unknown-id") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.unknown_id = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--format") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.format = *value;
-            skip_next = true;
-            continue;
-        }
-        if (arg == "--out") {
-            auto value = read_option_value(args, idx, arg);
-            if (!value) {
-                return std::unexpected(value.error());
-            }
-            options.output = *value;
-            skip_next = true;
+        if (*handled) {
             continue;
         }
     }
@@ -1578,30 +1659,30 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     };
 
     std::vector<PackItem> required_files = {
-        {               input_dir / "build_snapshot.json",
-         *pack_root / "inputs" / "build_snapshot.json",
-         "build_snapshot.v1.schema.json"   },
-        {             input_dir / "frontend" / "nir.json",
-         *pack_root / "frontend" / "nir.json",
-         "nir.v1.schema.json"              },
-        {      input_dir / "frontend" / "source_map.json",
-         *pack_root / "frontend" / "source_map.json",
-         "source_map.v1.schema.json"       },
-        {               input_dir / "po" / "po_list.json",
-         *pack_root / "po" / "po_list.json",
-         "po.v1.schema.json"               },
-        {  input_dir / "analyzer" / "unknown_ledger.json",
-         *pack_root / "analyzer" / "unknown_ledger.json",
-         "unknown.v1.schema.json"          },
-        {          input_dir / "specdb" / "snapshot.json",
-         *pack_root / "specdb" / "snapshot.json",
-         "specdb_snapshot.v1.schema.json"  },
-        {input_dir / "results" / "validated_results.json",
-         *pack_root / "results" / "validated_results.json",
-         "validated_results.v1.schema.json"},
-        {   input_dir / "config" / "analysis_config.json",
-         *pack_root / "config" / "analysis_config.json",
-         "analysis_config.v1.schema.json"  },
+        {               .source = input_dir / "build_snapshot.json",
+         .dest = *pack_root / "inputs" / "build_snapshot.json",
+         .schema = "build_snapshot.v1.schema.json"   },
+        {             .source = input_dir / "frontend" / "nir.json",
+         .dest = *pack_root / "frontend" / "nir.json",
+         .schema = "nir.v1.schema.json"              },
+        {      .source = input_dir / "frontend" / "source_map.json",
+         .dest = *pack_root / "frontend" / "source_map.json",
+         .schema = "source_map.v1.schema.json"       },
+        {               .source = input_dir / "po" / "po_list.json",
+         .dest = *pack_root / "po" / "po_list.json",
+         .schema = "po.v1.schema.json"               },
+        {  .source = input_dir / "analyzer" / "unknown_ledger.json",
+         .dest = *pack_root / "analyzer" / "unknown_ledger.json",
+         .schema = "unknown.v1.schema.json"          },
+        {          .source = input_dir / "specdb" / "snapshot.json",
+         .dest = *pack_root / "specdb" / "snapshot.json",
+         .schema = "specdb_snapshot.v1.schema.json"  },
+        {.source = input_dir / "results" / "validated_results.json",
+         .dest = *pack_root / "results" / "validated_results.json",
+         .schema = "validated_results.v1.schema.json"},
+        {   .source = input_dir / "config" / "analysis_config.json",
+         .dest = *pack_root / "config" / "analysis_config.json",
+         .schema = "analysis_config.v1.schema.json"  },
     };
 
     std::vector<nlohmann::json> file_entries;
@@ -1645,7 +1726,10 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
                 cert_files.push_back(entry.path());
             }
         } catch (const std::filesystem::filesystem_error& e) {
-            std::println(stderr, "Error iterating certstore directory '{}': {}", certstore_src.generic_string(), e.what());
+            std::println(stderr,
+                         "Error iterating certstore directory '{}': {}",
+                         certstore_src.generic_string(),
+                         e.what());
             return EXIT_FAILURE;
         }
         std::ranges::stable_sort(cert_files, [](const auto& lhs, const auto& rhs) {

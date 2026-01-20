@@ -115,8 +115,8 @@ sappp::Result<nlohmann::json> build_diff_changes(const nlohmann::json& before_re
         nlohmann::json to = {
             {"category", "UNKNOWN"}
         };
-        std::string_view before_category = "UNKNOWN";
-        std::string_view after_category = "UNKNOWN";
+        std::string before_category = "UNKNOWN";
+        std::string after_category = "UNKNOWN";
 
         if (before_present) {
             const auto& item = before_index.at(po_id);
