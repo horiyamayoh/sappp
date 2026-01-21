@@ -53,6 +53,16 @@ namespace {
     return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
 }
 
+constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
+
+[[nodiscard]] std::string generated_at_from_json(const nlohmann::json& json)
+{
+    if (json.contains("generated_at") && json.at("generated_at").is_string()) {
+        return json.at("generated_at").get<std::string>();
+    }
+    return std::string(kDeterministicGeneratedAt);
+}
+
 [[nodiscard]] [[maybe_unused]] nlohmann::json tool_metadata_json()
 {
     return nlohmann::json{
@@ -111,6 +121,7 @@ Options:
   --compile-commands FILE   Path to compile_commands.json (required)
   --out FILE, -o            Output file (default: build_snapshot.json)
   --repo-root DIR           Repository root for relative paths
+  --schema-dir DIR          Path to schema directory (default: ./schemas)
   --help, -h                Show this help
 
 Output:
@@ -172,10 +183,11 @@ Create reproducibility pack
 
 Options:
   --input DIR, --in DIR     Input directory containing analysis outputs (required)
-  --output FILE, -o         Output file (default: pack.tar.gz)
+  --out FILE, --output FILE, -o  Output file (default: pack.tar.gz)
   --manifest FILE           Manifest output (default: manifest.json)
   --repro-level LEVEL       Repro asset level (L0/L1/L2/L3)
   --include-analyzer-candidates  Include analyzer cert candidates
+  --schema-dir DIR          Path to schema directory (default: ./schemas)
   --help, -h                Show this help
 
 Output:
@@ -193,7 +205,8 @@ Compare before/after analysis results
 Options:
   --before FILE             Path to before pack.tar.gz or directory (required)
   --after FILE              Path to after pack.tar.gz or directory (required)
-  --output FILE, -o         Output file (default: diff.json)
+  --out FILE, --output FILE, -o  Output file (default: diff.json)
+  --schema-dir DIR          Path to schema directory (default: ./schemas)
   --help, -h                Show this help
 
 Output:
@@ -214,6 +227,7 @@ Options:
   --unknown-id UNKNOWN_ID  Filter by unknown stable ID
   --format FORMAT          Output format: text|json (default: text)
   --out FILE               Output file for JSON (format=json only)
+  --schema-dir DIR         Path to schema directory (default: ./schemas)
   --help, -h               Show this help
 )");
 }
@@ -230,6 +244,7 @@ struct CaptureOptions
     std::string compile_commands;
     std::string repo_root;
     std::string output_path;
+    std::string schema_dir;
     sappp::VersionTriple versions;
     LoggingOptions logging;
     bool show_help;
@@ -266,6 +281,7 @@ struct PackOptions
     std::string input;
     std::string output;
     std::string manifest;
+    std::string schema_dir;
     std::string repro_level;
     bool include_analyzer_candidates;
     bool show_help;
@@ -276,6 +292,7 @@ struct DiffOptions
     std::string before;
     std::string after;
     std::string output;
+    std::string schema_dir;
     bool show_help;
 };
 
@@ -287,6 +304,7 @@ struct ExplainOptions
     std::string unknown_id;
     std::string format;
     std::string output;
+    std::string schema_dir;
     bool show_help;
 };
 
@@ -586,7 +604,8 @@ prepare_pack_root(const std::filesystem::path& base_dir)
 [[nodiscard]] sappp::Result<nlohmann::json>
 build_pack_manifest(const std::vector<nlohmann::json>& files,
                     const nlohmann::json& build_snapshot,
-                    std::string_view repro_level)
+                    std::string_view repro_level,
+                    std::string_view generated_at)
 {
     auto digest = input_digest_from_build_snapshot(build_snapshot);
     if (!digest) {
@@ -596,7 +615,7 @@ build_pack_manifest(const std::vector<nlohmann::json>& files,
     nlohmann::json manifest = {
         {      "schema_version",         "pack_manifest.v1"},
         {                "tool",       tool_metadata_json()},
-        {        "generated_at",         current_time_utc()},
+        {        "generated_at",  std::string(generated_at)},
         {   "semantics_version",   sappp::kSemanticsVersion},
         {"proof_system_version", sappp::kProofSystemVersion},
         {     "profile_version",     sappp::kProfileVersion},
@@ -729,7 +748,8 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
                         specdb_snapshot_path};
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> load_analysis_config(const AnalyzeOptions& options)
+[[nodiscard]] sappp::Result<nlohmann::json> load_analysis_config(const AnalyzeOptions& options,
+                                                                 std::string_view generated_at)
 {
     std::filesystem::path schema_dir(options.schema_dir);
     const auto schema_path = (schema_dir / "analysis_config.v1.schema.json").string();
@@ -745,17 +765,16 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         return *config_json;
     }
 
+    std::string resolved_generated_at =
+        generated_at.empty() ? std::string(kDeterministicGeneratedAt) : std::string(generated_at);
     nlohmann::json analysis_settings = {
         {"budget", nlohmann::json::object()}
     };
-    if (options.jobs > 0) {
-        analysis_settings["jobs"] = options.jobs;
-    }
 
     nlohmann::json config_json = {
         {      "schema_version",          "analysis_config.v1"},
         {                "tool",          tool_metadata_json()},
-        {        "generated_at",            current_time_utc()},
+        {        "generated_at",         resolved_generated_at},
         {   "semantics_version",    options.versions.semantics},
         {"proof_system_version", options.versions.proof_system},
         {     "profile_version",      options.versions.profile},
@@ -768,7 +787,8 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     return config_json;
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> load_specdb_snapshot(const AnalyzeOptions& options)
+[[nodiscard]] sappp::Result<nlohmann::json> load_specdb_snapshot(const AnalyzeOptions& options,
+                                                                 std::string_view generated_at)
 {
     std::filesystem::path schema_dir(options.schema_dir);
     const auto schema_path = (schema_dir / "specdb_snapshot.v1.schema.json").string();
@@ -784,12 +804,13 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         return *snapshot_json;
     }
 
-    constexpr std::string_view kEmptyGeneratedAt = "1970-01-01T00:00:00Z";
+    std::string resolved_generated_at =
+        generated_at.empty() ? std::string(kDeterministicGeneratedAt) : std::string(generated_at);
     nlohmann::json snapshot_json = {
-        {"schema_version",           "specdb_snapshot.v1"},
-        {          "tool",           tool_metadata_json()},
-        {  "generated_at", std::string(kEmptyGeneratedAt)},
-        {     "contracts",        nlohmann::json::array()}
+        {"schema_version",    "specdb_snapshot.v1"},
+        {          "tool",    tool_metadata_json()},
+        {  "generated_at",   resolved_generated_at},
+        {     "contracts", nlohmann::json::array()}
     };
 
     if (auto validation = sappp::common::validate_json(snapshot_json, schema_path); !validation) {
@@ -799,9 +820,10 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 }
 
 [[nodiscard]] sappp::VoidResult write_analysis_config_output(const AnalyzePaths& paths,
-                                                             const AnalyzeOptions& options)
+                                                             const AnalyzeOptions& options,
+                                                             std::string_view generated_at)
 {
-    auto analysis_config = load_analysis_config(options);
+    auto analysis_config = load_analysis_config(options, generated_at);
     if (!analysis_config) {
         return std::unexpected(analysis_config.error());
     }
@@ -813,9 +835,10 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 }
 
 [[nodiscard]] sappp::VoidResult write_specdb_snapshot_output(const AnalyzePaths& paths,
-                                                             const AnalyzeOptions& options)
+                                                             const AnalyzeOptions& options,
+                                                             std::string_view generated_at)
 {
-    auto specdb_snapshot = load_specdb_snapshot(options);
+    auto specdb_snapshot = load_specdb_snapshot(options, generated_at);
     if (!specdb_snapshot) {
         return std::unexpected(specdb_snapshot.error());
     }
@@ -1038,11 +1061,21 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         skip_next = true;
         return sappp::Result<bool>{true};
     }
+    if (arg == "--schema-dir") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.schema_dir = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
     return sappp::Result<bool>{false};
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters) - CLI parsing signature is stable.
+// NOLINTNEXTLINE(readability-function-size) - CLI parsing is kept in one place for clarity.
 [[nodiscard]] sappp::Result<bool> set_pack_option(std::string_view arg,
                                                   std::span<char*> args,
                                                   std::size_t idx,
@@ -1058,12 +1091,21 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         skip_next = true;
         return sappp::Result<bool>{true};
     }
-    if (arg == "--output" || arg == "-o") {
+    if (arg == "--out" || arg == "--output" || arg == "-o") {
         auto value = read_option_value(args, idx, arg);
         if (!value) {
             return std::unexpected(value.error());
         }
         options.output = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--schema-dir") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.schema_dir = *value;
         skip_next = true;
         return sappp::Result<bool>{true};
     }
@@ -1115,6 +1157,15 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
             return std::unexpected(value.error());
         }
         options.validated = *value;
+        skip_next = true;
+        return sappp::Result<bool>{true};
+    }
+    if (arg == "--schema-dir") {
+        auto value = read_option_value(args, idx, arg);
+        if (!value) {
+            return std::unexpected(value.error());
+        }
+        options.schema_dir = *value;
         skip_next = true;
         return sappp::Result<bool>{true};
     }
@@ -1210,6 +1261,7 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     CaptureOptions options{.compile_commands = std::string{},
                            .repo_root = std::string{},
                            .output_path = "build_snapshot.json",
+                           .schema_dir = "schemas",
                            .versions = sappp::default_version_triple(),
                            .logging = LoggingOptions{},
                            .show_help = false};
@@ -1360,6 +1412,7 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     PackOptions options{.input = std::string{},
                         .output = "pack.tar.gz",
                         .manifest = "manifest.json",
+                        .schema_dir = "schemas",
                         .repro_level = "L0",
                         .include_analyzer_candidates = false,
                         .show_help = false};
@@ -1389,11 +1442,13 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     return options;
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Parsing is intentionally explicit for each flag.
 [[nodiscard]] sappp::Result<DiffOptions> parse_diff_args(std::span<char*> args)
 {
     DiffOptions options{.before = std::string{},
                         .after = std::string{},
                         .output = "diff.json",
+                        .schema_dir = "schemas",
                         .show_help = false};
     bool skip_next = false;
     for (auto [i, arg_ptr] : std::views::enumerate(args)) {
@@ -1428,12 +1483,21 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
             skip_next = true;
             continue;
         }
-        if (arg == "--output" || arg == "-o") {
+        if (arg == "--out" || arg == "--output" || arg == "-o") {
             auto value = read_option_value(args, idx, arg);
             if (!value) {
                 return std::unexpected(value.error());
             }
             options.output = *value;
+            skip_next = true;
+            continue;
+        }
+        if (arg == "--schema-dir") {
+            auto value = read_option_value(args, idx, arg);
+            if (!value) {
+                return std::unexpected(value.error());
+            }
+            options.schema_dir = *value;
             skip_next = true;
             continue;
         }
@@ -1449,6 +1513,7 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
                            .unknown_id = std::string{},
                            .format = "text",
                            .output = std::string{},
+                           .schema_dir = "schemas",
                            .show_help = false};
     bool skip_next = false;
     for (auto [i, arg_ptr] : std::views::enumerate(args)) {
@@ -1478,7 +1543,7 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 
 [[nodiscard]] int run_capture(const CaptureOptions& options)
 {
-    sappp::build_capture::BuildCapture capture(options.repo_root);
+    sappp::build_capture::BuildCapture capture(options.repo_root, options.schema_dir);
     auto snapshot = capture.capture(options.compile_commands);
     if (!snapshot) {
         std::println(stderr, "Error: capture failed: {}", snapshot.error().message);
@@ -1565,11 +1630,14 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         return exit_code_for_error(write.error());
     }
 
-    if (auto write_result = write_analysis_config_output(*paths, options); !write_result) {
+    const std::string generated_at = generated_at_from_json(*snapshot_json);
+    if (auto write_result = write_analysis_config_output(*paths, options, generated_at);
+        !write_result) {
         std::println(stderr, "Error: analysis_config failed: {}", write_result.error().message);
         return exit_code_for_error(write_result.error());
     }
-    if (auto write_result = write_specdb_snapshot_output(*paths, options); !write_result) {
+    if (auto write_result = write_specdb_snapshot_output(*paths, options, generated_at);
+        !write_result) {
         std::println(stderr, "Error: specdb snapshot failed: {}", write_result.error().message);
         return exit_code_for_error(write_result.error());
     }
@@ -1638,7 +1706,7 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 [[nodiscard]] int run_pack(const PackOptions& options)
 {
     const std::filesystem::path input_dir(options.input);
-    const std::filesystem::path schema_dir("schemas");
+    const std::filesystem::path schema_dir(options.schema_dir);
 
     auto temp_dir = prepare_temp_dir("pack", options.input);
     if (!temp_dir) {
@@ -1838,7 +1906,9 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         return exit_code_for_error(build_snapshot_json.error());
     }
 
-    auto manifest = build_pack_manifest(file_entries, *build_snapshot_json, options.repro_level);
+    const std::string generated_at = generated_at_from_json(*build_snapshot_json);
+    auto manifest =
+        build_pack_manifest(file_entries, *build_snapshot_json, options.repro_level, generated_at);
     if (!manifest) {
         std::println(stderr, "Error: {}", manifest.error().message);
         return exit_code_for_error(manifest.error());
@@ -1880,7 +1950,7 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 // NOLINTNEXTLINE(readability-function-size) - CLI routine keeps diff flow together.
 [[nodiscard]] int run_diff(const DiffOptions& options)
 {
-    const std::filesystem::path schema_dir("schemas");
+    const std::filesystem::path schema_dir(options.schema_dir);
     auto before_root = extract_pack_if_needed(options.before);
     if (!before_root) {
         std::println(stderr, "Error: {}", before_root.error().message);
@@ -1968,10 +2038,21 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         return exit_code_for_error(changes.error());
     }
 
+    std::string generated_at = generated_at_from_json(after_manifest);
+    if (generated_at == kDeterministicGeneratedAt) {
+        generated_at = generated_at_from_json(before_manifest);
+    }
+    if (generated_at == kDeterministicGeneratedAt) {
+        generated_at = generated_at_from_json(*after_results);
+    }
+    if (generated_at == kDeterministicGeneratedAt) {
+        generated_at = generated_at_from_json(*before_results);
+    }
+
     nlohmann::json diff_json = {
         {"schema_version",            "diff.v1"},
         {          "tool", tool_metadata_json()},
-        {  "generated_at",   current_time_utc()},
+        {  "generated_at",         generated_at},
         {        "before",         *before_side},
         {         "after",          *after_side},
         {       "changes",             *changes}
@@ -2127,7 +2208,7 @@ int cmd_explain(int argc, char** argv)
         return static_cast<int>(ExitCode::kCliError);
     }
 
-    const std::filesystem::path schema_dir("schemas");
+    const std::filesystem::path schema_dir(options->schema_dir);
     auto unknown_ledger =
         read_and_validate_json(options->unknown, schema_dir, "unknown.v1.schema.json");
     if (!unknown_ledger) {
@@ -2159,10 +2240,14 @@ int cmd_explain(int argc, char** argv)
     }
 
     if (options->format == "json") {
+        std::string generated_at = generated_at_from_json(*unknown_ledger);
+        if (generated_at == kDeterministicGeneratedAt && validated_results) {
+            generated_at = generated_at_from_json(*validated_results);
+        }
         nlohmann::json explain_json = {
             {"schema_version",         "explain.v1"},
             {          "tool", tool_metadata_json()},
-            {  "generated_at",   current_time_utc()},
+            {  "generated_at",         generated_at},
             {      "unknowns",            *filtered}
         };
         if (!options->output.empty()) {

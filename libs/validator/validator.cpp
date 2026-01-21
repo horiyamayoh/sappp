@@ -11,14 +11,13 @@
 #include "sappp/version.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
 #include <optional>
 #include <ranges>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -42,11 +41,7 @@ struct ValidationContext
     bool strict;
 };
 
-[[nodiscard]] std::string current_time_rfc3339()
-{
-    const auto now = std::chrono::system_clock::now();
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
-}
+constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 
 [[nodiscard]] bool is_hex_lower(char c)
 {
@@ -115,6 +110,34 @@ struct ValidationContext
         return std::unexpected(
             Error::make("ParseError", "Failed to parse JSON from " + path + ": " + ex.what()));
     }
+}
+
+[[nodiscard]] std::optional<std::string> read_generated_at_from(const fs::path& path)
+{
+    auto json = read_json_file(path.string());
+    if (!json) {
+        return std::nullopt;
+    }
+    if (!json->contains("generated_at") || !(*json)["generated_at"].is_string()) {
+        return std::nullopt;
+    }
+    return (*json)["generated_at"].get<std::string>();
+}
+
+[[nodiscard]] std::string pick_generated_at(const fs::path& input_dir)
+{
+    const std::vector<fs::path> candidates = {
+        input_dir / "config" / "analysis_config.json",
+        input_dir / "frontend" / "nir.json",
+        input_dir / "po" / "po_list.json",
+        input_dir / "build_snapshot.json",
+    };
+    for (const auto& path : candidates) {
+        if (auto generated_at = read_generated_at_from(path); generated_at) {
+            return *generated_at;
+        }
+    }
+    return std::string(kDeterministicGeneratedAt);
 }
 
 [[nodiscard]] sappp::VoidResult write_json_file(const std::string& path,
@@ -874,10 +897,11 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
             Error::make("RuleViolation", "Failed to determine tu_id from IR references"));
     }
 
+    const std::string generated_at = pick_generated_at(input_dir);
     nlohmann::json output = {
         {      "schema_version",                                                           "validated_results.v1"},
         {                "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
-        {        "generated_at",                                                           current_time_rfc3339()},
+        {        "generated_at",                                                                     generated_at},
         {               "tu_id",                                                                            tu_id},
         {             "results",                                                                          results},
         {   "semantics_version",                                                             m_versions.semantics},

@@ -93,6 +93,11 @@ private:
     return std::system(command.c_str());
 }
 
+[[nodiscard]] int run_command_in_dir(const fs::path& dir, const std::vector<std::string>& args)
+{
+    const auto command = std::format("cd {} && {}", quote_arg(dir.string()), join_command(args));
+    return std::system(command.c_str());
+}
 [[nodiscard]] std::vector<std::string> make_sappp_command(std::string_view subcommand)
 {
     return {std::string(kSapppBinary), std::string(subcommand)};
@@ -172,6 +177,13 @@ struct AnalyzeOutputs
     std::vector<std::string> unknown_ids;
     std::vector<std::string> result_ids;
     std::string pack_manifest_digest;
+
+    AnalyzeOutputs()
+        : po_ids()
+        , unknown_ids()
+        , result_ids()
+        , pack_manifest_digest()
+    {}
 };
 
 [[nodiscard]] sappp::Result<AnalyzeOutputs> collect_outputs(const fs::path& output_dir,
@@ -205,6 +217,8 @@ struct AnalyzeOutputs
     command.push_back(output_path.string());
     command.push_back("--repo-root");
     command.push_back(repo_root.string());
+    command.push_back("--schema-dir");
+    command.push_back(std::string(kSchemaDir));
 
     if (run_command(command) != 0) {
         return std::unexpected(sappp::Error::make("CommandFailed", "sappp capture failed"));
@@ -212,8 +226,10 @@ struct AnalyzeOutputs
     return {};
 }
 
-[[nodiscard]] sappp::Result<void>
-run_sappp_analyze(const fs::path& snapshot, const fs::path& output_dir, int jobs)
+[[nodiscard]] sappp::Result<void> run_sappp_analyze(const fs::path& snapshot,
+                                                    const fs::path& output_dir,
+                                                    const fs::path& repo_root,
+                                                    int jobs)
 {
     auto command = make_sappp_command("analyze");
     command.push_back("--build");
@@ -225,7 +241,7 @@ run_sappp_analyze(const fs::path& snapshot, const fs::path& output_dir, int jobs
     command.push_back("--schema-dir");
     command.push_back(std::string(kSchemaDir));
 
-    if (run_command(command) != 0) {
+    if (run_command_in_dir(repo_root, command) != 0) {
         return std::unexpected(sappp::Error::make("CommandFailed", "sappp analyze failed"));
     }
     return {};
@@ -256,6 +272,8 @@ run_sappp_analyze(const fs::path& snapshot, const fs::path& output_dir, int jobs
     command.push_back(output_pack.string());
     command.push_back("--manifest");
     command.push_back(output_manifest.string());
+    command.push_back("--schema-dir");
+    command.push_back(std::string(kSchemaDir));
 
     if (run_command(command) != 0) {
         return std::unexpected(sappp::Error::make("CommandFailed", "sappp pack failed"));
@@ -309,10 +327,10 @@ TEST(EndToEndDeterminism, Jobs1And8ProduceSameIdsAndDigest)
     const fs::path manifest_j1 = repo_root / "manifest_j1.json";
     const fs::path manifest_j8 = repo_root / "manifest_j8.json";
 
-    auto analyze_j1 = run_sappp_analyze(snapshot_path, out_j1, 1);
+    auto analyze_j1 = run_sappp_analyze(snapshot_path, out_j1, repo_root, 1);
     ASSERT_TRUE(analyze_j1.has_value()) << analyze_j1.error().message;
 
-    auto analyze_j8 = run_sappp_analyze(snapshot_path, out_j8, 8);
+    auto analyze_j8 = run_sappp_analyze(snapshot_path, out_j8, repo_root, 8);
     ASSERT_TRUE(analyze_j8.has_value()) << analyze_j8.error().message;
 
     auto copy_j1 = copy_snapshot_to(snapshot_path, out_j1);

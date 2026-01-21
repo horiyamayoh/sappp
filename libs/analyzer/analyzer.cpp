@@ -10,8 +10,6 @@
 #include "sappp/schema_validate.hpp"
 
 #include <algorithm>
-#include <chrono>
-#include <format>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -25,12 +23,7 @@ namespace sappp::analyzer {
 namespace {
 
 constexpr std::string_view kSafetyDomain = "interval+null+lifetime+init";
-
-[[nodiscard]] std::string current_time_utc()
-{
-    const auto now = std::chrono::system_clock::now();
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
-}
+constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 
 struct JsonFieldContext
 {
@@ -81,7 +74,7 @@ struct JsonFieldContext
     return obj.at(key);
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> require_array(const JsonFieldContext& input)
+[[nodiscard]] sappp::Result<const nlohmann::json*> require_array(const JsonFieldContext& input)
 {
     const nlohmann::json& obj = *input.obj;
     const std::string_view key = input.key;
@@ -99,7 +92,7 @@ struct JsonFieldContext
                                                       + std::string(key) + "' in "
                                                       + std::string(context)));
     }
-    return obj.at(key);
+    return &obj.at(key);
 }
 
 [[nodiscard]] std::unordered_map<std::string, std::string>
@@ -403,8 +396,8 @@ collect_ordered_pos(const nlohmann::json& po_list)
     }
 
     std::vector<const nlohmann::json*> result;
-    result.reserve(pos_array->size());
-    for (const auto& po : *pos_array) {
+    result.reserve((*pos_array)->size());
+    for (const auto& po : **pos_array) {
         if (!po.is_object()) {
             return std::unexpected(
                 sappp::Error::make("InvalidFieldType", "Expected PO entry to be an object"));
@@ -425,7 +418,7 @@ collect_ordered_pos(const nlohmann::json& po_list)
                                                        const nlohmann::json& tool_obj,
                                                        std::string_view tu_id)
 {
-    std::string generated_at = current_time_utc();
+    std::string generated_at = std::string(kDeterministicGeneratedAt);
     if (nir_json.contains("generated_at") && nir_json.at("generated_at").is_string()) {
         generated_at = nir_json.at("generated_at").get<std::string>();
     } else if (po_list_json.contains("generated_at")

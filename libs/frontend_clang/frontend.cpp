@@ -12,9 +12,7 @@
 #include "sappp/version.hpp"
 
 #include <algorithm>
-#include <chrono>
 #include <filesystem>
-#include <format>
 #include <iomanip>
 #include <optional>
 #include <ranges>
@@ -50,10 +48,14 @@ struct SourceMapEntryKey
     nlohmann::json entry;
 };
 
-std::string current_time_utc()
+constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
+
+[[nodiscard]] std::string generated_at_from_snapshot(const nlohmann::json& build_snapshot)
 {
-    const auto now = std::chrono::system_clock::now();
-    return std::format("{:%Y-%m-%dT%H:%M:%SZ}", std::chrono::floor<std::chrono::seconds>(now));
+    if (build_snapshot.contains("generated_at") && build_snapshot.at("generated_at").is_string()) {
+        return build_snapshot.at("generated_at").get<std::string>();
+    }
+    return std::string(kDeterministicGeneratedAt);
 }
 
 bool is_source_file(const std::string& path)
@@ -101,6 +103,15 @@ sappp::Result<CompileUnitCommand> extract_compile_command(const nlohmann::json& 
 
     result.file_path = result.args[*source_index];
     result.args.erase(result.args.begin() + static_cast<std::ptrdiff_t>(*source_index));
+
+    while (!result.args.empty() && !result.args.front().empty()
+           && result.args.front().front() != '-') {
+        result.args.erase(result.args.begin());
+        if (result.args.empty() || result.args.front().empty()
+            || result.args.front().front() == '-') {
+            break;
+        }
+    }
     return result;
 }
 
@@ -210,14 +221,14 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
             const auto opcode = bin_op->getOpcode();
             if (opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
                 || opcode == clang::BO_RemAssign) {
-                markers.emplace_back("div_or_mod_zero");
+                markers.emplace_back("div0");
             }
         } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
             if (unary_op->getOpcode() == clang::UO_Deref) {
-                markers.emplace_back("deref");
+                markers.emplace_back("null");
             }
         } else if (clang::isa<clang::ArraySubscriptExpr>(current)) {
-            markers.emplace_back("array_access");
+            markers.emplace_back("oob");
         }
 
         for (const auto* child : current->children()) {
@@ -715,7 +726,7 @@ void sort_source_entries(std::vector<SourceMapEntryKey>& source_entries)
         { "version", sappp::kVersion},
         {"build_id", sappp::kBuildId}
     };
-    nir.generated_at = current_time_utc();
+    nir.generated_at = generated_at_from_snapshot(build_snapshot);
     nir.tu_id = std::string(tu_id);
     nir.semantics_version = versions.semantics;
     nir.proof_system_version = versions.proof_system;
@@ -740,10 +751,11 @@ build_source_map_json(const nlohmann::json& build_snapshot,
                       const std::vector<SourceMapEntryKey>& source_entries,
                       const std::filesystem::path& schema_dir)
 {
+    const std::string generated_at = generated_at_from_snapshot(build_snapshot);
     nlohmann::json source_map_json = {
         {"schema_version",                                                                  "source_map.v1"},
         {          "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
-        {  "generated_at",                                                               current_time_utc()},
+        {  "generated_at",                                                                     generated_at},
         {         "tu_id",                                                               std::string(tu_id)},
         {       "entries",                                                          nlohmann::json::array()}
     };
