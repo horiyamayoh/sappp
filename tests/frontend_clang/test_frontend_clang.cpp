@@ -3,12 +3,15 @@
 #include "sappp/common.hpp"
 #include "sappp/schema_validate.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <ranges>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -105,6 +108,23 @@ std::string exception_flow_source()
            "}\n";
 }
 
+std::string vcall_source()
+{
+    return "struct Base {\n"
+           "  virtual int value() { return 1; }\n"
+           "  virtual ~Base() = default;\n"
+           "};\n"
+           "struct Derived : Base {\n"
+           "  int value() override { return 2; }\n"
+           "};\n"
+           "int main() {\n"
+           "  Base* ptr = new Derived();\n"
+           "  int out = ptr->value();\n"
+           "  delete ptr;\n"
+           "  return out;\n"
+           "}\n";
+}
+
 void write_source_file(const std::filesystem::path& path, const std::string& contents)
 {
     std::ofstream source_file(path);
@@ -174,6 +194,42 @@ std::unordered_set<std::string> collect_edge_kinds(const nlohmann::json& nir)
         }
     }
     return kinds;
+}
+
+bool block_has_vcall(const nlohmann::json& block)
+{
+    return std::ranges::any_of(block.at("insts"), [](const auto& inst) {
+        return inst.at("op").template get<std::string>() == "vcall";
+    });
+}
+
+const nlohmann::json* find_function_with_vcall(const nlohmann::json& nir)
+{
+    for (const auto& func : nir.at("functions")) {
+        const auto& blocks = func.at("cfg").at("blocks");
+        if (std::ranges::any_of(blocks, block_has_vcall)) {
+            return &func;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<nlohmann::json> collect_vcall_insts(const nlohmann::json& func)
+{
+    std::vector<nlohmann::json> insts;
+    for (const auto& block : func.at("cfg").at("blocks")) {
+        for (const auto& inst : block.at("insts")) {
+            if (inst.at("op").get<std::string>() == "vcall") {
+                insts.push_back(inst);
+            }
+        }
+    }
+    return insts;
+}
+
+bool is_sorted_strings(const std::vector<std::string>& values)
+{
+    return std::ranges::is_sorted(values);
 }
 
 }  // namespace
@@ -294,6 +350,56 @@ TEST(FrontendClangTest, EmitsLifetimeAndCtorEvents)
     EXPECT_NE(ops.find("ctor"), ops.end());
     EXPECT_NE(ops.find("dtor"), ops.end());
     EXPECT_NE(ops.find("move"), ops.end());
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsVirtualCallCandidates)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir = std::filesystem::temp_directory_path()
+                                     / ("sappp_frontend_vcall_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, vcall_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    const nlohmann::json* vcall_func = find_function_with_vcall(result->nir);
+    ASSERT_NE(vcall_func, nullptr);
+
+    auto vcall_insts = collect_vcall_insts(*vcall_func);
+    ASSERT_FALSE(vcall_insts.empty());
+
+    ASSERT_TRUE(vcall_func->contains("tables"));
+    ASSERT_TRUE(vcall_func->at("tables").contains("vcall_candidates"));
+    const auto& candidate_sets = vcall_func->at("tables").at("vcall_candidates");
+    ASSERT_TRUE(candidate_sets.is_array());
+    ASSERT_FALSE(candidate_sets.empty());
+
+    const auto& vcall_inst = vcall_insts.front();
+    ASSERT_TRUE(vcall_inst.contains("args"));
+    const auto& args = vcall_inst.at("args");
+    ASSERT_GE(args.size(), 2U);
+    const std::string candidate_id = args.at(1).get<std::string>();
+
+    auto candidate_it = std::ranges::find_if(candidate_sets, [&](const auto& candidate_set) {
+        return candidate_set.at("id").template get<std::string>() == candidate_id;
+    });
+    ASSERT_NE(candidate_it, candidate_sets.end());
+    ASSERT_TRUE(candidate_it->contains("methods"));
+    const auto& methods_json = candidate_it->at("methods");
+    ASSERT_TRUE(methods_json.is_array());
+    ASSERT_FALSE(methods_json.empty());
+
+    std::vector<std::string> methods = methods_json.get<std::vector<std::string>>();
+    EXPECT_TRUE(is_sorted_strings(methods));
 
     std::filesystem::remove_all(temp_dir);
 }

@@ -48,11 +48,23 @@ struct Cfg
     std::vector<Edge> edges;
 };
 
+struct VCallCandidateSet
+{
+    std::string id;
+    std::vector<std::string> methods;
+};
+
+struct FunctionTables
+{
+    std::vector<VCallCandidateSet> vcall_candidates;
+};
+
 struct FunctionDef
 {
     std::string function_uid;
     std::string mangled_name;
     Cfg cfg;
+    std::optional<FunctionTables> tables;
 };
 
 struct Nir
@@ -117,6 +129,21 @@ inline void to_json(nlohmann::json& j, const Cfg& cfg)
     };
 }
 
+inline void to_json(nlohmann::json& j, const VCallCandidateSet& candidate_set)
+{
+    j = nlohmann::json{
+        {     "id",      candidate_set.id},
+        {"methods", candidate_set.methods}
+    };
+}
+
+inline void to_json(nlohmann::json& j, const FunctionTables& tables)
+{
+    j = nlohmann::json{
+        {"vcall_candidates", tables.vcall_candidates}
+    };
+}
+
 inline void to_json(nlohmann::json& j, const FunctionDef& func)
 {
     j = nlohmann::json{
@@ -124,6 +151,9 @@ inline void to_json(nlohmann::json& j, const FunctionDef& func)
         {"mangled_name", func.mangled_name},
         {         "cfg",          func.cfg}
     };
+    if (func.tables.has_value() && !func.tables->vcall_candidates.empty()) {
+        j["tables"] = *func.tables;
+    }
 }
 
 inline void to_json(nlohmann::json& j, const Nir& nir)
