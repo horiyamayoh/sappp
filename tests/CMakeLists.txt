@@ -22,6 +22,7 @@ set(SAPPP_QUICK_LABELS
     determinism
     po
     report
+    specdb
     schemas
     validator
 )
@@ -63,6 +64,9 @@ add_subdirectory(end_to_end)
 
 # PO generator tests
 add_subdirectory(po)
+
+# SpecDB tests
+add_subdirectory(specdb)
 
 # Validator tests
 add_subdirectory(validator)
