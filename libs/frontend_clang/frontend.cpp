@@ -1143,7 +1143,12 @@ class MethodCollector final : public clang::RecursiveASTVisitor<MethodCollector>
 public:
     bool VisitCXXMethodDecl(clang::CXXMethodDecl* decl)
     {
-        if (decl != nullptr && decl->isVirtual()) {
+        if (decl == nullptr || !decl->isVirtual()) {
+            return true;
+        }
+
+        const auto& source_manager = decl->getASTContext().getSourceManager();
+        if (source_manager.isWrittenInMainFile(decl->getLocation())) {
             m_methods.push_back(decl);
         }
         return true;
