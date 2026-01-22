@@ -23,6 +23,7 @@
 #include "sappp/common.hpp"
 #include "sappp/report.hpp"
 #include "sappp/schema_validate.hpp"
+#include "sappp/specdb.hpp"
 #include "sappp/validator.hpp"
 #include "sappp/version.hpp"
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
@@ -137,7 +138,7 @@ Run static analysis on captured build
 
 Options:
   --build FILE              Path to build_snapshot.json (required)
-  --spec FILE               Path to Spec DB snapshot
+  --spec PATH               Path to Spec DB snapshot or directory
   --out DIR, -o             Output directory (required)
   --jobs N, -j N            Number of parallel jobs
   --schema-dir DIR          Path to schema directory (default: ./schemas)
@@ -787,36 +788,19 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     return config_json;
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> load_specdb_snapshot(const AnalyzeOptions& options,
-                                                                 std::string_view generated_at)
+[[nodiscard]] sappp::Result<nlohmann::json>
+load_specdb_snapshot(const AnalyzeOptions& options,
+                     std::string_view generated_at,
+                     const nlohmann::json& build_snapshot)
 {
-    std::filesystem::path schema_dir(options.schema_dir);
-    const auto schema_path = (schema_dir / "specdb_snapshot.v1.schema.json").string();
-    if (!options.spec.empty()) {
-        auto snapshot_json = read_json_file(options.spec);
-        if (!snapshot_json) {
-            return std::unexpected(snapshot_json.error());
-        }
-        if (auto validation = sappp::common::validate_json(*snapshot_json, schema_path);
-            !validation) {
-            return std::unexpected(validation.error());
-        }
-        return *snapshot_json;
-    }
-
     std::string resolved_generated_at =
         generated_at.empty() ? std::string(kDeterministicGeneratedAt) : std::string(generated_at);
-    nlohmann::json snapshot_json = {
-        {"schema_version",    "specdb_snapshot.v1"},
-        {          "tool",    tool_metadata_json()},
-        {  "generated_at",   resolved_generated_at},
-        {     "contracts", nlohmann::json::array()}
-    };
-
-    if (auto validation = sappp::common::validate_json(snapshot_json, schema_path); !validation) {
-        return std::unexpected(validation.error());
-    }
-    return snapshot_json;
+    sappp::specdb::BuildOptions specdb_options{.build_snapshot = build_snapshot,
+                                               .spec_path = options.spec,
+                                               .schema_dir = options.schema_dir,
+                                               .generated_at = resolved_generated_at,
+                                               .tool = tool_metadata_json()};
+    return sappp::specdb::build_snapshot(specdb_options);
 }
 
 [[nodiscard]] sappp::VoidResult write_analysis_config_output(const AnalyzePaths& paths,
@@ -836,9 +820,10 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
 
 [[nodiscard]] sappp::VoidResult write_specdb_snapshot_output(const AnalyzePaths& paths,
                                                              const AnalyzeOptions& options,
-                                                             std::string_view generated_at)
+                                                             std::string_view generated_at,
+                                                             const nlohmann::json& build_snapshot)
 {
-    auto specdb_snapshot = load_specdb_snapshot(options, generated_at);
+    auto specdb_snapshot = load_specdb_snapshot(options, generated_at, build_snapshot);
     if (!specdb_snapshot) {
         return std::unexpected(specdb_snapshot.error());
     }
@@ -1636,7 +1621,8 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
         std::println(stderr, "Error: analysis_config failed: {}", write_result.error().message);
         return exit_code_for_error(write_result.error());
     }
-    if (auto write_result = write_specdb_snapshot_output(*paths, options, generated_at);
+    if (auto write_result =
+            write_specdb_snapshot_output(*paths, options, generated_at, *snapshot_json);
         !write_result) {
         std::println(stderr, "Error: specdb snapshot failed: {}", write_result.error().message);
         return exit_code_for_error(write_result.error());
