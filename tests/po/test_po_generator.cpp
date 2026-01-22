@@ -184,4 +184,56 @@ TEST(PoGeneratorTest, SinkMarkerGeneratesPo)
     EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "sink.marker");
 }
 
+TEST(PoGeneratorTest, UbShiftKindMapsToPoKind)
+{
+    std::filesystem::path source_path = write_temp_source("ub_shift");
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "ub.check", nlohmann::json::array({"shift", true}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "UB.Shift");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "ub.check");
+}
+
+TEST(PoGeneratorTest, SinkMarkerMapsUninitRead)
+{
+    std::filesystem::path source_path = write_temp_source("uninit_read");
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "sink.marker", nlohmann::json::array({"uninit_read"}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "UninitRead");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "sink.marker");
+}
+
+TEST(PoGeneratorTest, LifetimeOpWithKindGeneratesPo)
+{
+    std::filesystem::path source_path = write_temp_source("lifetime_use_after");
+    nlohmann::json nir = build_minimal_nir(source_path,
+                                           "lifetime.end",
+                                           nlohmann::json::array({"use-after-lifetime"}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "UseAfterLifetime");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "lifetime.end");
+}
+
 }  // namespace sappp::po::tests
