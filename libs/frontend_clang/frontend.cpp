@@ -28,6 +28,7 @@
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
 #include <clang/AST/Mangle.h>
+#include <clang/AST/Type.h>
 #include <clang/Analysis/CFG.h>
 #include <clang/Basic/SourceManager.h>
 #include <clang/Frontend/CompilerInstance.h>
@@ -171,34 +172,6 @@ std::optional<ir::Location> make_decl_location(const clang::Decl* decl,
     return make_location({.source_manager = source_manager, .loc = decl->getLocation()});
 }
 
-std::string classify_stmt(const clang::Stmt* stmt)
-{
-    if (clang::isa<clang::ReturnStmt>(stmt)) {
-        return "ret";
-    }
-    if (clang::isa<clang::CallExpr>(stmt) || clang::isa<clang::CXXMemberCallExpr>(stmt)
-        || clang::isa<clang::CXXConstructExpr>(stmt)
-        || clang::isa<clang::CXXOperatorCallExpr>(stmt)) {
-        return "call";
-    }
-    if (const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(stmt)) {
-        if (bin_op->isAssignmentOp()) {
-            return "store";
-        }
-    }
-    if (const auto* decl_stmt = clang::dyn_cast<clang::DeclStmt>(stmt)) {
-        for (const auto* decl : decl_stmt->decls()) {
-            if (clang::isa<clang::VarDecl>(decl)) {
-                return "assign";
-            }
-        }
-    }
-    if (clang::isa<clang::DeclRefExpr>(stmt) || clang::isa<clang::MemberExpr>(stmt)) {
-        return "load";
-    }
-    return "stmt";
-}
-
 std::string describe_var(const clang::VarDecl* var_decl)
 {
     if (var_decl == nullptr) {
@@ -226,6 +199,14 @@ std::string describe_ctor(const clang::CXXConstructorDecl* ctor_decl)
     return ctor_decl->getQualifiedNameAsString();
 }
 
+std::string describe_catch_type(const clang::CXXCatchStmt* catch_stmt)
+{
+    if (catch_stmt == nullptr || catch_stmt->getCaughtType().isNull()) {
+        return "...";
+    }
+    return catch_stmt->getCaughtType().getAsString();
+}
+
 void traverse_stmt_preorder(const clang::Stmt* stmt,
                             const std::function<void(const clang::Stmt*)>& visitor)
 {
@@ -238,6 +219,149 @@ void traverse_stmt_preorder(const clang::Stmt* stmt,
             traverse_stmt_preorder(child, visitor);
         }
     }
+}
+
+bool is_nothrow_function_type(const clang::FunctionProtoType* proto)
+{
+    if (proto == nullptr) {
+        return false;
+    }
+    return proto->canThrow() == clang::CT_Cannot;
+}
+
+bool call_can_throw(const clang::CallExpr* call_expr)
+{
+    if (call_expr == nullptr) {
+        return false;
+    }
+    const auto* callee = call_expr->getDirectCallee();
+    if (callee == nullptr) {
+        return true;
+    }
+    const auto* proto = callee->getType()->getAs<clang::FunctionProtoType>();
+    return !is_nothrow_function_type(proto);
+}
+
+bool ctor_can_throw(const clang::CXXConstructExpr* ctor_expr)
+{
+    if (ctor_expr == nullptr) {
+        return false;
+    }
+    const auto* ctor_decl = ctor_expr->getConstructor();
+    if (ctor_decl == nullptr) {
+        return true;
+    }
+    const auto* proto = ctor_decl->getType()->getAs<clang::FunctionProtoType>();
+    return !is_nothrow_function_type(proto);
+}
+
+struct ClassifiedStmt
+{
+    std::string op;
+    std::vector<nlohmann::json> args;
+};
+
+std::optional<ClassifiedStmt> classify_return_stmt(const clang::Stmt* stmt)
+{
+    if (clang::isa<clang::ReturnStmt>(stmt)) {
+        return ClassifiedStmt{.op = "ret", .args = {}};
+    }
+    return std::nullopt;
+}
+
+std::optional<ClassifiedStmt> classify_throw_stmt(const clang::Stmt* stmt)
+{
+    const auto* throw_expr = clang::dyn_cast<clang::CXXThrowExpr>(stmt);
+    if (throw_expr == nullptr) {
+        return std::nullopt;
+    }
+    if (throw_expr->getSubExpr() == nullptr) {
+        return ClassifiedStmt{.op = "resume", .args = {}};
+    }
+    return ClassifiedStmt{
+        .op = "throw",
+        .args = {nlohmann::json(throw_expr->getSubExpr()->getType().getAsString())}};
+}
+
+std::optional<ClassifiedStmt> classify_catch_stmt(const clang::Stmt* stmt)
+{
+    const auto* catch_stmt = clang::dyn_cast<clang::CXXCatchStmt>(stmt);
+    if (catch_stmt == nullptr) {
+        return std::nullopt;
+    }
+    return ClassifiedStmt{.op = "landingpad",
+                          .args = {nlohmann::json(describe_catch_type(catch_stmt))}};
+}
+
+std::optional<ClassifiedStmt> classify_call_stmt(const clang::Stmt* stmt)
+{
+    if (const auto* call_expr = clang::dyn_cast<clang::CallExpr>(stmt)) {
+        return ClassifiedStmt{.op = call_can_throw(call_expr) ? "invoke" : "call", .args = {}};
+    }
+    if (const auto* ctor_expr = clang::dyn_cast<clang::CXXConstructExpr>(stmt)) {
+        return ClassifiedStmt{.op = ctor_can_throw(ctor_expr) ? "invoke" : "call", .args = {}};
+    }
+    return std::nullopt;
+}
+
+std::optional<ClassifiedStmt> classify_store_stmt(const clang::Stmt* stmt)
+{
+    const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(stmt);
+    if (bin_op != nullptr && bin_op->isAssignmentOp()) {
+        return ClassifiedStmt{.op = "store", .args = {}};
+    }
+    return std::nullopt;
+}
+
+std::optional<ClassifiedStmt> classify_assign_stmt(const clang::Stmt* stmt)
+{
+    const auto* decl_stmt = clang::dyn_cast<clang::DeclStmt>(stmt);
+    if (decl_stmt == nullptr) {
+        return std::nullopt;
+    }
+    for (const auto* decl : decl_stmt->decls()) {
+        if (clang::isa<clang::VarDecl>(decl)) {
+            return ClassifiedStmt{.op = "assign", .args = {}};
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<ClassifiedStmt> classify_load_stmt(const clang::Stmt* stmt)
+{
+    if (clang::isa<clang::DeclRefExpr>(stmt) || clang::isa<clang::MemberExpr>(stmt)) {
+        return ClassifiedStmt{.op = "load", .args = {}};
+    }
+    return std::nullopt;
+}
+
+ClassifiedStmt classify_stmt(const clang::Stmt* stmt)
+{
+    if (stmt == nullptr) {
+        return ClassifiedStmt{.op = "stmt", .args = {}};
+    }
+    if (auto classified = classify_return_stmt(stmt)) {
+        return *classified;
+    }
+    if (auto classified = classify_throw_stmt(stmt)) {
+        return *classified;
+    }
+    if (auto classified = classify_catch_stmt(stmt)) {
+        return *classified;
+    }
+    if (auto classified = classify_call_stmt(stmt)) {
+        return *classified;
+    }
+    if (auto classified = classify_store_stmt(stmt)) {
+        return *classified;
+    }
+    if (auto classified = classify_assign_stmt(stmt)) {
+        return *classified;
+    }
+    if (auto classified = classify_load_stmt(stmt)) {
+        return *classified;
+    }
+    return ClassifiedStmt{.op = "stmt", .args = {}};
 }
 
 /**
@@ -391,6 +515,63 @@ struct BlockInstructionContext
     ir::BasicBlock* nir_block = nullptr;
 };
 
+enum class ExceptionFlowKind { kNone, kInvoke, kThrow };
+
+bool stmt_has_throw(const clang::Stmt* stmt)
+{
+    bool found = false;
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        if (!found && clang::isa<clang::CXXThrowExpr>(node)) {
+            found = true;
+        }
+    });
+    return found;
+}
+
+bool stmt_has_throwing_call(const clang::Stmt* stmt)
+{
+    bool found = false;
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        if (found) {
+            return;
+        }
+        if (const auto* call_expr = clang::dyn_cast<clang::CallExpr>(node)) {
+            found = call_can_throw(call_expr);
+            return;
+        }
+        if (const auto* ctor_expr = clang::dyn_cast<clang::CXXConstructExpr>(node)) {
+            found = ctor_can_throw(ctor_expr);
+        }
+    });
+    return found;
+}
+
+ExceptionFlowKind classify_exception_flow(const clang::CFGBlock* block)
+{
+    bool has_throw = false;
+    bool has_invoke = false;
+
+    for (const auto& element : *block) {
+        if (const auto stmt_elem = element.getAs<clang::CFGStmt>()) {
+            const clang::Stmt* stmt = stmt_elem->getStmt();
+            if (!has_throw && stmt_has_throw(stmt)) {
+                has_throw = true;
+            }
+            if (!has_invoke && stmt_has_throwing_call(stmt)) {
+                has_invoke = true;
+            }
+        }
+    }
+
+    if (has_throw) {
+        return ExceptionFlowKind::kThrow;
+    }
+    if (has_invoke) {
+        return ExceptionFlowKind::kInvoke;
+    }
+    return ExceptionFlowKind::kNone;
+}
+
 void append_simple_instruction(const BlockInstructionContext& context,
                                int& inst_index,
                                std::string_view op,
@@ -488,110 +669,167 @@ void append_ctor_instructions_for_stmt(const clang::Stmt* stmt,
     });
 }
 
+void append_cfg_stmt_element(const clang::CFGStmt& stmt_elem,
+                             const BlockInstructionContext& context,
+                             int& inst_index)
+{
+    const clang::Stmt* stmt = stmt_elem.getStmt();
+    append_lifetime_begin_for_stmt(stmt, context, inst_index);
+    auto classified = classify_stmt(stmt);
+    ir::Instruction inst;
+    inst.id = "I" + std::to_string(inst_index++);
+    inst.op = std::move(classified.op);
+    inst.args = std::move(classified.args);
+    inst.src =
+        make_location({.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
+    append_instruction(*context.nir_block,
+                       *context.function_uid,
+                       *context.block_id,
+                       std::move(inst),
+                       *context.source_entries);
+    append_ctor_instructions_for_stmt(stmt, context, inst_index);
+    for (const auto& sink_kind : detect_sink_markers(stmt)) {
+        ir::Instruction sink_inst;
+        sink_inst.id = "I" + std::to_string(inst_index++);
+        sink_inst.op = "sink.marker";
+        sink_inst.args = {nlohmann::json(sink_kind)};
+        sink_inst.src =
+            make_location({.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
+        append_instruction(*context.nir_block,
+                           *context.function_uid,
+                           *context.block_id,
+                           std::move(sink_inst),
+                           *context.source_entries);
+    }
+}
+
+void append_lifetime_end_element(const clang::CFGLifetimeEnds& lifetime_end,
+                                 const BlockInstructionContext& context,
+                                 int& inst_index)
+{
+    const auto* var_decl = lifetime_end.getVarDecl();
+    append_simple_instruction(context,
+                              inst_index,
+                              "lifetime.end",
+                              {nlohmann::json(describe_var(var_decl))},
+                              make_location({.source_manager = context.source_manager,
+                                             .loc = lifetime_end.getTriggerStmt() != nullptr
+                                                        ? lifetime_end.getTriggerStmt()->getEndLoc()
+                                                        : clang::SourceLocation()}));
+}
+
+void append_auto_dtor_element(const clang::CFGAutomaticObjDtor& auto_dtor,
+                              const BlockInstructionContext& context,
+                              int& inst_index)
+{
+    const auto* var_decl = auto_dtor.getVarDecl();
+    append_simple_instruction(context,
+                              inst_index,
+                              "dtor",
+                              {nlohmann::json(describe_var(var_decl))},
+                              make_location({.source_manager = context.source_manager,
+                                             .loc = auto_dtor.getTriggerStmt() != nullptr
+                                                        ? auto_dtor.getTriggerStmt()->getEndLoc()
+                                                        : clang::SourceLocation()}));
+}
+
+void append_temp_dtor_element(const clang::CFGTemporaryDtor& temp_dtor,
+                              const BlockInstructionContext& context,
+                              int& inst_index)
+{
+    const auto* temp_expr = temp_dtor.getBindTemporaryExpr();
+    append_simple_instruction(
+        context,
+        inst_index,
+        "dtor",
+        {nlohmann::json(
+            describe_temporary(temp_expr != nullptr ? temp_expr->getSubExpr() : nullptr))},
+        make_location(
+            {.source_manager = context.source_manager,
+             .loc = temp_expr != nullptr ? temp_expr->getBeginLoc() : clang::SourceLocation()}));
+    append_simple_instruction(
+        context,
+        inst_index,
+        "lifetime.end",
+        {nlohmann::json(
+            describe_temporary(temp_expr != nullptr ? temp_expr->getSubExpr() : nullptr))},
+        make_location(
+            {.source_manager = context.source_manager,
+             .loc = temp_expr != nullptr ? temp_expr->getEndLoc() : clang::SourceLocation()}));
+}
+
+void append_base_dtor_element(const clang::CFGBaseDtor& base_dtor,
+                              const BlockInstructionContext& context,
+                              int& inst_index)
+{
+    const auto* base_specifier = base_dtor.getBaseSpecifier();
+    std::string label =
+        base_specifier != nullptr ? base_specifier->getType().getAsString() : "base";
+    append_simple_instruction(context, inst_index, "dtor", {nlohmann::json(label)}, std::nullopt);
+}
+
+void append_member_dtor_element(const clang::CFGMemberDtor& member_dtor,
+                                const BlockInstructionContext& context,
+                                int& inst_index)
+{
+    const auto* field_decl = member_dtor.getFieldDecl();
+    std::string label = field_decl != nullptr ? field_decl->getNameAsString() : "member";
+    append_simple_instruction(context,
+                              inst_index,
+                              "dtor",
+                              {nlohmann::json(label)},
+                              make_decl_location(field_decl, context.source_manager));
+}
+
+void append_delete_dtor_element(const clang::CFGDeleteDtor& delete_dtor,
+                                const BlockInstructionContext& context,
+                                int& inst_index)
+{
+    const auto* delete_expr = delete_dtor.getDeleteExpr();
+    std::string label = delete_dtor.getCXXRecordDecl() != nullptr
+                            ? delete_dtor.getCXXRecordDecl()->getQualifiedNameAsString()
+                            : "delete";
+    append_simple_instruction(
+        context,
+        inst_index,
+        "dtor",
+        {nlohmann::json(label)},
+        make_location({.source_manager = context.source_manager,
+                       .loc = delete_expr != nullptr ? delete_expr->getBeginLoc()
+                                                     : clang::SourceLocation()}));
+}
+
 void append_stmt_instructions(const clang::CFGBlock* block,
                               const BlockInstructionContext& context,
                               int& inst_index)
 {
     for (const auto& element : *block) {
         if (const auto stmt_elem = element.getAs<clang::CFGStmt>()) {
-            const clang::Stmt* stmt = stmt_elem->getStmt();
-            append_lifetime_begin_for_stmt(stmt, context, inst_index);
-            ir::Instruction inst;
-            inst.id = "I" + std::to_string(inst_index++);
-            inst.op = classify_stmt(stmt);
-            inst.src = make_location(
-                {.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
-            append_instruction(*context.nir_block,
-                               *context.function_uid,
-                               *context.block_id,
-                               std::move(inst),
-                               *context.source_entries);
-            append_ctor_instructions_for_stmt(stmt, context, inst_index);
-            for (const auto& sink_kind : detect_sink_markers(stmt)) {
-                ir::Instruction sink_inst;
-                sink_inst.id = "I" + std::to_string(inst_index++);
-                sink_inst.op = "sink.marker";
-                sink_inst.args = {nlohmann::json(sink_kind)};
-                sink_inst.src = make_location(
-                    {.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
-                append_instruction(*context.nir_block,
-                                   *context.function_uid,
-                                   *context.block_id,
-                                   std::move(sink_inst),
-                                   *context.source_entries);
-            }
-        } else if (const auto lifetime_end = element.getAs<clang::CFGLifetimeEnds>()) {
-            const auto* var_decl = lifetime_end->getVarDecl();
-            append_simple_instruction(
-                context,
-                inst_index,
-                "lifetime.end",
-                {nlohmann::json(describe_var(var_decl))},
-                make_location({.source_manager = context.source_manager,
-                               .loc = lifetime_end->getTriggerStmt() != nullptr
-                                          ? lifetime_end->getTriggerStmt()->getEndLoc()
-                                          : clang::SourceLocation()}));
-        } else if (const auto auto_dtor = element.getAs<clang::CFGAutomaticObjDtor>()) {
-            const auto* var_decl = auto_dtor->getVarDecl();
-            append_simple_instruction(
-                context,
-                inst_index,
-                "dtor",
-                {nlohmann::json(describe_var(var_decl))},
-                make_location({.source_manager = context.source_manager,
-                               .loc = auto_dtor->getTriggerStmt() != nullptr
-                                          ? auto_dtor->getTriggerStmt()->getEndLoc()
-                                          : clang::SourceLocation()}));
-        } else if (const auto temp_dtor = element.getAs<clang::CFGTemporaryDtor>()) {
-            const auto* temp_expr = temp_dtor->getBindTemporaryExpr();
-            append_simple_instruction(
-                context,
-                inst_index,
-                "dtor",
-                {nlohmann::json(
-                    describe_temporary(temp_expr != nullptr ? temp_expr->getSubExpr() : nullptr))},
-                make_location({.source_manager = context.source_manager,
-                               .loc = temp_expr != nullptr ? temp_expr->getBeginLoc()
-                                                           : clang::SourceLocation()}));
-            append_simple_instruction(
-                context,
-                inst_index,
-                "lifetime.end",
-                {nlohmann::json(
-                    describe_temporary(temp_expr != nullptr ? temp_expr->getSubExpr() : nullptr))},
-                make_location({.source_manager = context.source_manager,
-                               .loc = temp_expr != nullptr ? temp_expr->getEndLoc()
-                                                           : clang::SourceLocation()}));
-        } else if (const auto base_dtor = element.getAs<clang::CFGBaseDtor>()) {
-            const auto* base_specifier = base_dtor->getBaseSpecifier();
-            std::string label =
-                base_specifier != nullptr ? base_specifier->getType().getAsString() : "base";
-            append_simple_instruction(context,
-                                      inst_index,
-                                      "dtor",
-                                      {nlohmann::json(label)},
-                                      std::nullopt);
-        } else if (const auto member_dtor = element.getAs<clang::CFGMemberDtor>()) {
-            const auto* field_decl = member_dtor->getFieldDecl();
-            std::string label = field_decl != nullptr ? field_decl->getNameAsString() : "member";
-            append_simple_instruction(context,
-                                      inst_index,
-                                      "dtor",
-                                      {nlohmann::json(label)},
-                                      make_decl_location(field_decl, context.source_manager));
-        } else if (const auto delete_dtor = element.getAs<clang::CFGDeleteDtor>()) {
-            const auto* delete_expr = delete_dtor->getDeleteExpr();
-            std::string label = delete_dtor->getCXXRecordDecl() != nullptr
-                                    ? delete_dtor->getCXXRecordDecl()->getQualifiedNameAsString()
-                                    : "delete";
-            append_simple_instruction(
-                context,
-                inst_index,
-                "dtor",
-                {nlohmann::json(label)},
-                make_location({.source_manager = context.source_manager,
-                               .loc = delete_expr != nullptr ? delete_expr->getBeginLoc()
-                                                             : clang::SourceLocation()}));
+            append_cfg_stmt_element(*stmt_elem, context, inst_index);
+            continue;
+        }
+        if (const auto lifetime_end = element.getAs<clang::CFGLifetimeEnds>()) {
+            append_lifetime_end_element(*lifetime_end, context, inst_index);
+            continue;
+        }
+        if (const auto auto_dtor = element.getAs<clang::CFGAutomaticObjDtor>()) {
+            append_auto_dtor_element(*auto_dtor, context, inst_index);
+            continue;
+        }
+        if (const auto temp_dtor = element.getAs<clang::CFGTemporaryDtor>()) {
+            append_temp_dtor_element(*temp_dtor, context, inst_index);
+            continue;
+        }
+        if (const auto base_dtor = element.getAs<clang::CFGBaseDtor>()) {
+            append_base_dtor_element(*base_dtor, context, inst_index);
+            continue;
+        }
+        if (const auto member_dtor = element.getAs<clang::CFGMemberDtor>()) {
+            append_member_dtor_element(*member_dtor, context, inst_index);
+            continue;
+        }
+        if (const auto delete_dtor = element.getAs<clang::CFGDeleteDtor>()) {
+            append_delete_dtor_element(*delete_dtor, context, inst_index);
         }
     }
 }
@@ -625,11 +863,22 @@ void append_block_instructions(const clang::CFGBlock* block, const BlockInstruct
     append_terminator_instruction(block, context, inst_index);
 }
 
-void append_block_edges(const clang::CFGBlock* block,
-                        const std::unordered_map<const clang::CFGBlock*, std::string>& block_ids,
-                        std::vector<ir::Edge>& edges)
+void append_block_edges(
+    const clang::CFGBlock* block,
+    const std::unordered_map<const clang::CFGBlock*, std::string>& block_ids,
+    const std::unordered_map<const clang::CFGBlock*, ExceptionFlowKind>& exception_flows,
+    std::vector<ir::Edge>& edges)
 {
     int succ_index = 0;
+    int normal_index = 0;
+    const auto total_succs = static_cast<int>(block->succ_size());
+    const auto exception_flow = exception_flows.at(block);
+    int exception_start_index = -1;
+    if (exception_flow == ExceptionFlowKind::kThrow) {
+        exception_start_index = 0;
+    } else if (exception_flow == ExceptionFlowKind::kInvoke && total_succs > 1) {
+        exception_start_index = total_succs - 1;
+    }
     for (const auto& succ : block->succs()) {
         const clang::CFGBlock* succ_block = succ.getReachableBlock();
         if (succ_block == nullptr) {
@@ -639,7 +888,12 @@ void append_block_edges(const clang::CFGBlock* block,
         ir::Edge edge;
         edge.from = block_ids.at(block);
         edge.to = block_ids.at(succ_block);
-        edge.kind = "succ" + std::to_string(succ_index++);
+        if (exception_start_index >= 0 && succ_index >= exception_start_index) {
+            edge.kind = "exception";
+        } else {
+            edge.kind = "succ" + std::to_string(normal_index++);
+        }
+        ++succ_index;
         edges.push_back(std::move(edge));
     }
 }
@@ -654,6 +908,11 @@ void append_block_edges(const clang::CFGBlock* block,
 {
     auto blocks = collect_blocks(cfg);
     auto block_ids = assign_block_ids(blocks);
+    std::unordered_map<const clang::CFGBlock*, ExceptionFlowKind> exception_flows;
+    exception_flows.reserve(blocks.size());
+    for (const auto* block : blocks) {
+        exception_flows[block] = classify_exception_flow(block);
+    }
 
     const clang::CFGBlock* entry_block = &cfg.getEntry();
     ir::Cfg nir_cfg;
@@ -674,7 +933,7 @@ void append_block_edges(const clang::CFGBlock* block,
                                         .nir_block = &nir_block};
         append_block_instructions(block, context);
         nir_cfg.blocks.push_back(std::move(nir_block));
-        append_block_edges(block, block_ids, edges);
+        append_block_edges(block, block_ids, exception_flows, edges);
     }
 
     std::ranges::stable_sort(nir_cfg.blocks, [](const ir::BasicBlock& a, const ir::BasicBlock& b) {
@@ -706,6 +965,7 @@ build_function_def(const clang::FunctionDecl* func_decl,
 
     clang::CFG::BuildOptions cfg_options;
     cfg_options.AddImplicitDtors = true;
+    cfg_options.AddEHEdges = true;
     cfg_options.AddLifetime = true;
     cfg_options.AddScopes = true;
     cfg_options.AddTemporaryDtors = true;

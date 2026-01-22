@@ -88,6 +88,23 @@ std::string lifetime_source()
            "}\n";
 }
 
+std::string exception_flow_source()
+{
+    return "struct Widget {\n"
+           "  ~Widget() {}\n"
+           "};\n"
+           "void may_throw();\n"
+           "int main() {\n"
+           "  try {\n"
+           "    Widget w;\n"
+           "    may_throw();\n"
+           "    throw 1;\n"
+           "  } catch (...) {\n"
+           "    throw;\n"
+           "  }\n"
+           "}\n";
+}
+
 void write_source_file(const std::filesystem::path& path, const std::string& contents)
 {
     std::ofstream source_file(path);
@@ -146,6 +163,17 @@ std::unordered_set<std::string> collect_ops(const nlohmann::json& nir)
         }
     }
     return ops;
+}
+
+std::unordered_set<std::string> collect_edge_kinds(const nlohmann::json& nir)
+{
+    std::unordered_set<std::string> kinds;
+    for (const auto& func : nir.at("functions")) {
+        for (const auto& edge : func.at("cfg").at("edges")) {
+            kinds.insert(edge.at("kind").get<std::string>());
+        }
+    }
+    return kinds;
 }
 
 }  // namespace
@@ -208,6 +236,36 @@ TEST(FrontendClangTest, EmitsSinkMarkersForPotentialUb)
     EXPECT_NE(sink_kinds.find("div0"), sink_kinds.end());
     EXPECT_NE(sink_kinds.find("null"), sink_kinds.end());
     EXPECT_NE(sink_kinds.find("oob"), sink_kinds.end());
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsExceptionFlowLowering)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir =
+        std::filesystem::temp_directory_path()
+        / ("sappp_frontend_exception_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, exception_flow_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    std::unordered_set<std::string> ops = collect_ops(result->nir);
+    std::unordered_set<std::string> edge_kinds = collect_edge_kinds(result->nir);
+
+    EXPECT_NE(ops.find("invoke"), ops.end());
+    EXPECT_NE(ops.find("throw"), ops.end());
+    EXPECT_NE(ops.find("landingpad"), ops.end());
+    EXPECT_NE(ops.find("resume"), ops.end());
+    EXPECT_NE(edge_kinds.find("exception"), edge_kinds.end());
 
     std::filesystem::remove_all(temp_dir);
 }
