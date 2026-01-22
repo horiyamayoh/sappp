@@ -70,6 +70,24 @@ std::string sink_marker_source()
            "}\n";
 }
 
+std::string lifetime_source()
+{
+    return "#include <utility>\n"
+           "struct Widget {\n"
+           "  Widget() {}\n"
+           "  Widget(Widget&&) {}\n"
+           "  ~Widget() {}\n"
+           "};\n"
+           "int main() {\n"
+           "  Widget w;\n"
+           "  Widget w2;\n"
+           "  Widget w3(std::move(w2));\n"
+           "  const Widget& w4 = Widget{};\n"
+           "  (void)w4;\n"
+           "  return 0;\n"
+           "}\n";
+}
+
 void write_source_file(const std::filesystem::path& path, const std::string& contents)
 {
     std::ofstream source_file(path);
@@ -115,6 +133,19 @@ std::unordered_set<std::string> collect_sink_kinds(const nlohmann::json& nir)
         collect_sink_kinds_from_function(func, sink_kinds);
     }
     return sink_kinds;
+}
+
+std::unordered_set<std::string> collect_ops(const nlohmann::json& nir)
+{
+    std::unordered_set<std::string> ops;
+    for (const auto& func : nir.at("functions")) {
+        for (const auto& block : func.at("cfg").at("blocks")) {
+            for (const auto& inst : block.at("insts")) {
+                ops.insert(inst.at("op").get<std::string>());
+            }
+        }
+    }
+    return ops;
 }
 
 }  // namespace
@@ -177,6 +208,34 @@ TEST(FrontendClangTest, EmitsSinkMarkersForPotentialUb)
     EXPECT_NE(sink_kinds.find("div0"), sink_kinds.end());
     EXPECT_NE(sink_kinds.find("null"), sink_kinds.end());
     EXPECT_NE(sink_kinds.find("oob"), sink_kinds.end());
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsLifetimeAndCtorEvents)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir = std::filesystem::temp_directory_path()
+                                     / ("sappp_frontend_lifetime_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, lifetime_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    std::unordered_set<std::string> ops = collect_ops(result->nir);
+
+    EXPECT_NE(ops.find("lifetime.begin"), ops.end());
+    EXPECT_NE(ops.find("lifetime.end"), ops.end());
+    EXPECT_NE(ops.find("ctor"), ops.end());
+    EXPECT_NE(ops.find("dtor"), ops.end());
+    EXPECT_NE(ops.find("move"), ops.end());
 
     std::filesystem::remove_all(temp_dir);
 }
