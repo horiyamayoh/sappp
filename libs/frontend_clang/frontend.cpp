@@ -28,6 +28,7 @@
 #include <clang/AST/Expr.h>
 #include <clang/AST/ExprCXX.h>
 #include <clang/AST/Mangle.h>
+#include <clang/AST/RecursiveASTVisitor.h>
 #include <clang/AST/Type.h>
 #include <clang/Analysis/CFG.h>
 #include <clang/Basic/SourceManager.h>
@@ -37,6 +38,7 @@
 #include <clang/Tooling/CompilationDatabase.h>
 #include <clang/Tooling/Tooling.h>
 #include <llvm/ADT/SmallString.h>
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/raw_ostream.h>
 
 namespace sappp::frontend_clang {
@@ -205,6 +207,79 @@ std::string describe_catch_type(const clang::CXXCatchStmt* catch_stmt)
         return "...";
     }
     return catch_stmt->getCaughtType().getAsString();
+}
+
+std::string describe_receiver_type(const clang::CXXMemberCallExpr* call_expr)
+{
+    if (call_expr == nullptr) {
+        return "receiver";
+    }
+    const auto* receiver = call_expr->getImplicitObjectArgument();
+    if (receiver == nullptr) {
+        return "receiver";
+    }
+    return receiver->getType().getAsString();
+}
+
+std::string build_method_uid(const clang::CXXMethodDecl* method_decl)
+{
+    if (method_decl == nullptr) {
+        return "method";
+    }
+    llvm::SmallString<128> usr_buffer;
+    if (clang::index::generateUSRForDecl(method_decl, usr_buffer)) {
+        return method_decl->getQualifiedNameAsString();
+    }
+    return std::string(usr_buffer.str());
+}
+
+std::string build_method_signature(const clang::CXXMethodDecl* method_decl)
+{
+    if (method_decl == nullptr) {
+        return "signature";
+    }
+    return method_decl->getType().getAsString();
+}
+
+bool method_overrides(const clang::CXXMethodDecl* candidate,
+                      const clang::CXXMethodDecl* base_method)
+{
+    if (candidate == nullptr || base_method == nullptr) {
+        return false;
+    }
+    const auto* candidate_canonical = candidate->getCanonicalDecl();
+    const auto* base_canonical = base_method->getCanonicalDecl();
+    if (candidate_canonical == base_canonical) {
+        return true;
+    }
+    return std::ranges::any_of(candidate->overridden_methods(),
+                               [&](const clang::CXXMethodDecl* overridden_method) {
+                                   return method_overrides(overridden_method, base_method);
+                               });
+}
+
+std::vector<std::string>
+collect_vcall_candidate_methods(const clang::CXXMethodDecl* base_method,
+                                const std::vector<const clang::CXXMethodDecl*>& all_methods)
+{
+    std::vector<std::string> methods;
+    if (base_method == nullptr) {
+        return methods;
+    }
+
+    for (const auto* method_decl : all_methods) {
+        if (method_overrides(method_decl, base_method)) {
+            methods.push_back(build_method_uid(method_decl));
+        }
+    }
+    if (methods.empty()) {
+        methods.push_back(build_method_uid(base_method));
+    }
+
+    std::ranges::stable_sort(methods);
+    auto unique_end = std::ranges::unique(methods);
+    methods.erase(unique_end.begin(), methods.end());
+    return methods;
 }
 
 void traverse_stmt_preorder(const clang::Stmt* stmt,
@@ -504,6 +579,13 @@ void append_instruction(ir::BasicBlock& nir_block,
     nir_block.insts.push_back(std::move(inst));
 }
 
+struct VCallContext
+{
+    std::vector<ir::VCallCandidateSet>* candidate_sets = nullptr;
+    const std::vector<const clang::CXXMethodDecl*>* all_methods = nullptr;
+    int next_id = 0;
+};
+
 struct BlockInstructionContext
 {
     const clang::CFGBlock* entry_block = nullptr;
@@ -513,6 +595,7 @@ struct BlockInstructionContext
     const std::string* block_id = nullptr;
     std::vector<SourceMapEntryKey>* source_entries = nullptr;
     ir::BasicBlock* nir_block = nullptr;
+    VCallContext* vcall_context = nullptr;
 };
 
 enum class ExceptionFlowKind { kNone, kInvoke, kThrow };
@@ -669,12 +752,71 @@ void append_ctor_instructions_for_stmt(const clang::Stmt* stmt,
     });
 }
 
+std::optional<ir::Instruction> build_vcall_instruction(const clang::Stmt* stmt,
+                                                       const BlockInstructionContext& context,
+                                                       int& inst_index)
+{
+    if (context.vcall_context == nullptr || context.vcall_context->candidate_sets == nullptr
+        || context.vcall_context->all_methods == nullptr) {
+        return std::nullopt;
+    }
+
+    const auto* call_expr = clang::dyn_cast<clang::CXXMemberCallExpr>(stmt);
+    if (call_expr == nullptr) {
+        return std::nullopt;
+    }
+    const auto* method_decl = call_expr->getMethodDecl();
+    if (method_decl == nullptr || !method_decl->isVirtual()) {
+        return std::nullopt;
+    }
+
+    const std::string candidate_id = "CS" + std::to_string(context.vcall_context->next_id++);
+    ir::VCallCandidateSet candidate_set;
+    candidate_set.id = candidate_id;
+    candidate_set.methods =
+        collect_vcall_candidate_methods(method_decl, *context.vcall_context->all_methods);
+    context.vcall_context->candidate_sets->push_back(candidate_set);
+
+    ir::Instruction inst;
+    inst.id = "I" + std::to_string(inst_index++);
+    inst.op = "vcall";
+    inst.args = {nlohmann::json(describe_receiver_type(call_expr)),
+                 nlohmann::json(candidate_id),
+                 nlohmann::json(build_method_signature(method_decl))};
+    inst.src =
+        make_location({.source_manager = context.source_manager, .loc = call_expr->getBeginLoc()});
+    return inst;
+}
+
 void append_cfg_stmt_element(const clang::CFGStmt& stmt_elem,
                              const BlockInstructionContext& context,
                              int& inst_index)
 {
     const clang::Stmt* stmt = stmt_elem.getStmt();
     append_lifetime_begin_for_stmt(stmt, context, inst_index);
+    if (auto vcall_inst = build_vcall_instruction(stmt, context, inst_index)) {
+        append_instruction(*context.nir_block,
+                           *context.function_uid,
+                           *context.block_id,
+                           std::move(*vcall_inst),
+                           *context.source_entries);
+        append_ctor_instructions_for_stmt(stmt, context, inst_index);
+        for (const auto& sink_kind : detect_sink_markers(stmt)) {
+            ir::Instruction sink_inst;
+            sink_inst.id = "I" + std::to_string(inst_index++);
+            sink_inst.op = "sink.marker";
+            sink_inst.args = {nlohmann::json(sink_kind)};
+            sink_inst.src = make_location(
+                {.source_manager = context.source_manager,
+                 .loc = stmt != nullptr ? stmt->getBeginLoc() : clang::SourceLocation()});
+            append_instruction(*context.nir_block,
+                               *context.function_uid,
+                               *context.block_id,
+                               std::move(sink_inst),
+                               *context.source_entries);
+        }
+        return;
+    }
     auto classified = classify_stmt(stmt);
     ir::Instruction inst;
     inst.id = "I" + std::to_string(inst_index++);
@@ -904,7 +1046,8 @@ void append_block_edges(
                                     const clang::FunctionDecl* func_decl,
                                     const clang::SourceManager& source_manager,
                                     const std::string& function_uid,
-                                    std::vector<SourceMapEntryKey>& source_entries)
+                                    std::vector<SourceMapEntryKey>& source_entries,
+                                    VCallContext& vcall_context)
 {
     auto blocks = collect_blocks(cfg);
     auto block_ids = assign_block_ids(blocks);
@@ -930,7 +1073,8 @@ void append_block_edges(
                                         .function_uid = &function_uid,
                                         .block_id = &nir_block.id,
                                         .source_entries = &source_entries,
-                                        .nir_block = &nir_block};
+                                        .nir_block = &nir_block,
+                                        .vcall_context = &vcall_context};
         append_block_instructions(block, context);
         nir_cfg.blocks.push_back(std::move(nir_block));
         append_block_edges(block, block_ids, exception_flows, edges);
@@ -949,6 +1093,7 @@ void append_block_edges(
 build_function_def(const clang::FunctionDecl* func_decl,
                    clang::ASTContext& context,
                    clang::MangleContext& mangle_context,
+                   const std::vector<const clang::CXXMethodDecl*>& method_decls,
                    std::vector<SourceMapEntryKey>& source_entries)
 {
     if (func_decl == nullptr || !func_decl->hasBody()) {
@@ -976,14 +1121,44 @@ build_function_def(const clang::FunctionDecl* func_decl,
         return std::nullopt;
     }
 
-    ir::Cfg nir_cfg = build_nir_cfg(*cfg, func_decl, source_manager, function_uid, source_entries);
+    std::vector<ir::VCallCandidateSet> vcall_candidates;
+    VCallContext vcall_context{.candidate_sets = &vcall_candidates,
+                               .all_methods = &method_decls,
+                               .next_id = 0};
+    ir::Cfg nir_cfg =
+        build_nir_cfg(*cfg, func_decl, source_manager, function_uid, source_entries, vcall_context);
 
     ir::FunctionDef nir_func;
     nir_func.function_uid = std::move(function_uid);
     nir_func.mangled_name = std::move(mangled_name);
     nir_func.cfg = std::move(nir_cfg);
+    if (!vcall_candidates.empty()) {
+        nir_func.tables = ir::FunctionTables{.vcall_candidates = std::move(vcall_candidates)};
+    }
     return nir_func;
 }
+
+class MethodCollector final : public clang::RecursiveASTVisitor<MethodCollector>
+{
+public:
+    bool VisitCXXMethodDecl(clang::CXXMethodDecl* decl)
+    {
+        if (decl == nullptr || !decl->isVirtual()) {
+            return true;
+        }
+
+        const auto& source_manager = decl->getASTContext().getSourceManager();
+        if (source_manager.isWrittenInMainFile(decl->getLocation())) {
+            m_methods.push_back(decl);
+        }
+        return true;
+    }
+
+    std::vector<const clang::CXXMethodDecl*> take_methods() { return std::move(m_methods); }
+
+private:
+    std::vector<const clang::CXXMethodDecl*> m_methods;
+};
 
 class NirBuilder
 {
@@ -992,14 +1167,21 @@ public:
 
     void build(clang::ASTContext& context)
     {
+        MethodCollector collector;
+        collector.TraverseDecl(context.getTranslationUnitDecl());
+        m_methods = collector.take_methods();
+
         auto mangle_context = std::unique_ptr<clang::MangleContext>(context.createMangleContext());
         for (const auto* decl : context.getTranslationUnitDecl()->decls()) {
             const auto* func_decl = clang::dyn_cast<clang::FunctionDecl>(decl);
             if (func_decl == nullptr) {
                 continue;
             }
-            auto nir_func =
-                build_function_def(func_decl, context, *mangle_context, m_source_entries);
+            auto nir_func = build_function_def(func_decl,
+                                               context,
+                                               *mangle_context,
+                                               m_methods,
+                                               m_source_entries);
             if (nir_func) {
                 m_functions.push_back(std::move(*nir_func));
             }
@@ -1012,6 +1194,7 @@ public:
 private:
     std::vector<ir::FunctionDef> m_functions;
     std::vector<SourceMapEntryKey> m_source_entries;
+    std::vector<const clang::CXXMethodDecl*> m_methods;
 };
 
 class NirASTConsumer final : public clang::ASTConsumer
@@ -1140,6 +1323,15 @@ void sort_function_contents(ir::FunctionDef& func)
             [](const ir::Instruction& a, const ir::Instruction& b) { return a.id < b.id; });
     }
     std::ranges::stable_sort(func.cfg.edges, edge_less);
+    if (func.tables.has_value()) {
+        auto& candidates = func.tables->vcall_candidates;
+        for (auto& candidate_set : candidates) {
+            std::ranges::stable_sort(candidate_set.methods);
+        }
+        std::ranges::stable_sort(candidates,
+                                 [](const ir::VCallCandidateSet& a,
+                                    const ir::VCallCandidateSet& b) { return a.id < b.id; });
+    }
 }
 
 void sort_functions(std::vector<ir::FunctionDef>& functions)
