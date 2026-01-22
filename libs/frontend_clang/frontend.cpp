@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <functional>
 #include <iomanip>
 #include <optional>
 #include <ranges>
@@ -25,6 +26,7 @@
 #include <clang/AST/ASTContext.h>
 #include <clang/AST/Decl.h>
 #include <clang/AST/Expr.h>
+#include <clang/AST/ExprCXX.h>
 #include <clang/AST/Mangle.h>
 #include <clang/Analysis/CFG.h>
 #include <clang/Basic/SourceManager.h>
@@ -160,6 +162,15 @@ std::optional<ir::Location> make_location(const LocationContext& context)
     return location;
 }
 
+std::optional<ir::Location> make_decl_location(const clang::Decl* decl,
+                                               const clang::SourceManager* source_manager)
+{
+    if (decl == nullptr) {
+        return std::nullopt;
+    }
+    return make_location({.source_manager = source_manager, .loc = decl->getLocation()});
+}
+
 std::string classify_stmt(const clang::Stmt* stmt)
 {
     if (clang::isa<clang::ReturnStmt>(stmt)) {
@@ -186,6 +197,47 @@ std::string classify_stmt(const clang::Stmt* stmt)
         return "load";
     }
     return "stmt";
+}
+
+std::string describe_var(const clang::VarDecl* var_decl)
+{
+    if (var_decl == nullptr) {
+        return "var";
+    }
+    if (!var_decl->getName().empty()) {
+        return var_decl->getName().str();
+    }
+    return var_decl->getType().getAsString();
+}
+
+std::string describe_temporary(const clang::Expr* expr)
+{
+    if (expr == nullptr) {
+        return "temporary";
+    }
+    return std::string("temporary:") + expr->getType().getAsString();
+}
+
+std::string describe_ctor(const clang::CXXConstructorDecl* ctor_decl)
+{
+    if (ctor_decl == nullptr) {
+        return "ctor";
+    }
+    return ctor_decl->getQualifiedNameAsString();
+}
+
+void traverse_stmt_preorder(const clang::Stmt* stmt,
+                            const std::function<void(const clang::Stmt*)>& visitor)
+{
+    if (stmt == nullptr) {
+        return;
+    }
+    visitor(stmt);
+    for (const auto* child : stmt->children()) {
+        if (child != nullptr) {
+            traverse_stmt_preorder(child, visitor);
+        }
+    }
 }
 
 /**
@@ -339,6 +391,24 @@ struct BlockInstructionContext
     ir::BasicBlock* nir_block = nullptr;
 };
 
+void append_simple_instruction(const BlockInstructionContext& context,
+                               int& inst_index,
+                               std::string_view op,
+                               std::vector<nlohmann::json> args,
+                               std::optional<ir::Location> src)
+{
+    ir::Instruction inst;
+    inst.id = "I" + std::to_string(inst_index++);
+    inst.op = std::string(op);
+    inst.args = std::move(args);
+    inst.src = std::move(src);
+    append_instruction(*context.nir_block,
+                       *context.function_uid,
+                       *context.block_id,
+                       std::move(inst),
+                       *context.source_entries);
+}
+
 void append_entry_block_check(const clang::CFGBlock* block,
                               const BlockInstructionContext& context,
                               int& inst_index)
@@ -360,6 +430,64 @@ void append_entry_block_check(const clang::CFGBlock* block,
                        *context.source_entries);
 }
 
+void append_lifetime_begin_for_stmt(const clang::Stmt* stmt,
+                                    const BlockInstructionContext& context,
+                                    int& inst_index)
+{
+    if (stmt == nullptr) {
+        return;
+    }
+    if (const auto* decl_stmt = clang::dyn_cast<clang::DeclStmt>(stmt)) {
+        for (const auto* decl : decl_stmt->decls()) {
+            const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl);
+            if (var_decl == nullptr || !var_decl->hasLocalStorage() || var_decl->isStaticLocal()) {
+                continue;
+            }
+            append_simple_instruction(context,
+                                      inst_index,
+                                      "lifetime.begin",
+                                      {nlohmann::json(describe_var(var_decl))},
+                                      make_decl_location(var_decl, context.source_manager));
+        }
+    }
+
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        const auto* temp_expr = clang::dyn_cast<clang::CXXBindTemporaryExpr>(node);
+        if (temp_expr == nullptr) {
+            return;
+        }
+        append_simple_instruction(context,
+                                  inst_index,
+                                  "lifetime.begin",
+                                  {nlohmann::json(describe_temporary(temp_expr->getSubExpr()))},
+                                  make_location({.source_manager = context.source_manager,
+                                                 .loc = temp_expr->getBeginLoc()}));
+    });
+}
+
+void append_ctor_instructions_for_stmt(const clang::Stmt* stmt,
+                                       const BlockInstructionContext& context,
+                                       int& inst_index)
+{
+    if (stmt == nullptr) {
+        return;
+    }
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        const auto* ctor_expr = clang::dyn_cast<clang::CXXConstructExpr>(node);
+        if (ctor_expr == nullptr) {
+            return;
+        }
+        const auto* ctor_decl = ctor_expr->getConstructor();
+        const bool is_move = ctor_decl != nullptr && ctor_decl->isMoveConstructor();
+        append_simple_instruction(context,
+                                  inst_index,
+                                  is_move ? "move" : "ctor",
+                                  {nlohmann::json(describe_ctor(ctor_decl))},
+                                  make_location({.source_manager = context.source_manager,
+                                                 .loc = ctor_expr->getBeginLoc()}));
+    });
+}
+
 void append_stmt_instructions(const clang::CFGBlock* block,
                               const BlockInstructionContext& context,
                               int& inst_index)
@@ -367,6 +495,7 @@ void append_stmt_instructions(const clang::CFGBlock* block,
     for (const auto& element : *block) {
         if (const auto stmt_elem = element.getAs<clang::CFGStmt>()) {
             const clang::Stmt* stmt = stmt_elem->getStmt();
+            append_lifetime_begin_for_stmt(stmt, context, inst_index);
             ir::Instruction inst;
             inst.id = "I" + std::to_string(inst_index++);
             inst.op = classify_stmt(stmt);
@@ -377,6 +506,7 @@ void append_stmt_instructions(const clang::CFGBlock* block,
                                *context.block_id,
                                std::move(inst),
                                *context.source_entries);
+            append_ctor_instructions_for_stmt(stmt, context, inst_index);
             for (const auto& sink_kind : detect_sink_markers(stmt)) {
                 ir::Instruction sink_inst;
                 sink_inst.id = "I" + std::to_string(inst_index++);
@@ -390,6 +520,78 @@ void append_stmt_instructions(const clang::CFGBlock* block,
                                    std::move(sink_inst),
                                    *context.source_entries);
             }
+        } else if (const auto lifetime_end = element.getAs<clang::CFGLifetimeEnds>()) {
+            const auto* var_decl = lifetime_end->getVarDecl();
+            append_simple_instruction(
+                context,
+                inst_index,
+                "lifetime.end",
+                {nlohmann::json(describe_var(var_decl))},
+                make_location({.source_manager = context.source_manager,
+                               .loc = lifetime_end->getTriggerStmt() != nullptr
+                                          ? lifetime_end->getTriggerStmt()->getEndLoc()
+                                          : clang::SourceLocation()}));
+        } else if (const auto auto_dtor = element.getAs<clang::CFGAutomaticObjDtor>()) {
+            const auto* var_decl = auto_dtor->getVarDecl();
+            append_simple_instruction(
+                context,
+                inst_index,
+                "dtor",
+                {nlohmann::json(describe_var(var_decl))},
+                make_location({.source_manager = context.source_manager,
+                               .loc = auto_dtor->getTriggerStmt() != nullptr
+                                          ? auto_dtor->getTriggerStmt()->getEndLoc()
+                                          : clang::SourceLocation()}));
+        } else if (const auto temp_dtor = element.getAs<clang::CFGTemporaryDtor>()) {
+            const auto* temp_expr = temp_dtor->getBindTemporaryExpr();
+            append_simple_instruction(
+                context,
+                inst_index,
+                "dtor",
+                {nlohmann::json(
+                    describe_temporary(temp_expr != nullptr ? temp_expr->getSubExpr() : nullptr))},
+                make_location({.source_manager = context.source_manager,
+                               .loc = temp_expr != nullptr ? temp_expr->getBeginLoc()
+                                                           : clang::SourceLocation()}));
+            append_simple_instruction(
+                context,
+                inst_index,
+                "lifetime.end",
+                {nlohmann::json(
+                    describe_temporary(temp_expr != nullptr ? temp_expr->getSubExpr() : nullptr))},
+                make_location({.source_manager = context.source_manager,
+                               .loc = temp_expr != nullptr ? temp_expr->getEndLoc()
+                                                           : clang::SourceLocation()}));
+        } else if (const auto base_dtor = element.getAs<clang::CFGBaseDtor>()) {
+            const auto* base_specifier = base_dtor->getBaseSpecifier();
+            std::string label =
+                base_specifier != nullptr ? base_specifier->getType().getAsString() : "base";
+            append_simple_instruction(context,
+                                      inst_index,
+                                      "dtor",
+                                      {nlohmann::json(label)},
+                                      std::nullopt);
+        } else if (const auto member_dtor = element.getAs<clang::CFGMemberDtor>()) {
+            const auto* field_decl = member_dtor->getFieldDecl();
+            std::string label = field_decl != nullptr ? field_decl->getNameAsString() : "member";
+            append_simple_instruction(context,
+                                      inst_index,
+                                      "dtor",
+                                      {nlohmann::json(label)},
+                                      make_decl_location(field_decl, context.source_manager));
+        } else if (const auto delete_dtor = element.getAs<clang::CFGDeleteDtor>()) {
+            const auto* delete_expr = delete_dtor->getDeleteExpr();
+            std::string label = delete_dtor->getCXXRecordDecl() != nullptr
+                                    ? delete_dtor->getCXXRecordDecl()->getQualifiedNameAsString()
+                                    : "delete";
+            append_simple_instruction(
+                context,
+                inst_index,
+                "dtor",
+                {nlohmann::json(label)},
+                make_location({.source_manager = context.source_manager,
+                               .loc = delete_expr != nullptr ? delete_expr->getBeginLoc()
+                                                             : clang::SourceLocation()}));
         }
     }
 }
@@ -502,8 +704,14 @@ build_function_def(const clang::FunctionDecl* func_decl,
     std::string function_uid = build_function_uid(func_decl);
     std::string mangled_name = build_mangled_name(func_decl, mangle_context);
 
+    clang::CFG::BuildOptions cfg_options;
+    cfg_options.AddImplicitDtors = true;
+    cfg_options.AddLifetime = true;
+    cfg_options.AddScopes = true;
+    cfg_options.AddTemporaryDtors = true;
+    cfg_options.AddRichCXXConstructors = true;
     std::unique_ptr<clang::CFG> cfg =
-        clang::CFG::buildCFG(func_decl, func_decl->getBody(), &context, clang::CFG::BuildOptions());
+        clang::CFG::buildCFG(func_decl, func_decl->getBody(), &context, cfg_options);
     if (!cfg) {
         return std::nullopt;
     }
