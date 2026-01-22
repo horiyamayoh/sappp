@@ -18,8 +18,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <optional>
 #include <ranges>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -55,6 +57,17 @@ std::string map_po_kind(const std::string& token)
         || normalized == "div-by-zero") {
         return "UB.DivZero";
     }
+    if (normalized == "shift" || normalized == "shift-ub" || normalized == "shift_ub") {
+        return "UB.Shift";
+    }
+    if (normalized == "signedoverflow" || normalized == "signed_overflow"
+        || normalized == "signed-overflow") {
+        return "UB.SignedOverflow";
+    }
+    if (normalized == "misaligned" || normalized == "misaligned_access"
+        || normalized == "misaligned-access" || normalized == "unaligned") {
+        return "UB.Misaligned";
+    }
     if (normalized == "null" || normalized == "null_deref" || normalized == "null-deref"
         || normalized == "nullderef") {
         return "UB.NullDeref";
@@ -62,6 +75,22 @@ std::string map_po_kind(const std::string& token)
     if (normalized == "oob" || normalized == "out_of_bounds" || normalized == "out-of-bounds"
         || normalized == "outofbounds") {
         return "UB.OutOfBounds";
+    }
+    if (normalized == "useafterlifetime" || normalized == "use-after-lifetime"
+        || normalized == "use_after_lifetime" || normalized == "uaf") {
+        return "UseAfterLifetime";
+    }
+    if (normalized == "doublefree" || normalized == "double_free" || normalized == "double-free") {
+        return "DoubleFree";
+    }
+    if (normalized == "invalidfree" || normalized == "invalid_free" || normalized == "invalid-free"
+        || normalized == "badfree") {
+        return "InvalidFree";
+    }
+    if (normalized == "uninitread" || normalized == "uninit_read"
+        || normalized == "uninitialized_read" || normalized == "uninitializedread"
+        || normalized == "uninit") {
+        return "UninitRead";
     }
     return "";
 }
@@ -83,7 +112,12 @@ std::string extract_kind_token(const nlohmann::json& inst)
     return "";
 }
 
-std::string infer_po_kind(const nlohmann::json& inst)
+bool is_lifetime_op(std::string_view op)
+{
+    return op.starts_with("lifetime.");
+}
+
+std::optional<std::string> resolve_po_kind(const nlohmann::json& inst, std::string_view op)
 {
     std::string token = extract_kind_token(inst);
     std::string mapped = map_po_kind(token);
@@ -92,6 +126,12 @@ std::string infer_po_kind(const nlohmann::json& inst)
     }
     if (!token.empty()) {
         return token;
+    }
+    if (op == "ub.check" || op == "sink.marker") {
+        return "UB.Unknown";
+    }
+    if (is_lifetime_op(op)) {
+        return std::nullopt;
     }
     return "UB.Unknown";
 }
@@ -269,11 +309,14 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
                     continue;
                 }
                 const std::string op = inst.at("op").get<std::string>();
-                if (op != "ub.check" && op != "sink.marker") {
+                if (op != "ub.check" && op != "sink.marker" && !is_lifetime_op(op)) {
                     continue;
                 }
                 const std::string inst_id = inst.at("id").get<std::string>();
-                const std::string po_kind = infer_po_kind(inst);
+                auto po_kind = resolve_po_kind(inst, op);
+                if (!po_kind) {
+                    continue;
+                }
                 auto repo_identity = build_repo_identity(inst, file_hashes);
                 if (!repo_identity) {
                     return std::unexpected(repo_identity.error());
@@ -284,7 +327,7 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
                     {       "repo_identity",          *repo_identity},
                     {            "function", {{"usr", function_uid}}},
                     {              "anchor",               anchor_id},
-                    {             "po_kind",                 po_kind},
+                    {             "po_kind",                *po_kind},
                     {   "semantics_version",       semantics_version},
                     {"proof_system_version",    proof_system_version},
                     {     "profile_version",         profile_version}
@@ -295,14 +338,14 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
                 }
                 const std::string po_id = *po_id_result;
 
-                auto predicate = build_predicate(op, po_kind, inst);
+                auto predicate = build_predicate(op, *po_kind, inst);
                 if (!predicate) {
                     return std::unexpected(predicate.error());
                 }
 
                 nlohmann::json po_entry = {
                     {               "po_id",                                              po_id},
-                    {             "po_kind",                                            po_kind},
+                    {             "po_kind",                                           *po_kind},
                     {   "semantics_version",                                  semantics_version},
                     {"proof_system_version",                               proof_system_version},
                     {     "profile_version",                                    profile_version},
