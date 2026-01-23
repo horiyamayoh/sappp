@@ -103,6 +103,30 @@
           },
           "type": "array"
         },
+        "points_to": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "ptr": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "targets": {
+                "items": {
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "ptr",
+              "targets"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
         "predicates": {
           "items": {
             "$ref": "#/$defs/Expr"
