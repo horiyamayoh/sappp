@@ -11,6 +11,7 @@
 #include "sappp/version.hpp"
 
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -19,6 +20,7 @@
 #include <ranges>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace sappp::validator {
@@ -39,6 +41,8 @@ struct ValidationContext
     const fs::path* input_dir;
     const std::string* schema_dir;
     bool strict;
+    const struct NirIndex* nir_index = nullptr;
+    const sappp::Error* nir_error = nullptr;
 };
 
 constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
@@ -83,6 +87,33 @@ constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 {
     return (fs::path(schema_dir) / "validated_results.v1.schema.json").string();
 }
+
+[[nodiscard]] std::string nir_schema_path(std::string_view schema_dir)
+{
+    return (fs::path(schema_dir) / "nir.v1.schema.json").string();
+}
+
+struct IrInstructionRef
+{
+    std::string op;
+    std::size_t index;
+};
+
+struct NirBlockIndex
+{
+    std::unordered_map<std::string, IrInstructionRef> inst_map;
+    std::unordered_set<std::string> successors;
+};
+
+struct NirFunctionIndex
+{
+    std::unordered_map<std::string, NirBlockIndex> blocks;
+};
+
+struct NirIndex
+{
+    std::unordered_map<std::string, NirFunctionIndex> functions;
+};
 
 [[nodiscard]] sappp::Result<std::string> object_path_for_hash(const fs::path& base_dir,
                                                               const std::string& hash)
@@ -138,6 +169,113 @@ constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
         }
     }
     return std::string(kDeterministicGeneratedAt);
+}
+
+[[nodiscard]] sappp::Result<NirIndex> build_nir_index(const nlohmann::json& nir_json)
+{
+    NirIndex index;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return std::unexpected(Error::make("SchemaInvalid", "NIR functions missing"));
+    }
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            return std::unexpected(Error::make("SchemaInvalid", "NIR function_uid missing"));
+        }
+        std::string function_uid = func.at("function_uid").get<std::string>();
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            return std::unexpected(Error::make("SchemaInvalid", "NIR cfg missing"));
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            return std::unexpected(Error::make("SchemaInvalid", "NIR cfg blocks missing"));
+        }
+        NirFunctionIndex function_index;
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.contains("id") || !block.at("id").is_string()) {
+                return std::unexpected(Error::make("SchemaInvalid", "NIR block id missing"));
+            }
+            std::string block_id = block.at("id").get<std::string>();
+            if (function_index.blocks.contains(block_id)) {
+                return std::unexpected(
+                    Error::make("SchemaInvalid", "Duplicate NIR block id: " + block_id));
+            }
+            if (!block.contains("insts") || !block.at("insts").is_array()) {
+                return std::unexpected(Error::make("SchemaInvalid", "NIR block insts missing"));
+            }
+            NirBlockIndex block_index;
+            std::size_t inst_index = 0;
+            for (const auto& inst : block.at("insts")) {
+                if (!inst.contains("id") || !inst.at("id").is_string()) {
+                    return std::unexpected(Error::make("SchemaInvalid", "NIR inst id missing"));
+                }
+                if (!inst.contains("op") || !inst.at("op").is_string()) {
+                    return std::unexpected(Error::make("SchemaInvalid", "NIR inst op missing"));
+                }
+                std::string inst_id = inst.at("id").get<std::string>();
+                if (block_index.inst_map.contains(inst_id)) {
+                    return std::unexpected(
+                        Error::make("SchemaInvalid", "Duplicate NIR inst id: " + inst_id));
+                }
+                IrInstructionRef inst_ref{.op = inst.at("op").get<std::string>(),
+                                          .index = inst_index};
+                block_index.inst_map.emplace(std::move(inst_id), std::move(inst_ref));
+                ++inst_index;
+            }
+            function_index.blocks.emplace(std::move(block_id), std::move(block_index));
+        }
+        if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+            for (const auto& edge : cfg.at("edges")) {
+                if (!edge.contains("from") || !edge.contains("to")) {
+                    return std::unexpected(
+                        Error::make("SchemaInvalid", "NIR edge missing endpoints"));
+                }
+                if (!edge.at("from").is_string() || !edge.at("to").is_string()) {
+                    return std::unexpected(
+                        Error::make("SchemaInvalid", "NIR edge endpoints invalid"));
+                }
+                std::string from = edge.at("from").get<std::string>();
+                std::string to = edge.at("to").get<std::string>();
+                auto from_it = function_index.blocks.find(from);
+                if (from_it == function_index.blocks.end()) {
+                    return std::unexpected(
+                        Error::make("SchemaInvalid", "NIR edge references missing block: " + from));
+                }
+                if (!function_index.blocks.contains(to)) {
+                    return std::unexpected(
+                        Error::make("SchemaInvalid", "NIR edge references missing block: " + to));
+                }
+                from_it->second.successors.emplace(std::move(to));
+            }
+        }
+        index.functions.emplace(std::move(function_uid), std::move(function_index));
+    }
+    return index;
+}
+
+[[nodiscard]] sappp::Result<NirIndex> load_nir_index(const fs::path& input_dir,
+                                                     std::string_view schema_dir)
+{
+    fs::path nir_path = input_dir / "frontend" / "nir.json";
+    std::error_code ec;
+    if (!fs::exists(nir_path, ec)) {
+        if (ec) {
+            return std::unexpected(
+                Error::make("IOError",
+                            "Failed to stat NIR file: " + nir_path.string() + ": " + ec.message()));
+        }
+        return std::unexpected(
+            Error::make("MissingDependency", "Missing NIR file: " + nir_path.string()));
+    }
+    auto nir_json_result = read_json_file(nir_path.string());
+    if (!nir_json_result) {
+        return std::unexpected(nir_json_result.error());
+    }
+    if (auto result = sappp::common::validate_json(*nir_json_result, nir_schema_path(schema_dir));
+        !result) {
+        return std::unexpected(
+            Error::make("SchemaInvalid", "NIR schema invalid: " + result.error().message));
+    }
+    return build_nir_index(*nir_json_result);
 }
 
 [[nodiscard]] sappp::VoidResult write_json_file(const std::string& path,
@@ -213,6 +351,52 @@ constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 [[nodiscard]] ValidationError proof_failed_error(const std::string& message);
 [[nodiscard]] ValidationError rule_violation_error(const std::string& message);
 [[nodiscard]] bool is_supported_safety_domain(std::string_view domain);
+
+[[nodiscard]] std::optional<ValidationError> ensure_nir_loaded(const ValidationContext& context)
+{
+    if (context.nir_index != nullptr) {
+        return std::nullopt;
+    }
+    if (context.nir_error != nullptr) {
+        return make_error_from_result(*context.nir_error);
+    }
+    return make_error("MissingDependency", "Missing NIR index");
+}
+
+[[nodiscard]] std::optional<ValidationError> lookup_instruction(const NirIndex& index,
+                                                                const std::string& function_uid,
+                                                                const std::string& block_id,
+                                                                const std::string& inst_id,
+                                                                const NirBlockIndex*& block_out,
+                                                                IrInstructionRef& inst_out)
+{
+    auto func_it = index.functions.find(function_uid);
+    if (func_it == index.functions.end()) {
+        return rule_violation_error("BugTrace function_uid not found in NIR");
+    }
+    auto block_it = func_it->second.blocks.find(block_id);
+    if (block_it == func_it->second.blocks.end()) {
+        return rule_violation_error("BugTrace block_id not found in NIR");
+    }
+    auto inst_it = block_it->second.inst_map.find(inst_id);
+    if (inst_it == block_it->second.inst_map.end()) {
+        return rule_violation_error("BugTrace inst_id not found in NIR");
+    }
+    block_out = &block_it->second;
+    inst_out = inst_it->second;
+    return std::nullopt;
+}
+
+[[nodiscard]] bool is_supported_ir_op(std::string_view op)
+{
+    static const std::unordered_set<std::string_view> kSupportedOps = {
+        "alloc",    "free",        "load",  "store",          "memcpy",       "memmove",
+        "memset",   "assign",      "call",  "invoke",         "ret",          "branch",
+        "ub.check", "sink.marker", "stmt",  "lifetime.begin", "lifetime.end", "ctor",
+        "dtor",     "move",        "throw", "landingpad",     "resume",       "vcall",
+    };
+    return kSupportedOps.contains(op);
+}
 
 [[nodiscard]] sappp::Result<nlohmann::json>
 load_cert_object(const fs::path& input_dir, std::string_view schema_dir, const std::string& hash)
@@ -338,6 +522,74 @@ load_cert_object(const fs::path& input_dir, std::string_view schema_dir, const s
     }
     if (predicate_holds) {
         return proof_failed_error("BugTrace predicate holds at violation state");
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<ValidationError>
+validate_bug_trace_path(const ValidationContext& context,
+                        const nlohmann::json& ir_cert,
+                        const nlohmann::json& evidence)
+{
+    if (auto error = ensure_nir_loaded(context)) {
+        return error;
+    }
+    const NirIndex& index = *context.nir_index;
+    if (!evidence.contains("steps") || !evidence.at("steps").is_array()
+        || evidence.at("steps").empty()) {
+        return proof_failed_error("BugTrace steps missing");
+    }
+    const std::string expected_function_uid = ir_cert.at("function_uid").get<std::string>();
+
+    const NirBlockIndex* prev_block = nullptr;
+    IrInstructionRef prev_inst;
+    std::string prev_block_id;
+    std::string prev_function_uid;
+
+    for (const auto& step : evidence.at("steps")) {
+        if (!step.contains("ir")) {
+            return proof_failed_error("BugTrace step missing ir");
+        }
+        const auto& ir = step.at("ir");
+        if (!ir.contains("function_uid") || !ir.contains("block_id") || !ir.contains("inst_id")) {
+            return proof_failed_error("BugTrace step has incomplete ir");
+        }
+        std::string function_uid = ir.at("function_uid").get<std::string>();
+        std::string block_id = ir.at("block_id").get<std::string>();
+        std::string inst_id = ir.at("inst_id").get<std::string>();
+
+        if (function_uid != expected_function_uid) {
+            return rule_violation_error("BugTrace function_uid mismatch");
+        }
+
+        const NirBlockIndex* block = nullptr;
+        IrInstructionRef inst_ref;
+        if (auto lookup_error =
+                lookup_instruction(index, function_uid, block_id, inst_id, block, inst_ref)) {
+            return lookup_error;
+        }
+        if (!is_supported_ir_op(inst_ref.op)) {
+            return unsupported_error("Unsupported IR op in BugTrace: " + inst_ref.op);
+        }
+
+        if (prev_block != nullptr) {
+            if (function_uid != prev_function_uid) {
+                return unsupported_error("BugTrace spans multiple functions");
+            }
+            if (block_id == prev_block_id) {
+                if (inst_ref.index < prev_inst.index
+                    && !prev_block->successors.contains(prev_block_id)) {
+                    return proof_failed_error("BugTrace jumps backwards within block");
+                }
+            } else if (!prev_block->successors.contains(block_id)) {
+                return proof_failed_error("BugTrace path not connected");
+            }
+        }
+
+        prev_block = block;
+        prev_inst = inst_ref;
+        prev_block_id = std::move(block_id);
+        prev_function_uid = std::move(function_uid);
     }
     return std::nullopt;
 }
@@ -538,6 +790,50 @@ struct AbstractStateCheckResult
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<std::string> check_points_to_entries(const nlohmann::json& state,
+                                                                 std::string_view field)
+{
+    if (!state.contains(field)) {
+        return std::nullopt;
+    }
+    if (!state.at(field).is_array()) {
+        return std::string(field) + " must be an array";
+    }
+    std::unordered_map<std::string, std::vector<std::string>> seen;
+    for (const auto& entry : state.at(field)) {
+        if (!entry.contains("var") || !entry.contains("targets")) {
+            return std::string(field) + " entry missing required fields";
+        }
+        if (!entry.at("var").is_string()) {
+            return std::string(field) + " entry var must be string";
+        }
+        if (!entry.at("targets").is_array()) {
+            return std::string(field) + " entry targets must be array";
+        }
+        std::string var = entry.at("var").get<std::string>();
+        std::vector<std::string> targets;
+        targets.reserve(entry.at("targets").size());
+        for (const auto& target : entry.at("targets")) {
+            if (!target.is_string()) {
+                return std::string(field) + " entry targets must be strings";
+            }
+            targets.push_back(target.get<std::string>());
+        }
+        std::ranges::sort(targets);
+        targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+
+        auto it = seen.find(var);
+        if (it == seen.end()) {
+            seen.emplace(var, std::move(targets));
+            continue;
+        }
+        if (it->second != targets) {
+            return std::string(field) + " has conflicting entries for " + var;
+        }
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] AbstractStateCheckResult validate_state_consistency(const nlohmann::json& state)
 {
     if (!state.is_object()) {
@@ -555,6 +851,15 @@ struct AbstractStateCheckResult
     }
 
     if (auto conflict = check_numeric_intervals(state)) {
+        return {.ok = false, .reason = *conflict};
+    }
+    if (state.contains("points_to") && state.contains("points-to")) {
+        return {.ok = false, .reason = "State contains both points_to and points-to"};
+    }
+    if (auto conflict = check_points_to_entries(state, "points_to")) {
+        return {.ok = false, .reason = *conflict};
+    }
+    if (auto conflict = check_points_to_entries(state, "points-to")) {
         return {.ok = false, .reason = *conflict};
     }
 
@@ -695,6 +1000,10 @@ validate_result_kind(const ResultValidationInputs& inputs)
 {
     if (*inputs.result_kind == "BUG") {
         if (auto error = validate_bug_evidence(*inputs.po_id, *inputs.evidence_cert)) {
+            return finish_or_unknown(*inputs.po_id, *error, *inputs.context);
+        }
+        if (auto error =
+                validate_bug_trace_path(*inputs.context, *inputs.ir_cert, *inputs.evidence_cert)) {
             return finish_or_unknown(*inputs.po_id, *error, *inputs.context);
         }
         return make_validated_result(*inputs.po_id, "BUG", *inputs.root_hash);
@@ -848,7 +1157,13 @@ ValidationError rule_violation_error(const std::string& message)
 
 [[nodiscard]] bool is_supported_safety_domain(std::string_view domain)
 {
-    return domain == "interval+null+lifetime+init";
+    static constexpr std::array<std::string_view, 4> kDomains = {
+        "interval+null+lifetime+init",
+        "interval+null+lifetime+init+points-to",
+        "interval+null+lifetime+init+points-to.simple",
+        "interval+null+lifetime+init+points-to.context"};
+    return std::ranges::any_of(kDomains,
+                               [&](std::string_view candidate) { return domain == candidate; });
 }
 
 }  // namespace
@@ -868,9 +1183,24 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
     }
 
     fs::path input_dir(m_input_dir);
+    NirIndex nir_index_storage;
+    sappp::Error nir_error_storage = sappp::Error::make("", "");
+    const NirIndex* nir_index_ptr = nullptr;
+    const sappp::Error* nir_error_ptr = nullptr;
+    auto nir_index_result = load_nir_index(input_dir, m_schema_dir);
+    if (nir_index_result) {
+        nir_index_storage = std::move(*nir_index_result);
+        nir_index_ptr = &nir_index_storage;
+    } else {
+        nir_error_storage = nir_index_result.error();
+        nir_error_ptr = &nir_error_storage;
+    }
+
     ValidationContext context{.input_dir = &input_dir,
                               .schema_dir = &m_schema_dir,
-                              .strict = strict};
+                              .strict = strict,
+                              .nir_index = nir_index_ptr,
+                              .nir_error = nir_error_ptr};
     std::vector<nlohmann::json> results;
     results.reserve(index_files->size());
     std::string tu_id;

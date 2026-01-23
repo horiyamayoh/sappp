@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -47,6 +48,59 @@ std::string object_path_for_hash(const fs::path& base_dir, const std::string& ha
     std::string shard = hash.substr(digest_start, 2);
     fs::path object_path = base_dir / "certstore" / "objects" / shard / (hash + ".json");
     return object_path.string();
+}
+
+sappp::VoidResult write_json_file(const std::string& path, const nlohmann::json& payload);
+
+[[nodiscard]] nlohmann::json make_nir_json(const std::string& tu_id,
+                                           const std::vector<std::string>& ops)
+{
+    nlohmann::json insts = nlohmann::json::array();
+    int index = 1;
+    for (const auto& op : ops) {
+        insts.push_back(nlohmann::json{
+            {"id", "I" + std::to_string(index)},
+            {"op",                          op}
+        });
+        ++index;
+    }
+
+    nlohmann::json block = {
+        {   "id",             "B1"},
+        {"insts", std::move(insts)}
+    };
+
+    nlohmann::json cfg = {
+        { "entry",                                      "B1"},
+        {"blocks", nlohmann::json::array({std::move(block)})},
+        { "edges",                   nlohmann::json::array()}
+    };
+
+    nlohmann::json function = {
+        {"function_uid",        "func1"},
+        {"mangled_name",     "_Z4testv"},
+        {         "cfg", std::move(cfg)}
+    };
+
+    return {
+        {      "schema_version",                                                                         "nir.v1"},
+        {                "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
+        {        "generated_at",                                                           "1970-01-01T00:00:00Z"},
+        {               "tu_id",                                                                            tu_id},
+        {   "semantics_version",                                                         sappp::kSemanticsVersion},
+        {"proof_system_version",                                                       sappp::kProofSystemVersion},
+        {           "functions",                                     nlohmann::json::array({std::move(function)})}
+    };
+}
+
+void write_nir_or_fail(const fs::path& input_dir,
+                       const std::vector<std::string>& ops,
+                       const std::string& tu_id)
+{
+    fs::path nir_path = input_dir / "frontend" / "nir.json";
+    fs::create_directories(nir_path.parent_path());
+    auto write_result = write_json_file(nir_path.string(), make_nir_json(tu_id, ops));
+    ASSERT_TRUE(write_result) << "write_nir failed: " << write_result.error().message;
 }
 
 [[nodiscard]] std::string put_cert_or_fail(sappp::certstore::CertStore& store,
@@ -120,6 +174,31 @@ void bind_po_or_fail(sappp::certstore::CertStore& store,
     };
 }
 
+[[nodiscard]] nlohmann::json make_bug_trace_with_steps(const std::string& po_id,
+                                                       const std::string& tu_id,
+                                                       const std::vector<std::string>& inst_ids)
+{
+    nlohmann::json steps = nlohmann::json::array();
+    for (const auto& inst_id : inst_ids) {
+        steps.push_back(nlohmann::json{
+            {"ir",
+             {{"schema_version", "cert.v1"},
+              {"kind", "IrRef"},
+              {"tu_id", tu_id},
+              {"function_uid", "func1"},
+              {"block_id", "B1"},
+              {"inst_id", inst_id}}}
+        });
+    }
+    return {
+        {"schema_version",                                      "cert.v1"},
+        {          "kind",                                     "BugTrace"},
+        {    "trace_kind",                                   "ir_path.v1"},
+        {         "steps",                               std::move(steps)},
+        {     "violation", {{"po_id", po_id}, {"predicate_holds", false}}}
+    };
+}
+
 [[nodiscard]] nlohmann::json make_safety_proof(const nlohmann::json& state)
 {
     return {
@@ -175,6 +254,7 @@ CertBundle build_cert_store(const fs::path& input_dir, const std::string& schema
 
     std::string po_id = sappp::common::sha256_prefixed("po-1");
     std::string tu_id = sappp::common::sha256_prefixed("tu-1");
+    write_nir_or_fail(input_dir, {"ub.check"}, tu_id);
 
     nlohmann::json predicate_expr = {
         {"op", "neq"}
@@ -207,6 +287,7 @@ SafeCertBundle build_safe_cert_store(const fs::path& input_dir,
 
     std::string po_id = sappp::common::sha256_prefixed("po-safe-1");
     std::string tu_id = sappp::common::sha256_prefixed("tu-safe-1");
+    write_nir_or_fail(input_dir, {"ub.check"}, tu_id);
 
     nlohmann::json predicate_expr = {
         {"op", "neq"}
@@ -271,6 +352,60 @@ TEST(ValidatorTest, ValidatesBugTrace)
     EXPECT_EQ(entry.at("category"), "BUG");
     EXPECT_EQ(entry.at("validator_status"), "Validated");
     EXPECT_EQ(entry.at("certificate_root"), bundle.root_hash);
+}
+
+TEST(ValidatorTest, ValidatesBugTraceWithLifetimeExceptionVcall)
+{
+    TempDir temp_dir("sappp_validator_bug_semantics");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-bug-sem");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-bug-sem");
+
+    write_nir_or_fail(temp_dir.path(),
+                      {"lifetime.begin",
+                       "ctor",
+                       "move",
+                       "invoke",
+                       "vcall",
+                       "throw",
+                       "landingpad",
+                       "resume",
+                       "dtor",
+                       "lifetime.end"},
+                      tu_id);
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr);
+    nlohmann::json ir_cert = make_ir_cert(tu_id);
+    nlohmann::json bug_trace =
+        make_bug_trace_with_steps(po_id,
+                                  tu_id,
+                                  {"I1", "I2", "I3", "I4", "I5", "I6", "I7", "I8", "I9", "I10"});
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string bug_hash = put_cert_or_fail(store, bug_trace, "bug_trace");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, bug_hash, "BUG");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    ASSERT_EQ(results->at("results").size(), 1U);
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "BUG");
+    EXPECT_EQ(entry.at("validator_status"), "Validated");
+    EXPECT_EQ(entry.at("certificate_root"), root_hash);
 }
 
 TEST(ValidatorTest, DowngradesOnHashMismatch)
@@ -375,6 +510,51 @@ TEST(ValidatorTest, DowngradesOnInconsistentAbstractState)
         {  "nullness",
          nlohmann::json::array(
          {{{"var", "p"}, {"value", "null"}}, {{"var", "p"}, {"value", "non-null"}}})}
+    };
+    nlohmann::json safety_proof = make_safety_proof(state);
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string safety_hash = put_cert_or_fail(store, safety_proof, "safety_proof");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, safety_hash, "SAFE");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "UNKNOWN");
+    EXPECT_EQ(entry.at("validator_status"), "ProofCheckFailed");
+    EXPECT_EQ(entry.at("downgrade_reason_code"), "ProofCheckFailed");
+}
+
+TEST(ValidatorTest, DowngradesOnConflictingPointsToState)
+{
+    TempDir temp_dir("sappp_validator_points_to_conflict");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-safe-pts");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-safe-pts");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr);
+    nlohmann::json ir_cert = make_ir_cert(tu_id);
+
+    nlohmann::json state = {
+        {"predicates",             nlohmann::json::array({predicate_expr})},
+        { "points_to",
+         nlohmann::json::array({{{"var", "p"}, {"targets", nlohmann::json::array({"alloc1"})}},
+         {{"var", "p"}, {"targets", nlohmann::json::array({"alloc2"})}}}) }
     };
     nlohmann::json safety_proof = make_safety_proof(state);
 
