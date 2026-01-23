@@ -577,8 +577,7 @@ validate_bug_trace_path(const ValidationContext& context,
                 return unsupported_error("BugTrace spans multiple functions");
             }
             if (block_id == prev_block_id) {
-                if (inst_ref.index < prev_inst.index
-                    && !prev_block->successors.contains(prev_block_id)) {
+                if (inst_ref.index < prev_inst.index) {
                     return proof_failed_error("BugTrace jumps backwards within block");
                 }
             } else if (!prev_block->successors.contains(block_id)) {
