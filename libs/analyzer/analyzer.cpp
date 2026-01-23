@@ -10,6 +10,7 @@
 #include "sappp/schema_validate.hpp"
 
 #include <algorithm>
+#include <array>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -330,6 +331,12 @@ struct UnknownEntryInput
     std::string_view predicate_pretty;
     const nlohmann::json* predicate_expr = nullptr;
     std::string_view function_hint;
+    std::string_view po_kind;
+    std::string_view unknown_code;
+    std::string_view missing_notes;
+    std::string_view refinement_message;
+    std::string_view refinement_action;
+    std::string_view refinement_domain;
 };
 
 [[nodiscard]] nlohmann::json make_unknown_entry(const UnknownEntryInput& input)
@@ -339,26 +346,108 @@ struct UnknownEntryInput
         { "pretty",                       std::string(input.predicate_pretty)},
         {"symbols", nlohmann::json::array({std::string(input.function_hint)})}
     };
+    if (!input.missing_notes.empty()) {
+        missing_lemma["notes"] = std::string(input.missing_notes);
+    }
 
     nlohmann::json refinement_plan = {
-        {"message","Provide invariant or solver support to discharge the PO."},
+        {"message",          std::string(input.refinement_message)},
         {"actions",
          nlohmann::json::array(
-         {nlohmann::json{{"action", "synthesize-invariant"},
-         {"params", nlohmann::json{{"po_id", input.po_id}}}}}) }
+         {nlohmann::json{{"action", std::string(input.refinement_action)},
+         {"params",
+         nlohmann::json{{"po_id", input.po_id},
+         {"po_kind", input.po_kind},
+         {"domain", input.refinement_domain}}}}})                 }
     };
 
     return nlohmann::json{
         {"unknown_stable_id", sappp::common::sha256_prefixed(input.po_id)},
         {            "po_id",                    std::string(input.po_id)},
-        {     "unknown_code",                      "Unknown.AnalysisStub"},
+        {     "unknown_code",             std::string(input.unknown_code)},
         {    "missing_lemma",                               missing_lemma},
         {  "refinement_plan",                             refinement_plan}
     };
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> build_unknown_entry(const nlohmann::json& po,
-                                                                std::string_view po_id)
+struct UnknownDetails
+{
+    std::string code;
+    std::string missing_notes;
+    std::string refinement_message;
+    std::string refinement_action;
+    std::string refinement_domain;
+};
+
+[[nodiscard]] bool is_kind_in(std::string_view kind, const std::array<std::string_view, 3>& set)
+{
+    return std::ranges::find(set, kind) != set.end();
+}
+
+[[nodiscard]] bool is_kind_in(std::string_view kind, const std::array<std::string_view, 1>& set)
+{
+    return std::ranges::find(set, kind) != set.end();
+}
+
+[[nodiscard]] bool is_kind_in(std::string_view kind, const std::array<std::string_view, 2>& set)
+{
+    return std::ranges::find(set, kind) != set.end();
+}
+
+[[nodiscard]] UnknownDetails build_unknown_details(std::string_view po_kind)
+{
+    constexpr std::array<std::string_view, 3> kLifetimeKinds{
+        {
+         "UseAfterLifetime", "DoubleFree",
+         "InvalidFree", }
+    };
+    constexpr std::array<std::string_view, 1> kInitKinds{{"UninitRead"}};
+    constexpr std::array<std::string_view, 2> kPointsToKinds{
+        {
+         "UB.NullDeref", "UB.OutOfBounds",
+         }
+    };
+
+    if (is_kind_in(po_kind, kLifetimeKinds)) {
+        return UnknownDetails{.code = "LifetimeUnmodeled",
+                              .missing_notes = "Lifetime state is not modeled yet.",
+                              .refinement_message =
+                                  "Model lifetime states to prove or refute this PO.",
+                              .refinement_action = "refine-lifetime",
+                              .refinement_domain = "lifetime"};
+    }
+    if (is_kind_in(po_kind, kInitKinds)) {
+        return UnknownDetails{.code = "DomainTooWeak.Memory",
+                              .missing_notes = "Initialization state is unknown at this access.",
+                              .refinement_message =
+                                  "Track initialization states to discharge this PO.",
+                              .refinement_action = "refine-init",
+                              .refinement_domain = "init"};
+    }
+    if (is_kind_in(po_kind, kPointsToKinds)) {
+        return UnknownDetails{.code = "PointsToUnknown",
+                              .missing_notes = "Points-to set is unknown or too wide.",
+                              .refinement_message = "Refine points-to analysis for this access.",
+                              .refinement_action = "refine-points-to",
+                              .refinement_domain = "points-to"};
+    }
+    if (po_kind.starts_with("UB.")) {
+        return UnknownDetails{.code = "DomainTooWeak.Numeric",
+                              .missing_notes = "Numeric domain is too weak to decide.",
+                              .refinement_message =
+                                  "Strengthen numeric reasoning for this UB check.",
+                              .refinement_action = "refine-numeric",
+                              .refinement_domain = "interval"};
+    }
+    return UnknownDetails{.code = "UnsupportedFeature",
+                          .missing_notes = "Unsupported PO kind in analyzer.",
+                          .refinement_message = "Extend analyzer support for this PO kind.",
+                          .refinement_action = "extend-analyzer",
+                          .refinement_domain = "unknown"};
+}
+
+[[nodiscard]] sappp::Result<nlohmann::json>
+build_unknown_entry(const nlohmann::json& po, std::string_view po_id, const UnknownDetails& details)
 {
     auto predicate_expr = extract_predicate_expr(po);
     if (!predicate_expr) {
@@ -378,12 +467,34 @@ struct UnknownEntryInput
     if (!function_hint) {
         return std::unexpected(function_hint.error());
     }
+    auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
+    if (!po_kind) {
+        return std::unexpected(po_kind.error());
+    }
 
-    UnknownEntryInput input = {.po_id = po_id,
-                               .predicate_pretty = *predicate_pretty,
-                               .predicate_expr = &(*predicate_expr),
-                               .function_hint = *function_hint};
+    UnknownEntryInput input = {
+        .po_id = po_id,
+        .predicate_pretty = *predicate_pretty,
+        .predicate_expr = &(*predicate_expr),
+        .function_hint = *function_hint,
+        .po_kind = *po_kind,
+        .unknown_code = details.code,
+        .missing_notes = details.missing_notes,
+        .refinement_message = details.refinement_message,
+        .refinement_action = details.refinement_action,
+        .refinement_domain = details.refinement_domain,
+    };
     return make_unknown_entry(input);
+}
+
+[[nodiscard]] sappp::Result<nlohmann::json> build_unknown_entry(const nlohmann::json& po,
+                                                                std::string_view po_id)
+{
+    auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
+    if (!po_kind) {
+        return std::unexpected(po_kind.error());
+    }
+    return build_unknown_entry(po, po_id, build_unknown_details(*po_kind));
 }
 
 [[nodiscard]] sappp::Result<std::vector<const nlohmann::json*>>
@@ -519,8 +630,62 @@ struct PoBaseData
     bool is_safe = false;
 };
 
-[[nodiscard]] sappp::Result<PoBaseData>
-build_po_base(const nlohmann::json& po, std::size_t index, const PoProcessingContext& context)
+[[nodiscard]] sappp::VoidResult
+store_po_proof(const nlohmann::json& po, const PoBaseData& base, const PoProcessingContext& context)
+{
+    auto po_hash = put_cert(*context.cert_store, base.po_def);
+    if (!po_hash) {
+        return std::unexpected(po_hash.error());
+    }
+
+    auto ir_hash = put_cert(*context.cert_store, base.ir_ref);
+    if (!ir_hash) {
+        return std::unexpected(ir_hash.error());
+    }
+
+    EvidenceInput evidence_input{.po = &po,
+                                 .ir_ref = &base.ir_ref,
+                                 .po_id = base.po_id,
+                                 .function_uid = base.function_uid,
+                                 .anchor = &base.anchor,
+                                 .is_bug = base.is_bug,
+                                 .is_safe = base.is_safe};
+    auto evidence_result = build_evidence(evidence_input);
+    if (!evidence_result) {
+        return std::unexpected(evidence_result.error());
+    }
+
+    auto evidence_hash = put_cert(*context.cert_store, evidence_result->evidence);
+    if (!evidence_hash) {
+        return std::unexpected(evidence_hash.error());
+    }
+
+    nlohmann::json depgraph = make_dependency_graph(*po_hash, *ir_hash, *evidence_hash);
+    auto depgraph_hash = put_cert(*context.cert_store, depgraph);
+    if (!depgraph_hash) {
+        return std::unexpected(depgraph_hash.error());
+    }
+
+    nlohmann::json root = make_proof_root(*po_hash,
+                                          *ir_hash,
+                                          *evidence_hash,
+                                          std::optional<std::string>(*depgraph_hash),
+                                          evidence_result->result_kind,
+                                          *context.versions);
+    auto root_hash = put_cert(*context.cert_store, root);
+    if (!root_hash) {
+        return std::unexpected(root_hash.error());
+    }
+    if (auto bind = context.cert_store->bind_po(base.po_id, *root_hash); !bind) {
+        return std::unexpected(bind.error());
+    }
+    return {};
+}
+
+[[nodiscard]] sappp::Result<PoBaseData> build_po_base(const nlohmann::json& po,
+                                                      const PoProcessingContext& context,
+                                                      bool is_bug,
+                                                      bool is_safe)
 {
     auto po_id = require_string(JsonFieldContext{.obj = &po, .key = "po_id", .context = "po"});
     if (!po_id) {
@@ -550,68 +715,102 @@ build_po_base(const nlohmann::json& po, std::size_t index, const PoProcessingCon
                       .anchor = std::move(*anchor),
                       .po_def = std::move(po_def),
                       .ir_ref = std::move(ir_ref),
-                      .is_bug = index == 0,
-                      .is_safe = index == 1};
+                      .is_bug = is_bug,
+                      .is_safe = is_safe};
 }
 
-[[nodiscard]] sappp::Result<PoProcessingOutput>
-process_po(const nlohmann::json& po, std::size_t index, const PoProcessingContext& context)
+struct PoDecision
 {
-    auto base = build_po_base(po, index, context);
+    bool is_bug = false;
+    bool is_safe = false;
+    bool is_unknown = false;
+    UnknownDetails unknown_details{};
+};
+
+[[nodiscard]] sappp::Result<std::optional<bool>>
+extract_predicate_boolean(const nlohmann::json& predicate_expr)
+{
+    if (!predicate_expr.contains("args") || !predicate_expr.at("args").is_array()) {
+        return std::optional<bool>();
+    }
+
+    const auto& args = predicate_expr.at("args");
+    for (const auto& arg : args | std::views::reverse) {
+        if (arg.is_boolean()) {
+            return std::optional<bool>(arg.get<bool>());
+        }
+    }
+    return std::optional<bool>();
+}
+
+[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po)
+{
+    auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
+    if (!po_kind) {
+        return std::unexpected(po_kind.error());
+    }
+    auto predicate_expr = extract_predicate_expr(po);
+    if (!predicate_expr) {
+        return std::unexpected(predicate_expr.error());
+    }
+    if (!predicate_expr->contains("op") || !predicate_expr->at("op").is_string()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "Expected predicate.expr.op string in po"));
+    }
+    std::string op = predicate_expr->at("op").get<std::string>();
+    auto predicate_bool = extract_predicate_boolean(*predicate_expr);
+    if (!predicate_bool) {
+        return std::unexpected(predicate_bool.error());
+    }
+
+    if (op == "ub.check") {
+        const std::optional<bool>& predicate_value = *predicate_bool;
+        if (predicate_value.has_value()) {
+            bool holds = *predicate_value;
+            PoDecision decision;
+            decision.is_bug = holds;
+            decision.is_safe = !holds;
+            return decision;
+        }
+        PoDecision decision;
+        decision.is_bug = true;
+        return decision;
+    }
+
+    if (op == "sink.marker") {
+        if (*po_kind == "UB.OutOfBounds" || *po_kind == "UB.NullDeref") {
+            PoDecision decision;
+            decision.is_bug = true;
+            return decision;
+        }
+    }
+
+    auto details = build_unknown_details(*po_kind);
+    PoDecision decision;
+    decision.is_unknown = true;
+    decision.unknown_details = std::move(details);
+    return decision;
+}
+
+[[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
+                                                           const PoProcessingContext& context)
+{
+    auto decision = decide_po(po);
+    if (!decision) {
+        return std::unexpected(decision.error());
+    }
+    auto base = build_po_base(po, context, decision->is_bug, decision->is_safe);
     if (!base) {
         return std::unexpected(base.error());
     }
 
-    auto po_hash = put_cert(*context.cert_store, base->po_def);
-    if (!po_hash) {
-        return std::unexpected(po_hash.error());
-    }
-
-    auto ir_hash = put_cert(*context.cert_store, base->ir_ref);
-    if (!ir_hash) {
-        return std::unexpected(ir_hash.error());
-    }
-
-    EvidenceInput evidence_input{.po = &po,
-                                 .ir_ref = &base->ir_ref,
-                                 .po_id = base->po_id,
-                                 .function_uid = base->function_uid,
-                                 .anchor = &base->anchor,
-                                 .is_bug = base->is_bug,
-                                 .is_safe = base->is_safe};
-    auto evidence_result = build_evidence(evidence_input);
-    if (!evidence_result) {
-        return std::unexpected(evidence_result.error());
-    }
-
-    auto evidence_hash = put_cert(*context.cert_store, evidence_result->evidence);
-    if (!evidence_hash) {
-        return std::unexpected(evidence_hash.error());
-    }
-
-    nlohmann::json depgraph = make_dependency_graph(*po_hash, *ir_hash, *evidence_hash);
-    auto depgraph_hash = put_cert(*context.cert_store, depgraph);
-    if (!depgraph_hash) {
-        return std::unexpected(depgraph_hash.error());
-    }
-
-    nlohmann::json root = make_proof_root(*po_hash,
-                                          *ir_hash,
-                                          *evidence_hash,
-                                          std::optional<std::string>(*depgraph_hash),
-                                          evidence_result->result_kind,
-                                          *context.versions);
-    auto root_hash = put_cert(*context.cert_store, root);
-    if (!root_hash) {
-        return std::unexpected(root_hash.error());
-    }
-    if (auto bind = context.cert_store->bind_po(base->po_id, *root_hash); !bind) {
-        return std::unexpected(bind.error());
+    if (auto stored = store_po_proof(po, *base, context); !stored) {
+        return std::unexpected(stored.error());
     }
 
     PoProcessingOutput output{.po_id = base->po_id};
-    if (!base->is_bug && !base->is_safe) {
-        auto unknown_entry = build_unknown_entry(po, base->po_id);
+    if (decision->is_unknown || (!base->is_bug && !base->is_safe)) {
+        auto unknown_entry = build_unknown_entry(po, base->po_id, decision->unknown_details);
         if (!unknown_entry) {
             return std::unexpected(unknown_entry.error());
         }
@@ -684,9 +883,9 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};
 
-    for (std::size_t index = 0; index < ordered_pos_value.size(); ++index) {
-        const nlohmann::json& po = *ordered_pos_value.at(index);
-        auto processed = process_po(po, index, context);
+    for (const nlohmann::json* po_entry : ordered_pos_value) {
+        const nlohmann::json& po = *po_entry;
+        auto processed = process_po(po, context);
         if (!processed) {
             return std::unexpected(processed.error());
         }
