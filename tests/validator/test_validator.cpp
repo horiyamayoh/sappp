@@ -514,6 +514,52 @@ TEST(ValidatorTest, DowngradesOnMissingSafetyPredicate)
     EXPECT_EQ(entry.at("downgrade_reason_code"), "ProofCheckFailed");
 }
 
+TEST(ValidatorTest, AcceptsLargeNumericIntervals)
+{
+    TempDir temp_dir("sappp_validator_large_numeric");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-safe-large");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-safe-large");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr);
+    nlohmann::json ir_cert = make_ir_cert(tu_id);
+
+    nlohmann::json state = {
+        {"predicates",nlohmann::json::array({predicate_expr})                  },
+        {   "numeric",
+         nlohmann::json::array(
+         {{{"var", "x"}, {"lo", 3'000'000'000LL}, {"hi", 4'000'000'000LL}}})}
+    };
+    nlohmann::json safety_proof = make_safety_proof(state);
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string safety_hash = put_cert_or_fail(store, safety_proof, "safety_proof");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, safety_hash, "SAFE");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    ASSERT_EQ(results->at("results").size(), 1U);
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "SAFE");
+    EXPECT_EQ(entry.at("validator_status"), "Validated");
+    EXPECT_EQ(entry.at("certificate_root"), root_hash);
+}
+
 TEST(ValidatorTest, DowngradesOnInconsistentAbstractState)
 {
     TempDir temp_dir("sappp_validator_safe_inconsistent_state");
@@ -557,6 +603,73 @@ TEST(ValidatorTest, DowngradesOnInconsistentAbstractState)
     EXPECT_EQ(entry.at("category"), "UNKNOWN");
     EXPECT_EQ(entry.at("validator_status"), "ProofCheckFailed");
     EXPECT_EQ(entry.at("downgrade_reason_code"), "ProofCheckFailed");
+}
+
+TEST(ValidatorTest, DowngradesOnTuIdMismatchAcrossEntries)
+{
+    TempDir temp_dir("sappp_validator_tu_id_mismatch");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+
+    std::string po_id_a = sappp::common::sha256_prefixed("po-safe-a");
+    std::string tu_id_a = sappp::common::sha256_prefixed("tu-safe-a");
+
+    nlohmann::json po_cert_a = make_po_cert(po_id_a, predicate_expr);
+    nlohmann::json ir_cert_a = make_ir_cert(tu_id_a);
+    nlohmann::json state_a = {
+        {"predicates", nlohmann::json::array({predicate_expr})}
+    };
+    nlohmann::json safety_proof_a = make_safety_proof(state_a);
+
+    std::string po_hash_a = put_cert_or_fail(store, po_cert_a, "po_cert_a");
+    std::string ir_hash_a = put_cert_or_fail(store, ir_cert_a, "ir_cert_a");
+    std::string safety_hash_a = put_cert_or_fail(store, safety_proof_a, "safety_proof_a");
+    nlohmann::json proof_root_a = make_proof_root(po_hash_a, ir_hash_a, safety_hash_a, "SAFE");
+    std::string root_hash_a = put_cert_or_fail(store, proof_root_a, "proof_root_a");
+    bind_po_or_fail(store, po_id_a, root_hash_a);
+
+    std::string po_id_b = sappp::common::sha256_prefixed("po-safe-b");
+    std::string tu_id_b = sappp::common::sha256_prefixed("tu-safe-b");
+
+    nlohmann::json po_cert_b = make_po_cert(po_id_b, predicate_expr);
+    nlohmann::json ir_cert_b = make_ir_cert(tu_id_b);
+    nlohmann::json state_b = {
+        {"predicates", nlohmann::json::array({predicate_expr})}
+    };
+    nlohmann::json safety_proof_b = make_safety_proof(state_b);
+
+    std::string po_hash_b = put_cert_or_fail(store, po_cert_b, "po_cert_b");
+    std::string ir_hash_b = put_cert_or_fail(store, ir_cert_b, "ir_cert_b");
+    std::string safety_hash_b = put_cert_or_fail(store, safety_proof_b, "safety_proof_b");
+    nlohmann::json proof_root_b = make_proof_root(po_hash_b, ir_hash_b, safety_hash_b, "SAFE");
+    std::string root_hash_b = put_cert_or_fail(store, proof_root_b, "proof_root_b");
+    bind_po_or_fail(store, po_id_b, root_hash_b);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    std::size_t safe_count = 0;
+    std::size_t unknown_count = 0;
+    for (const auto& entry : results->at("results")) {
+        if (entry.at("category") == "SAFE") {
+            ++safe_count;
+        } else if (entry.at("category") == "UNKNOWN") {
+            ++unknown_count;
+            EXPECT_EQ(entry.at("validator_status"), "RuleViolation");
+            EXPECT_EQ(entry.at("downgrade_reason_code"), "RuleViolation");
+        }
+    }
+
+    EXPECT_EQ(safe_count, 1U);
+    EXPECT_EQ(unknown_count, 1U);
+    EXPECT_TRUE(results->at("tu_id") == tu_id_a || results->at("tu_id") == tu_id_b);
 }
 
 TEST(ValidatorTest, DowngradesOnConflictingPointsToState)

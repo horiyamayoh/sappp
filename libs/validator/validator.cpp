@@ -12,10 +12,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <ranges>
 #include <string_view>
@@ -855,10 +857,17 @@ struct AbstractStateCheckResult
     std::string reason;
 };
 
-[[nodiscard]] std::optional<int> infinity_int_value(const nlohmann::json& value)
+[[nodiscard]] std::optional<std::int64_t> infinity_int_value(const nlohmann::json& value)
 {
     if (value.is_number_integer()) {
-        return value.get<int>();
+        return value.get<std::int64_t>();
+    }
+    if (value.is_number_unsigned()) {
+        auto unsigned_value = value.get<std::uint64_t>();
+        if (unsigned_value
+            <= static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())) {
+            return static_cast<std::int64_t>(unsigned_value);
+        }
     }
     return std::nullopt;
 }
@@ -875,6 +884,12 @@ struct AbstractStateCheckResult
     }
     auto lo_value = infinity_int_value(lo);
     auto hi_value = infinity_int_value(hi);
+    if ((lo.is_number_integer() || lo.is_number_unsigned()) && !lo_value) {
+        return false;
+    }
+    if ((hi.is_number_integer() || hi.is_number_unsigned()) && !hi_value) {
+        return false;
+    }
     if (lo_value && hi_value) {
         return *lo_value <= *hi_value;
     }
@@ -1211,9 +1226,31 @@ validate_result_kind(const ResultValidationInputs& inputs)
     return index_files;
 }
 
-[[nodiscard]] sappp::Result<nlohmann::json> validate_index_entry(const ValidationContext& context,
-                                                                 const fs::path& index_path,
-                                                                 std::string& tu_id)
+[[nodiscard]] std::optional<ValidationError>
+check_tu_id_consistency(std::string_view entry_tu_id,
+                        std::optional<std::string>& tu_id,
+                        const std::optional<std::string>& expected_tu_id)
+{
+    if (expected_tu_id && entry_tu_id != *expected_tu_id) {
+        return rule_violation_error("IR tu_id mismatch: expected " + *expected_tu_id + ", got "
+                                    + std::string(entry_tu_id));
+    }
+    if (!tu_id) {
+        tu_id = std::string(entry_tu_id);
+        return std::nullopt;
+    }
+    if (*tu_id != entry_tu_id) {
+        return rule_violation_error("IR tu_id mismatch across certs: expected " + *tu_id + ", got "
+                                    + std::string(entry_tu_id));
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] sappp::Result<nlohmann::json>
+validate_index_entry(const ValidationContext& context,
+                     const fs::path& index_path,
+                     std::optional<std::string>& tu_id,
+                     const std::optional<std::string>& expected_tu_id)
 {
     auto index_json = load_index_json(index_path, *context.schema_dir);
     if (!index_json) {
@@ -1253,8 +1290,9 @@ validate_result_kind(const ResultValidationInputs& inputs)
     if (auto error = validate_ir_header(*ir_cert)) {
         return finish_or_unknown(po_id, *error, context);
     }
-    if (tu_id.empty()) {
-        tu_id = ir_cert->at("tu_id").get<std::string>();
+    std::string entry_tu_id = ir_cert->at("tu_id").get<std::string>();
+    if (auto error = check_tu_id_consistency(entry_tu_id, tu_id, expected_tu_id)) {
+        return finish_or_unknown(po_id, *error, context);
     }
 
     auto evidence_cert =
@@ -1346,10 +1384,15 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
                               .strict = strict};
     std::vector<nlohmann::json> results;
     results.reserve(index_files->size());
-    std::string tu_id;
+    std::optional<std::string> tu_id;
+    std::optional<std::string> expected_tu_id;
+    if (nir_context.index) {
+        expected_tu_id = nir_context.index->tu_id;
+        tu_id = expected_tu_id;
+    }
 
     for (const auto& index_path : *index_files) {
-        auto result = validate_index_entry(context, index_path, tu_id);
+        auto result = validate_index_entry(context, index_path, tu_id, expected_tu_id);
         if (!result) {
             return std::unexpected(result.error());
         }
@@ -1365,7 +1408,7 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
         return a.at("po_id").get<std::string>() < b.at("po_id").get<std::string>();
     });
 
-    if (tu_id.empty()) {
+    if (!tu_id) {
         return std::unexpected(
             Error::make("RuleViolation", "Failed to determine tu_id from IR references"));
     }
@@ -1375,7 +1418,7 @@ sappp::Result<nlohmann::json> Validator::validate(bool strict)
         {      "schema_version",                                                           "validated_results.v1"},
         {                "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
         {        "generated_at",                                                                     generated_at},
-        {               "tu_id",                                                                            tu_id},
+        {               "tu_id",                                                                           *tu_id},
         {             "results",                                                                          results},
         {   "semantics_version",                                                             m_versions.semantics},
         {"proof_system_version",                                                          m_versions.proof_system},
