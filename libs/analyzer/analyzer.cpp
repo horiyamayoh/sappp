@@ -100,13 +100,10 @@ struct BudgetTracker
     std::set<std::string> summary_nodes_seen;
 
     explicit BudgetTracker(AnalyzerConfig::AnalysisBudget budget_in)
-        : budget(std::move(budget_in))
+        : budget(budget_in)
         , start_time(std::chrono::steady_clock::now())
-        , iterations(0)
-        , states(0)
-        , summary_nodes(0)
-        , exceeded_limit()
-        , summary_nodes_seen()
+        , exceeded_limit()      // NOLINT(readability-redundant-member-init) - -Weffc++.
+        , summary_nodes_seen()  // NOLINT(readability-redundant-member-init) - -Weffc++.
     {}
 
     [[nodiscard]] bool exceeded() const { return exceeded_limit.has_value(); }
@@ -912,7 +909,7 @@ apply_lifetime_block_transfer_with_exception(const LifetimeState& in_state,
     }
 
     for (const auto& inst : block.at("insts")) {
-        std::string_view op = "";
+        std::string_view op;
         if (inst.contains("op") && inst.at("op").is_string()) {
             op = inst.at("op").get_ref<const std::string&>();
         }
@@ -941,6 +938,7 @@ apply_lifetime_block_transfer_with_exception(const LifetimeState& in_state,
                                   .has_exception_op = has_exception_op};
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker* budget)
 {
     bool changed = true;
@@ -1100,9 +1098,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
     return std::nullopt;
 }
 
-[[nodiscard]] LifetimeAnalysisCache
-build_lifetime_analysis_cache(const nlohmann::json& nir_json,
-                              BudgetTracker* budget)  // NOLINT(readability-function-size)
+// NOLINTNEXTLINE(readability-function-size) - Cache assembly reads structured JSON in one pass.
+[[nodiscard]] LifetimeAnalysisCache build_lifetime_analysis_cache(const nlohmann::json& nir_json,
+                                                                  BudgetTracker* budget)
 {
     LifetimeAnalysisCache cache;
     if (budget != nullptr && budget->exceeded()) {
@@ -1478,7 +1476,7 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
     }
 
     for (const auto& inst : block.at("insts")) {
-        std::string_view op = "";
+        std::string_view op;
         if (inst.contains("op") && inst.at("op").is_string()) {
             op = inst.at("op").get_ref<const std::string&>();
         }
@@ -1511,6 +1509,7 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                                   .has_exception_op = has_exception_op};
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 [[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis,
                                                            BudgetTracker* budget)
 {
@@ -1557,8 +1556,9 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                if (transfer->exception_out.has_value()) {
-                    exception_out = std::move(*transfer->exception_out);
+                auto exception_state = std::move(transfer->exception_out);
+                if (exception_state.has_value()) {
+                    exception_out = std::move(*exception_state);
                 } else {
                     exception_out = merge_points_to_states(in_state, transfer->normal_out);
                 }
@@ -1608,8 +1608,9 @@ points_to_state_at_anchor(const FunctionPointsToAnalysis& analysis, const IrAnch
 }
 
 [[nodiscard]] sappp::Result<PointsToAnalysisCache>
-build_points_to_analysis_cache(const nlohmann::json& nir_json,
-                               BudgetTracker* budget)  // NOLINT(readability-function-size)
+build_points_to_analysis_cache(const nlohmann::json& nir_json,  // NOLINT(readability-function-size)
+                                                                // - cache assembly reads JSON.
+                               BudgetTracker* budget)
 {
     PointsToAnalysisCache cache;
     if (budget != nullptr && budget->exceeded()) {
@@ -1917,7 +1918,7 @@ apply_heap_block_transfer_with_exception(const HeapLifetimeState& in_state,
     }
 
     for (const auto& inst : block.at("insts")) {
-        std::string_view op = "";
+        std::string_view op;
         if (inst.contains("op") && inst.at("op").is_string()) {
             op = inst.at("op").get_ref<const std::string&>();
         }
@@ -1946,6 +1947,7 @@ apply_heap_block_transfer_with_exception(const HeapLifetimeState& in_state,
                                       .has_exception_op = has_exception_op};
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, BudgetTracker* budget)
 {
     bool changed = true;
@@ -2968,19 +2970,9 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
 
 [[nodiscard]] bool allow_feature_override(std::string_view unknown_code)
 {
-    if (unknown_code.starts_with("Lifetime")) {
-        return false;
-    }
-    if (unknown_code == "BudgetExceeded") {
-        return false;
-    }
-    if (unknown_code.starts_with("MissingContract.")) {
-        return false;
-    }
-    if (unknown_code.starts_with("VirtualCall.")) {
-        return false;
-    }
-    return true;
+    return !unknown_code.starts_with("Lifetime") && unknown_code != "BudgetExceeded"
+           && !unknown_code.starts_with("MissingContract.")
+           && !unknown_code.starts_with("VirtualCall.");
 }
 
 [[nodiscard]] UnknownDetails build_use_after_lifetime_unknown_details(std::string_view notes)
