@@ -222,6 +222,84 @@ std::string describe_receiver_type(const clang::CXXMemberCallExpr* call_expr)
     return receiver->getType().getAsString();
 }
 
+std::optional<std::string> build_decl_usr(const clang::Decl* decl)
+{
+    if (decl == nullptr) {
+        return std::nullopt;
+    }
+    llvm::SmallString<128> usr_buffer;
+    if (clang::index::generateUSRForDecl(decl, usr_buffer)) {
+        return std::nullopt;
+    }
+    return std::string(usr_buffer.str());
+}
+
+std::string describe_decl_name(const clang::NamedDecl* decl, std::string_view fallback)
+{
+    if (decl == nullptr) {
+        return std::string(fallback);
+    }
+    if (!decl->getName().empty()) {
+        return decl->getName().str();
+    }
+    auto qualified = decl->getQualifiedNameAsString();
+    if (!qualified.empty()) {
+        return qualified;
+    }
+    return std::string(fallback);
+}
+
+std::string describe_decl_kind(const clang::ValueDecl* decl)
+{
+    if (decl == nullptr) {
+        return "unknown";
+    }
+    if (clang::isa<clang::ParmVarDecl>(decl)) {
+        return "param";
+    }
+    if (clang::isa<clang::FieldDecl>(decl)) {
+        return "member";
+    }
+    if (const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl)) {
+        if (var_decl->hasGlobalStorage() && !var_decl->isLocalVarDeclOrParm()) {
+            return "global";
+        }
+        if (var_decl->isStaticLocal()) {
+            return "static";
+        }
+        return "local";
+    }
+    if (clang::isa<clang::FunctionDecl>(decl)) {
+        return "function";
+    }
+    return "decl";
+}
+
+std::string describe_type_or_unknown(const clang::QualType& type)
+{
+    auto type_name = type.getAsString();
+    if (type_name.empty()) {
+        return "unknown";
+    }
+    return type_name;
+}
+
+nlohmann::json build_ref_from_decl(const clang::ValueDecl* decl)
+{
+    std::string name = describe_decl_name(decl, "ref");
+    std::string type = decl != nullptr ? describe_type_or_unknown(decl->getType()) : "unknown";
+    nlohmann::json ref = {
+        {  "op",                    "ref"},
+        {"name",                     name},
+        {"type",                     type},
+        {"kind", describe_decl_kind(decl)}
+    };
+    if (auto usr = build_decl_usr(decl)) {
+        ref["usr"] = *usr;
+    }
+    return ref;
+}
+
 std::string build_method_uid(const clang::CXXMethodDecl* method_decl)
 {
     if (method_decl == nullptr) {
@@ -331,9 +409,62 @@ bool ctor_can_throw(const clang::CXXConstructExpr* ctor_expr)
     return !is_nothrow_function_type(proto);
 }
 
+ir::FunctionSignature build_function_signature(const clang::FunctionDecl* func_decl)
+{
+    ir::FunctionSignature signature;
+    if (func_decl == nullptr) {
+        signature.return_type = "unknown";
+        return signature;
+    }
+
+    signature.return_type = describe_type_or_unknown(func_decl->getReturnType());
+    const auto* proto = func_decl->getType()->getAs<clang::FunctionProtoType>();
+    signature.is_noexcept = is_nothrow_function_type(proto);
+    signature.variadic = proto != nullptr && proto->isVariadic();
+
+    signature.params.reserve(func_decl->getNumParams());
+    for (unsigned i = 0; i < func_decl->getNumParams(); ++i) {
+        ir::FunctionParam param;
+        const auto* param_decl = func_decl->getParamDecl(i);
+        if (param_decl != nullptr) {
+            auto name = param_decl->getNameAsString();
+            if (name.empty()) {
+                name = "param" + std::to_string(i);
+            }
+            param.name = std::move(name);
+            param.type = describe_type_or_unknown(param_decl->getType());
+        } else {
+            param.name = "param" + std::to_string(i);
+            param.type = "unknown";
+        }
+        signature.params.push_back(std::move(param));
+    }
+    return signature;
+}
+
 const clang::Expr* strip_parens(const clang::Expr* expr)
 {
     return expr != nullptr ? expr->IgnoreParenImpCasts() : nullptr;
+}
+
+nlohmann::json build_ref_expr(const clang::Expr* expr)
+{
+    const auto* stripped = strip_parens(expr);
+    if (const auto* decl_ref = clang::dyn_cast_or_null<clang::DeclRefExpr>(stripped)) {
+        return build_ref_from_decl(decl_ref->getDecl());
+    }
+    if (const auto* member = clang::dyn_cast_or_null<clang::MemberExpr>(stripped)) {
+        return build_ref_from_decl(member->getMemberDecl());
+    }
+    nlohmann::json ref = {
+        {  "op",  "ref"},
+        {"name", "expr"},
+        {"kind", "expr"}
+    };
+    if (stripped != nullptr) {
+        ref["type"] = stripped->getType().getAsString();
+    }
+    return ref;
 }
 
 std::optional<std::string> extract_string_literal(const clang::Expr* expr)
@@ -405,6 +536,116 @@ extract_sappp_check_args(const clang::CallExpr* call_expr)
     return args;
 }
 
+nlohmann::json build_call_arg_summary(const std::vector<const clang::Expr*>& args)
+{
+    nlohmann::json types = nlohmann::json::array();
+    for (const auto* arg : args) {
+        if (arg == nullptr) {
+            types.push_back("unknown");
+            continue;
+        }
+        types.push_back(describe_type_or_unknown(arg->getType()));
+    }
+    return nlohmann::json{
+        {   "op",                        "args"},
+        {"count", static_cast<int>(args.size())},
+        {"types",              std::move(types)}
+    };
+}
+
+nlohmann::json build_call_callee_summary(const clang::CallExpr* call_expr)
+{
+    nlohmann::json callee = {
+        {"op", "callee"}
+    };
+    if (call_expr == nullptr) {
+        callee["kind"] = "unknown";
+        callee["name"] = "callee";
+        return callee;
+    }
+
+    if (const auto* direct = call_expr->getDirectCallee()) {
+        callee["kind"] = "direct";
+        callee["name"] = direct->getQualifiedNameAsString();
+        if (auto usr = build_decl_usr(direct)) {
+            callee["usr"] = *usr;
+        }
+        callee["signature"] = describe_type_or_unknown(direct->getType());
+        return callee;
+    }
+
+    callee["kind"] = "indirect";
+    const auto* callee_expr = call_expr->getCallee();
+    if (callee_expr != nullptr) {
+        if (auto name = extract_decl_ref_name(callee_expr)) {
+            callee["name"] = *name;
+        } else {
+            callee["name"] = "indirect";
+        }
+        callee["signature"] = describe_type_or_unknown(callee_expr->getType());
+    } else {
+        callee["name"] = "indirect";
+        callee["signature"] = describe_type_or_unknown(call_expr->getType());
+    }
+    return callee;
+}
+
+nlohmann::json build_ctor_callee_summary(const clang::CXXConstructExpr* ctor_expr)
+{
+    nlohmann::json callee = {
+        {  "op", "callee"},
+        {"kind",   "ctor"}
+    };
+    if (ctor_expr == nullptr) {
+        callee["name"] = "ctor";
+        return callee;
+    }
+    const auto* ctor_decl = ctor_expr->getConstructor();
+    if (ctor_decl != nullptr) {
+        callee["name"] = ctor_decl->getQualifiedNameAsString();
+        if (auto usr = build_decl_usr(ctor_decl)) {
+            callee["usr"] = *usr;
+        }
+        callee["signature"] = describe_type_or_unknown(ctor_decl->getType());
+    } else {
+        callee["name"] = "ctor";
+        callee["signature"] = describe_type_or_unknown(ctor_expr->getType());
+    }
+    return callee;
+}
+
+std::vector<nlohmann::json> build_call_args(const clang::CallExpr* call_expr)
+{
+    std::vector<nlohmann::json> args;
+    args.reserve(2);
+    args.push_back(build_call_callee_summary(call_expr));
+    std::vector<const clang::Expr*> call_args;
+    if (call_expr != nullptr) {
+        call_args.reserve(call_expr->getNumArgs());
+        for (unsigned i = 0; i < call_expr->getNumArgs(); ++i) {
+            call_args.push_back(call_expr->getArg(i));
+        }
+    }
+    args.push_back(build_call_arg_summary(call_args));
+    return args;
+}
+
+std::vector<nlohmann::json> build_ctor_call_args(const clang::CXXConstructExpr* ctor_expr)
+{
+    std::vector<nlohmann::json> args;
+    args.reserve(2);
+    args.push_back(build_ctor_callee_summary(ctor_expr));
+    std::vector<const clang::Expr*> call_args;
+    if (ctor_expr != nullptr) {
+        call_args.reserve(ctor_expr->getNumArgs());
+        for (unsigned i = 0; i < ctor_expr->getNumArgs(); ++i) {
+            call_args.push_back(ctor_expr->getArg(i));
+        }
+    }
+    args.push_back(build_call_arg_summary(call_args));
+    return args;
+}
+
 struct ClassifiedStmt
 {
     std::string op;
@@ -458,10 +699,12 @@ std::optional<ClassifiedStmt> classify_call_stmt(const clang::Stmt* stmt)
                 return ClassifiedStmt{.op = "ub.check", .args = std::move(*args)};
             }
         }
-        return ClassifiedStmt{.op = call_can_throw(call_expr) ? "invoke" : "call", .args = {}};
+        return ClassifiedStmt{.op = call_can_throw(call_expr) ? "invoke" : "call",
+                              .args = build_call_args(call_expr)};
     }
     if (const auto* ctor_expr = clang::dyn_cast<clang::CXXConstructExpr>(stmt)) {
-        return ClassifiedStmt{.op = ctor_can_throw(ctor_expr) ? "invoke" : "call", .args = {}};
+        return ClassifiedStmt{.op = ctor_can_throw(ctor_expr) ? "invoke" : "call",
+                              .args = build_ctor_call_args(ctor_expr)};
     }
     return std::nullopt;
 }
@@ -470,7 +713,7 @@ std::optional<ClassifiedStmt> classify_store_stmt(const clang::Stmt* stmt)
 {
     const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(stmt);
     if (bin_op != nullptr && bin_op->isAssignmentOp()) {
-        return ClassifiedStmt{.op = "store", .args = {}};
+        return ClassifiedStmt{.op = "store", .args = {build_ref_expr(bin_op->getLHS())}};
     }
     return std::nullopt;
 }
@@ -481,18 +724,23 @@ std::optional<ClassifiedStmt> classify_assign_stmt(const clang::Stmt* stmt)
     if (decl_stmt == nullptr) {
         return std::nullopt;
     }
+    std::vector<nlohmann::json> args;
     for (const auto* decl : decl_stmt->decls()) {
-        if (clang::isa<clang::VarDecl>(decl)) {
-            return ClassifiedStmt{.op = "assign", .args = {}};
+        if (const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl)) {
+            args.push_back(build_ref_from_decl(var_decl));
         }
     }
-    return std::nullopt;
+    if (args.empty()) {
+        return std::nullopt;
+    }
+    return ClassifiedStmt{.op = "assign", .args = std::move(args)};
 }
 
 std::optional<ClassifiedStmt> classify_load_stmt(const clang::Stmt* stmt)
 {
     if (clang::isa<clang::DeclRefExpr>(stmt) || clang::isa<clang::MemberExpr>(stmt)) {
-        return ClassifiedStmt{.op = "load", .args = {}};
+        const auto* expr = clang::dyn_cast<clang::Expr>(stmt);
+        return ClassifiedStmt{.op = "load", .args = {build_ref_expr(expr)}};
     }
     return std::nullopt;
 }
@@ -1247,6 +1495,7 @@ build_function_def(const clang::FunctionDecl* func_decl,
     ir::FunctionDef nir_func;
     nir_func.function_uid = std::move(function_uid);
     nir_func.mangled_name = std::move(mangled_name);
+    nir_func.signature = build_function_signature(func_decl);
     nir_func.cfg = std::move(nir_cfg);
     if (!vcall_candidates.empty()) {
         nir_func.tables = ir::FunctionTables{.vcall_candidates = std::move(vcall_candidates)};
