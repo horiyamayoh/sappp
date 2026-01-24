@@ -26,6 +26,14 @@ std::filesystem::path ensure_temp_dir(const std::string& name)
     return temp_dir;
 }
 
+ContractMatchContext make_match_context()
+{
+    ContractMatchContext context;
+    context.abi = "x86_64";
+    context.library_version = "1.0.0";
+    return context;
+}
+
 nlohmann::json make_nir_with_points_to()
 {
     nlohmann::json safe_inst = {
@@ -172,7 +180,7 @@ TEST(AnalyzerPointsToTest, PointsToSimpleResolvesNullDeref)
     auto po_list = make_po_list_with_points_to();
     auto specdb_snapshot = make_contract_snapshot_for_safe();
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");

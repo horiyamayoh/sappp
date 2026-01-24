@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <limits>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -37,12 +38,34 @@ constexpr std::string_view kPointsToOutOfBoundsTarget = "oob";
 constexpr std::size_t kMaxPointsToTargets = 4;
 constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 
+// NOLINTBEGIN(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
+// - Explicit init keeps -Weffc++ satisfied for POD-style holders.
+struct VersionScopeInfo
+{
+    std::string abi;
+    std::string library_version;
+    std::vector<std::string> conditions;
+    int priority;
+
+    VersionScopeInfo()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : abi()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , library_version()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , conditions()
+        , priority(0)
+    {}
+};
+// NOLINTEND(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
+
 struct ContractInfo
 {
     std::string contract_id;
     std::string tier;
     std::string target_usr;
     nlohmann::json version_scope;
+    VersionScopeInfo scope;
     bool has_pre = false;
     bool has_post = false;
     bool has_frame = false;
@@ -235,6 +258,65 @@ struct BudgetTracker
     return &obj.at(key);
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Keep scope validation explicit for diagnostics.
+[[nodiscard]] sappp::Result<VersionScopeInfo> parse_version_scope(const nlohmann::json& contract,
+                                                                  nlohmann::json& normalized_scope)
+{
+    VersionScopeInfo scope;
+    if (!contract.contains("version_scope")) {
+        normalized_scope = nlohmann::json::object();
+        return scope;
+    }
+    if (!contract.at("version_scope").is_object()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "version_scope must be an object in contract"));
+    }
+    normalized_scope = contract.at("version_scope");
+    const auto& scope_obj = contract.at("version_scope");
+
+    if (scope_obj.contains("abi")) {
+        if (!scope_obj.at("abi").is_string()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType", "version_scope.abi must be a string"));
+        }
+        scope.abi = scope_obj.at("abi").get<std::string>();
+    }
+    if (scope_obj.contains("library_version")) {
+        if (!scope_obj.at("library_version").is_string()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType",
+                                   "version_scope.library_version must be a string"));
+        }
+        scope.library_version = scope_obj.at("library_version").get<std::string>();
+    }
+    if (scope_obj.contains("priority")) {
+        if (!scope_obj.at("priority").is_number_integer()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType", "version_scope.priority must be integer"));
+        }
+        scope.priority = scope_obj.at("priority").get<int>();
+    }
+    if (scope_obj.contains("conditions")) {
+        if (!scope_obj.at("conditions").is_array()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType", "version_scope.conditions must be array"));
+        }
+        for (const auto& entry : scope_obj.at("conditions")) {
+            if (!entry.is_string()) {
+                return std::unexpected(
+                    sappp::Error::make("InvalidFieldType",
+                                       "version_scope.conditions entries must be strings"));
+            }
+            scope.conditions.push_back(entry.get<std::string>());
+        }
+        std::ranges::stable_sort(scope.conditions);
+        auto unique_end = std::ranges::unique(scope.conditions);
+        scope.conditions.erase(unique_end.begin(), unique_end.end());
+        normalized_scope["conditions"] = scope.conditions;
+    }
+    return scope;
+}
+
 [[nodiscard]] sappp::Result<ContractInfo> parse_contract_entry(const nlohmann::json& contract)
 {
     if (!contract.is_object()) {
@@ -262,9 +344,10 @@ struct BudgetTracker
         return std::unexpected(target_usr.error());
     }
 
-    nlohmann::json version_scope = nlohmann::json::object();
-    if (contract.contains("version_scope") && contract.at("version_scope").is_object()) {
-        version_scope = contract.at("version_scope");
+    nlohmann::json version_scope;
+    auto scope_info = parse_version_scope(contract, version_scope);
+    if (!scope_info) {
+        return std::unexpected(scope_info.error());
     }
 
     bool has_pre = false;
@@ -286,6 +369,7 @@ struct BudgetTracker
         .tier = std::move(*tier),
         .target_usr = std::move(*target_usr),
         .version_scope = std::move(version_scope),
+        .scope = std::move(*scope_info),
         .has_pre = has_pre,
         .has_post = has_post,
         .has_frame = has_frame,
@@ -340,6 +424,11 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
     return args.at(1).get<std::string>();
 }
 
+[[nodiscard]] std::vector<const ContractInfo*>
+select_contracts_for_target(std::string_view usr,
+                            const ContractIndex& contract_index,
+                            const ContractMatchContext& context);
+
 // NOLINTNEXTLINE(readability-function-size) - Parse vcall candidate tables.
 [[nodiscard]] VCallCandidateSetMap collect_vcall_candidate_sets(const nlohmann::json& func)
 {
@@ -373,7 +462,8 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
 
 // NOLINTNEXTLINE(readability-function-size) - Summarize vcall candidates.
 [[nodiscard]] VCallSummaryMap build_vcall_summary_map(const nlohmann::json& nir_json,
-                                                      const ContractIndex& contract_index)
+                                                      const ContractIndex& contract_index,
+                                                      const ContractMatchContext& context)
 {
     VCallSummaryMap summaries;
     if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
@@ -447,13 +537,11 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
         summary.candidate_methods.erase(method_unique.begin(), method_unique.end());
 
         for (const auto& method : summary.candidate_methods) {
-            auto contract_it = contract_index.find(method);
             bool has_pre = false;
-            if (contract_it != contract_index.end()) {
-                for (const auto& contract : contract_it->second) {
-                    summary.candidate_contracts.push_back(&contract);
-                    has_pre = has_pre || contract.has_pre;
-                }
+            auto matched_contracts = select_contracts_for_target(method, contract_index, context);
+            for (const auto* contract : matched_contracts) {
+                summary.candidate_contracts.push_back(contract);
+                has_pre = has_pre || contract->has_pre;
             }
             if (!has_pre) {
                 summary.missing_contract_targets.push_back(method);
@@ -544,8 +632,142 @@ struct ContractMatchSummary
     {}
 };
 
+[[nodiscard]] ContractMatchContext normalize_match_context(ContractMatchContext context)
+{
+    std::ranges::stable_sort(context.conditions);
+    auto unique_end = std::ranges::unique(context.conditions);
+    context.conditions.erase(unique_end.begin(), unique_end.end());
+    return context;
+}
+
+[[nodiscard]] bool is_subset_sorted(const std::vector<std::string>& subset,
+                                    const std::vector<std::string>& superset)
+{
+    return std::ranges::includes(superset, subset);
+}
+
+struct ContractMatchCandidate
+{
+    const ContractInfo* contract = nullptr;
+    bool abi_specific = false;
+    bool library_specific = false;
+    std::size_t conditions_specificity = 0;
+};
+
+[[nodiscard]] std::optional<ContractMatchCandidate>
+evaluate_contract_candidate(const ContractInfo& contract, const ContractMatchContext& context)
+{
+    ContractMatchCandidate candidate;
+    candidate.contract = &contract;
+
+    if (!contract.scope.abi.empty()) {
+        if (context.abi.empty() || contract.scope.abi != context.abi) {
+            return std::nullopt;
+        }
+        candidate.abi_specific = true;
+    }
+    if (!contract.scope.library_version.empty()) {
+        if (context.library_version.empty()
+            || contract.scope.library_version != context.library_version) {
+            return std::nullopt;
+        }
+        candidate.library_specific = true;
+    }
+    if (!contract.scope.conditions.empty()) {
+        if (context.conditions.empty()
+            || !is_subset_sorted(contract.scope.conditions, context.conditions)) {
+            return std::nullopt;
+        }
+        candidate.conditions_specificity = contract.scope.conditions.size();
+    }
+    return candidate;
+}
+
+// NOLINTBEGIN(readability-function-size) - Matching rules are explicitly staged.
+[[nodiscard]] std::vector<const ContractInfo*>
+select_contracts_for_target(std::string_view usr,
+                            const ContractIndex& contract_index,
+                            const ContractMatchContext& context)
+{
+    auto it = contract_index.find(std::string(usr));
+    if (it == contract_index.end()) {
+        return {};
+    }
+
+    std::vector<ContractMatchCandidate> candidates;
+    candidates.reserve(it->second.size());
+    for (const auto& contract : it->second) {
+        auto candidate = evaluate_contract_candidate(contract, context);
+        if (!candidate) {
+            continue;
+        }
+        candidates.push_back(*candidate);
+    }
+    if (candidates.empty()) {
+        return {};
+    }
+
+    bool has_specific_abi = std::ranges::any_of(candidates, [](const auto& entry) noexcept {
+        return entry.abi_specific;
+    });
+    if (has_specific_abi) {
+        auto abi_end = std::ranges::remove_if(candidates, [](const auto& entry) noexcept {
+            return !entry.abi_specific;
+        });
+        candidates.erase(abi_end.begin(), abi_end.end());
+    }
+
+    bool has_specific_library = std::ranges::any_of(candidates, [](const auto& entry) noexcept {
+        return entry.library_specific;
+    });
+    if (has_specific_library) {
+        auto lib_end = std::ranges::remove_if(candidates, [](const auto& entry) noexcept {
+            return !entry.library_specific;
+        });
+        candidates.erase(lib_end.begin(), lib_end.end());
+    }
+
+    std::size_t max_conditions = 0;
+    for (const auto& candidate : candidates) {
+        max_conditions = std::max(max_conditions, candidate.conditions_specificity);
+    }
+    if (max_conditions > 0) {
+        auto cond_end = std::ranges::remove_if(candidates, [&](const auto& entry) noexcept {
+            return entry.conditions_specificity != max_conditions;
+        });
+        candidates.erase(cond_end.begin(), cond_end.end());
+    }
+
+    int max_priority = std::numeric_limits<int>::min();
+    for (const auto& candidate : candidates) {
+        max_priority = std::max(max_priority, candidate.contract->scope.priority);
+    }
+    auto priority_end = std::ranges::remove_if(candidates, [&](const auto& entry) noexcept {
+        return entry.contract->scope.priority != max_priority;
+    });
+    candidates.erase(priority_end.begin(), priority_end.end());
+
+    std::vector<const ContractInfo*> matched;
+    matched.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        matched.push_back(candidate.contract);
+    }
+    std::ranges::stable_sort(matched, [](const ContractInfo* a, const ContractInfo* b) noexcept {
+        return a->contract_id < b->contract_id;
+    });
+    auto unique_end =
+        std::ranges::unique(matched, [](const ContractInfo* a, const ContractInfo* b) noexcept {
+            return a->contract_id == b->contract_id;
+        });
+    matched.erase(unique_end.begin(), matched.end());
+    return matched;
+}
+// NOLINTEND(readability-function-size)
+
 [[nodiscard]] sappp::Result<ContractMatchSummary>
-match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_index)
+match_contracts_for_po(const nlohmann::json& po,
+                       const ContractIndex& contract_index,
+                       const ContractMatchContext& context)
 {
     auto function_obj =
         require_object(JsonFieldContext{.obj = &po, .key = "function", .context = "po"});
@@ -559,15 +781,15 @@ match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_i
     }
 
     ContractMatchSummary summary;
-    auto it = contract_index.find(*usr);
-    if (it == contract_index.end()) {
+    auto matched = select_contracts_for_target(*usr, contract_index, context);
+    if (matched.empty()) {
         return summary;
     }
-    summary.contracts.reserve(it->second.size());
-    for (const auto& contract : it->second) {
-        summary.contracts.push_back(&contract);
-        summary.has_pre = summary.has_pre || contract.has_pre;
-        summary.has_concurrency = summary.has_concurrency || contract.has_concurrency;
+    summary.contracts.reserve(matched.size());
+    for (const auto* contract : matched) {
+        summary.contracts.push_back(contract);
+        summary.has_pre = summary.has_pre || contract->has_pre;
+        summary.has_concurrency = summary.has_concurrency || contract->has_concurrency;
     }
     return summary;
 }
@@ -3125,6 +3347,7 @@ struct PoProcessingContext
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
     const FunctionFeatureCache* feature_cache = nullptr;
     const ContractIndex* contract_index = nullptr;
+    const ContractMatchContext* match_context = nullptr;
     const VCallSummaryMap* vcall_summaries = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
@@ -3829,7 +4052,10 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     if (context.contract_index == nullptr) {
         return ContractMatchSummary{};
     }
-    return match_contracts_for_po(po, *context.contract_index);
+    ContractMatchContext fallback;
+    const ContractMatchContext& match_context =
+        context.match_context == nullptr ? fallback : *context.match_context;
+    return match_contracts_for_po(po, *context.contract_index, match_context);
 }
 
 // NOLINTNEXTLINE(readability-function-size) - Aggregates PO artifacts.
@@ -3957,7 +4183,8 @@ Analyzer::Analyzer(AnalyzerConfig config)
 // NOLINTNEXTLINE(readability-function-size) - Top-level analysis.
 sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                                const nlohmann::json& po_list_json,
-                                               const nlohmann::json* specdb_snapshot) const
+                                               const nlohmann::json* specdb_snapshot,
+                                               const ContractMatchContext& match_context) const
 {
     auto tu_id =
         require_string(JsonFieldContext{.obj = &nir_json, .key = "tu_id", .context = "nir"});
@@ -3987,7 +4214,9 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
-    const auto vcall_summaries = build_vcall_summary_map(nir_json, *contract_index);
+    ContractMatchContext normalized_context = normalize_match_context(match_context);
+    const auto vcall_summaries =
+        build_vcall_summary_map(nir_json, *contract_index, normalized_context);
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json, &budget_tracker);
     auto points_to_cache = build_points_to_analysis_cache(nir_json, &budget_tracker);
@@ -4013,6 +4242,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .function_uid_map = &function_uid_map,
                                 .feature_cache = &feature_cache,
                                 .contract_index = &(*contract_index),
+                                .match_context = &normalized_context,
                                 .vcall_summaries = &vcall_summaries,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,

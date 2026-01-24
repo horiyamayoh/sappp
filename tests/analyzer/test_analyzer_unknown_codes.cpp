@@ -177,6 +177,14 @@ Analyzer make_analyzer(const std::filesystem::path& cert_dir)
     });
 }
 
+ContractMatchContext make_match_context()
+{
+    ContractMatchContext context;
+    context.abi = "x86_64";
+    context.library_version = "1.0.0";
+    return context;
+}
+
 void expect_unknown_code(const nlohmann::json& unknowns,
                          std::string_view expected_code,
                          std::string_view expected_action)
@@ -204,7 +212,7 @@ TEST(AnalyzerUnknownCodeTest, ExceptionFlowConservativeForUnmodeledExceptionEdge
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot();
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -221,7 +229,7 @@ TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownForVcallMissingCandidates)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot();
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -243,7 +251,7 @@ TEST(AnalyzerUnknownCodeTest, NumericUnknownWithVcallCandidates)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot(false, {"_Z3barv"});
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -260,7 +268,7 @@ TEST(AnalyzerUnknownCodeTest, AtomicOrderUnknownForAtomicRead)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot();
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -277,7 +285,7 @@ TEST(AnalyzerUnknownCodeTest, ConcurrencyUnsupportedForThreadSpawn)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot();
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -294,7 +302,7 @@ TEST(AnalyzerUnknownCodeTest, SyncContractMissingForSyncEvent)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot(false);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");

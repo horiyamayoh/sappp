@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -25,6 +26,15 @@ std::filesystem::path ensure_temp_dir(const std::string& name)
     std::filesystem::remove_all(temp_dir, ec);
     std::filesystem::create_directories(temp_dir, ec);
     return temp_dir;
+}
+
+ContractMatchContext make_match_context(std::vector<std::string> conditions = {})
+{
+    ContractMatchContext context;
+    context.abi = "x86_64";
+    context.library_version = "1.0.0";
+    context.conditions = std::move(conditions);
+    return context;
 }
 
 nlohmann::json make_nir()
@@ -457,6 +467,30 @@ nlohmann::json make_contract_snapshot(bool include_contract)
     };
 }
 
+nlohmann::json make_contract_entry(std::string contract_id,
+                                   std::string usr,
+                                   std::string abi,
+                                   std::string library_version,
+                                   std::vector<std::string> conditions,
+                                   int priority)
+{
+    return nlohmann::json{
+        {"schema_version",                        "contract_ir.v1"                          },
+        {   "contract_id",                                            std::move(contract_id)},
+        {        "target",                           nlohmann::json{{"usr", std::move(usr)}}},
+        {          "tier",                                                           "Tier1"},
+        { "version_scope",
+         nlohmann::json{{"abi", std::move(abi)},
+         {"library_version", std::move(library_version)},
+         {"conditions", std::move(conditions)},
+         {"priority", priority}}                                                            },
+        {      "contract",
+         nlohmann::json{
+         {"pre",
+         nlohmann::json{{"expr", nlohmann::json{{"op", "true"}}}, {"pretty", "true"}}}}     }
+    };
+}
+
 }  // namespace
 
 TEST(AnalyzerContractTest, AddsContractRefsAndKeepsUnknownDetails)
@@ -478,7 +512,7 @@ TEST(AnalyzerContractTest, AddsContractRefsAndKeepsUnknownDetails)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -526,7 +560,7 @@ TEST(AnalyzerContractTest, MissingContractProducesUnknownCode)
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot(false);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -554,7 +588,7 @@ TEST(AnalyzerContractTest, UseAfterLifetimeProducesBug)
     auto po_list = make_use_after_lifetime_po_list();
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
@@ -587,7 +621,7 @@ TEST(AnalyzerContractTest, UseAfterLifetimeWithDtorProducesBug)
     auto po_list = make_use_after_lifetime_po_list();
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
@@ -620,7 +654,7 @@ TEST(AnalyzerContractTest, UseAfterLifetimeAfterMoveIsUnknown)
     auto po_list = make_use_after_lifetime_po_list_for_target("moved_from", "I2");
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
@@ -647,7 +681,7 @@ TEST(AnalyzerContractTest, DoubleFreePoProducesBug)
     auto po_list = make_double_free_po_list();
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
@@ -680,7 +714,7 @@ TEST(AnalyzerContractTest, InvalidFreePoProducesBug)
     auto po_list = make_invalid_free_po_list();
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
@@ -713,12 +747,103 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
     auto po_list = make_po_list("UninitRead");
     auto specdb_snapshot = make_contract_snapshot(true);
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
     ASSERT_EQ(unknowns.size(), 1U);
     EXPECT_EQ(unknowns.at(0).at("unknown_code"), "DomainTooWeak.Memory");
+}
+
+TEST(AnalyzerContractTest, MatchContractsRespectsConditionsSpecificity)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_contract_match_conditions");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    nlohmann::json contracts = nlohmann::json::array();
+    contracts.push_back(make_contract_entry(make_sha256('d'),
+                                            "usr::foo",
+                                            "x86_64",
+                                            "1.0.0",
+                                            {"COND_A", "COND_B"},
+                                            1));
+    contracts.push_back(
+        make_contract_entry(make_sha256('e'), "usr::foo", "x86_64", "1.0.0", {"COND_A"}, 5));
+    contracts.push_back(
+        make_contract_entry(make_sha256('f'), "usr::foo", "x86_64", "1.0.0", {}, 10));
+    contracts.push_back(make_contract_entry(make_sha256('g'),
+                                            "usr::foo",
+                                            "arm64",
+                                            "1.0.0",
+                                            {"COND_A", "COND_B"},
+                                            0));
+
+    nlohmann::json specdb_snapshot = {
+        {"schema_version",                                    "specdb_snapshot.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {     "contracts",                                               contracts}
+    };
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UB.DivZero");
+    auto output =
+        analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context({"COND_A", "COND_B"}));
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    const auto& depends = unknowns.at(0).at("depends_on");
+    const auto& matched_contracts = depends.at("contracts");
+    ASSERT_EQ(matched_contracts.size(), 1U);
+    EXPECT_EQ(matched_contracts.at(0).get<std::string>(), make_sha256('d'));
+}
+
+TEST(AnalyzerContractTest, MatchContractsUsesPriorityAfterScope)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_contract_match_priority");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    nlohmann::json contracts = nlohmann::json::array();
+    contracts.push_back(
+        make_contract_entry(make_sha256('h'), "usr::foo", "x86_64", "1.0.0", {"COND_X"}, 1));
+    contracts.push_back(
+        make_contract_entry(make_sha256('i'), "usr::foo", "x86_64", "1.0.0", {"COND_X"}, 7));
+
+    nlohmann::json specdb_snapshot = {
+        {"schema_version",                                    "specdb_snapshot.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {     "contracts",                                               contracts}
+    };
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UB.DivZero");
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context({"COND_X"}));
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    const auto& depends = unknowns.at(0).at("depends_on");
+    const auto& matched_contracts = depends.at("contracts");
+    ASSERT_EQ(matched_contracts.size(), 1U);
+    EXPECT_EQ(matched_contracts.at(0).get<std::string>(), make_sha256('i'));
 }
 
 TEST(AnalyzerContractTest, VCallMissingContractProducesUnknownCode)
@@ -740,7 +865,7 @@ TEST(AnalyzerContractTest, VCallMissingContractProducesUnknownCode)
     auto po_list = make_po_list_for_function("usr::caller", "_Z6callerv", "B1", "I0");
     auto specdb_snapshot = make_contract_snapshot_for_target("usr::caller");
 
-    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
