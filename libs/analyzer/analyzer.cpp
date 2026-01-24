@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -41,6 +42,20 @@ struct ContractInfo
 };
 
 using ContractIndex = std::map<std::string, std::vector<ContractInfo>>;
+
+struct FunctionFeatures
+{
+    bool has_exception_flow = false;
+    bool has_vcall = false;
+    bool has_concurrency_ops = false;
+
+    [[nodiscard]] bool any() const
+    {
+        return has_exception_flow || has_vcall || has_concurrency_ops;
+    }
+};
+
+using FunctionFeatureIndex = std::unordered_map<std::string, FunctionFeatures>;
 
 struct JsonFieldContext
 {
@@ -226,6 +241,96 @@ build_function_uid_map(const nlohmann::json& nir_json)
     return mapping;
 }
 
+[[nodiscard]] bool is_exception_op(std::string_view op)
+{
+    constexpr std::array<std::string_view, 4> kExceptionOps{
+        {"invoke", "throw", "landingpad", "resume"}
+    };
+    return std::ranges::find(kExceptionOps, op) != kExceptionOps.end();
+}
+
+[[nodiscard]] bool is_concurrency_op(std::string_view op)
+{
+    return op.starts_with("thread.") || op.starts_with("atomic.") || op.starts_with("sync.")
+           || op == "fence";
+}
+
+[[nodiscard]] FunctionFeatures extract_function_features(const nlohmann::json& func)
+{
+    FunctionFeatures features;
+    if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+        return features;
+    }
+    const auto& cfg = func.at("cfg");
+    if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+        for (const auto& edge : cfg.at("edges")) {
+            if (!edge.is_object() || !edge.contains("kind") || !edge.at("kind").is_string()) {
+                continue;
+            }
+            if (edge.at("kind").get_ref<const std::string&>() == "exception") {
+                features.has_exception_flow = true;
+                break;
+            }
+        }
+    }
+    if (cfg.contains("blocks") && cfg.at("blocks").is_array()) {
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("insts") || !block.at("insts").is_array()) {
+                continue;
+            }
+            for (const auto& inst : block.at("insts")) {
+                if (!inst.contains("op") || !inst.at("op").is_string()) {
+                    continue;
+                }
+                const auto& op = inst.at("op").get_ref<const std::string&>();
+                if (op == "vcall") {
+                    features.has_vcall = true;
+                }
+                if (is_exception_op(op)) {
+                    features.has_exception_flow = true;
+                }
+                if (is_concurrency_op(op)) {
+                    features.has_concurrency_ops = true;
+                }
+                if (features.has_exception_flow && features.has_vcall
+                    && features.has_concurrency_ops) {
+                    return features;
+                }
+            }
+        }
+    }
+    if (func.contains("tables") && func.at("tables").is_object()) {
+        const auto& tables = func.at("tables");
+        if (tables.contains("vcall_candidates") && tables.at("vcall_candidates").is_array()
+            && !tables.at("vcall_candidates").empty()) {
+            features.has_vcall = true;
+        }
+    }
+    return features;
+}
+
+[[nodiscard]] FunctionFeatureIndex build_function_feature_index(const nlohmann::json& nir_json)
+{
+    FunctionFeatureIndex index;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return index;
+    }
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        FunctionFeatures features = extract_function_features(func);
+        if (!features.any()) {
+            continue;
+        }
+        index.emplace(func.at("function_uid").get<std::string>(), features);
+    }
+    return index;
+}
+
 [[nodiscard]] sappp::Result<std::string>
 resolve_function_uid(const std::unordered_map<std::string, std::string>& mapping,
                      const nlohmann::json& po)
@@ -253,10 +358,16 @@ resolve_function_uid(const std::unordered_map<std::string, std::string>& mapping
     return *mangled;
 }
 
+struct PoProcessingContext;
+
+[[nodiscard]] sappp::Result<const FunctionFeatures*>
+lookup_function_features(const PoProcessingContext& context, const nlohmann::json& po);
+
 struct ContractMatchSummary
 {
     std::vector<const ContractInfo*> contracts;
     bool has_pre = false;
+    bool has_concurrency = false;
 
     ContractMatchSummary()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
@@ -264,8 +375,38 @@ struct ContractMatchSummary
     {}
 };
 
+struct ScopedContract
+{
+    const ContractInfo* contract = nullptr;
+    sappp::specdb::VersionScopeRank rank;
+};
+
+[[nodiscard]] bool is_scope_rank_better(const sappp::specdb::VersionScopeRank& lhs,
+                                        const sappp::specdb::VersionScopeRank& rhs)
+{
+    if (lhs.abi_rank != rhs.abi_rank) {
+        return lhs.abi_rank > rhs.abi_rank;
+    }
+    if (lhs.library_version_rank != rhs.library_version_rank) {
+        return lhs.library_version_rank > rhs.library_version_rank;
+    }
+    if (lhs.conditions_rank != rhs.conditions_rank) {
+        return lhs.conditions_rank > rhs.conditions_rank;
+    }
+    return false;
+}
+
+[[nodiscard]] bool is_scope_rank_equal(const sappp::specdb::VersionScopeRank& lhs,
+                                       const sappp::specdb::VersionScopeRank& rhs)
+{
+    return lhs.abi_rank == rhs.abi_rank && lhs.library_version_rank == rhs.library_version_rank
+           && lhs.conditions_rank == rhs.conditions_rank;
+}
+
 [[nodiscard]] sappp::Result<ContractMatchSummary>
-match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_index)
+match_contracts_for_po(const nlohmann::json& po,
+                       const ContractIndex& contract_index,
+                       const sappp::specdb::VersionScopeContext& scope_context)
 {
     auto function_obj =
         require_object(JsonFieldContext{.obj = &po, .key = "function", .context = "po"});
@@ -283,11 +424,53 @@ match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_i
     if (it == contract_index.end()) {
         return summary;
     }
-    summary.contracts.reserve(it->second.size());
+    std::vector<ScopedContract> candidates;
+    candidates.reserve(it->second.size());
     for (const auto& contract : it->second) {
-        summary.contracts.push_back(&contract);
-        summary.has_pre = summary.has_pre || contract.has_pre;
+        auto match = sappp::specdb::evaluate_version_scope(contract.version_scope, scope_context);
+        if (!match) {
+            return std::unexpected(match.error());
+        }
+        if (!match->matches) {
+            continue;
+        }
+        candidates.push_back(ScopedContract{.contract = &contract, .rank = match->rank});
     }
+    if (candidates.empty()) {
+        return summary;
+    }
+
+    sappp::specdb::VersionScopeRank best_rank = candidates.front().rank;
+    for (const auto& candidate : candidates) {
+        if (is_scope_rank_better(candidate.rank, best_rank)) {
+            best_rank = candidate.rank;
+        }
+    }
+
+    int best_priority = std::numeric_limits<int>::min();
+    for (const auto& candidate : candidates) {
+        if (!is_scope_rank_equal(candidate.rank, best_rank)) {
+            continue;
+        }
+        best_priority = std::max(best_priority, candidate.rank.priority);
+    }
+
+    summary.contracts.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        if (!is_scope_rank_equal(candidate.rank, best_rank)) {
+            continue;
+        }
+        if (candidate.rank.priority != best_priority) {
+            continue;
+        }
+        summary.contracts.push_back(candidate.contract);
+        summary.has_pre = summary.has_pre || candidate.contract->has_pre;
+        summary.has_concurrency = summary.has_concurrency || candidate.contract->has_concurrency;
+    }
+    std::ranges::stable_sort(summary.contracts,
+                             [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                 return a->contract_id < b->contract_id;
+                             });
     return summary;
 }
 
@@ -869,6 +1052,38 @@ struct UnknownDetails
     std::string refinement_domain;
 };
 
+[[nodiscard]] std::optional<UnknownDetails>
+build_feature_unknown_details(const FunctionFeatures& features)
+{
+    if (features.has_concurrency_ops) {
+        return UnknownDetails{
+            .code = "ConcurrencyUnsupported",
+            .missing_notes = "Concurrency events are present but unsupported in v1 analysis.",
+            .refinement_message =
+                "Enable concurrency reasoning or provide synchronization contracts.",
+            .refinement_action = "enable-concurrency-domain",
+            .refinement_domain = "concurrency"};
+    }
+    if (features.has_exception_flow) {
+        return UnknownDetails{
+            .code = "ExceptionFlowConservative",
+            .missing_notes = "Exception flow is present but not modeled by the analyzer.",
+            .refinement_message =
+                "Model exception flow or provide exception summaries for this function.",
+            .refinement_action = "refine-exception-flow",
+            .refinement_domain = "exception"};
+    }
+    if (features.has_vcall) {
+        return UnknownDetails{
+            .code = "VirtualDispatchUnknown",
+            .missing_notes = "Virtual call targets are not resolved in v1 analysis.",
+            .refinement_message = "Resolve virtual dispatch targets or provide dispatch contracts.",
+            .refinement_action = "resolve-virtual-dispatch",
+            .refinement_domain = "virtual"};
+    }
+    return std::nullopt;
+}
+
 [[nodiscard]] UnknownDetails build_missing_contract_details(std::string_view clause)
 {
     std::string code = std::string("MissingContract.") + std::string(clause);
@@ -1069,12 +1284,31 @@ struct PoProcessingContext
 {
     sappp::certstore::CertStore* cert_store = nullptr;
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
+    const FunctionFeatureIndex* function_features = nullptr;
     const ContractIndex* contract_index = nullptr;
+    sappp::specdb::VersionScopeContext contract_scope_context;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
 };
+
+[[nodiscard]] sappp::Result<const FunctionFeatures*>
+lookup_function_features(const PoProcessingContext& context, const nlohmann::json& po)
+{
+    if (context.function_features == nullptr || context.function_uid_map == nullptr) {
+        return nullptr;
+    }
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto it = context.function_features->find(*function_uid);
+    if (it == context.function_features->end()) {
+        return nullptr;
+    }
+    return &it->second;
+}
 
 struct PoProcessingOutput
 {
@@ -1383,6 +1617,18 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     if (!po_kind) {
         return std::unexpected(po_kind.error());
     }
+    auto feature_lookup = lookup_function_features(context, po);
+    if (!feature_lookup) {
+        return std::unexpected(feature_lookup.error());
+    }
+    if (const auto* features = *feature_lookup; features != nullptr) {
+        if (auto details = build_feature_unknown_details(*features)) {
+            PoDecision decision;
+            decision.is_unknown = true;
+            decision.unknown_details = std::move(*details);
+            return decision;
+        }
+    }
     auto predicate_expr = extract_predicate_expr(po);
     if (!predicate_expr) {
         return std::unexpected(predicate_expr.error());
@@ -1440,7 +1686,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     if (context.contract_index == nullptr) {
         return ContractMatchSummary{};
     }
-    return match_contracts_for_po(po, *context.contract_index);
+    return match_contracts_for_po(po, *context.contract_index, context.contract_scope_context);
 }
 
 [[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
@@ -1483,6 +1729,16 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
         UnknownDetails details = decision->unknown_details;
         if (contract_match->contracts.empty() || !contract_match->has_pre) {
             details = build_missing_contract_details("Pre");
+        } else {
+            auto feature_lookup = lookup_function_features(context, po);
+            if (!feature_lookup) {
+                return std::unexpected(feature_lookup.error());
+            }
+            if (const auto* features = *feature_lookup; features != nullptr
+                                                        && features->has_concurrency_ops
+                                                        && !contract_match->has_concurrency) {
+                details = build_missing_contract_details("Concurrency");
+            }
         }
         auto contract_ids = collect_contract_ids(*contract_match);
         auto unknown_entry = build_unknown_entry(po, base->po_id, details, contract_ids);
@@ -1515,8 +1771,21 @@ ensure_unknowns(std::vector<nlohmann::json>& unknowns,
         return std::unexpected(contract_match.error());
     }
     UnknownDetails details = build_unknown_details("UB.Unknown");
+    auto feature_lookup = lookup_function_features(context, po);
+    if (!feature_lookup) {
+        return std::unexpected(feature_lookup.error());
+    }
+    if (const auto* features = *feature_lookup; features != nullptr) {
+        if (auto feature_details = build_feature_unknown_details(*features)) {
+            details = std::move(*feature_details);
+        }
+    }
     if (contract_match->contracts.empty() || !contract_match->has_pre) {
         details = build_missing_contract_details("Pre");
+    } else if (const auto* features = *feature_lookup; features != nullptr
+                                                       && features->has_concurrency_ops
+                                                       && !contract_match->has_concurrency) {
+        details = build_missing_contract_details("Concurrency");
     }
     auto contract_ids = collect_contract_ids(*contract_match);
     auto unknown_entry = build_unknown_entry(po, *po_id, details, contract_ids);
@@ -1531,7 +1800,10 @@ ensure_unknowns(std::vector<nlohmann::json>& unknowns,
 
 Analyzer::Analyzer(AnalyzerConfig config)
     : m_config(std::move(config))
-{}
+{
+    m_config.contract_scope =
+        sappp::specdb::normalize_scope_context(std::move(m_config.contract_scope));
+}
 
 sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                                const nlohmann::json& po_list_json,
@@ -1560,6 +1832,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
 
     sappp::certstore::CertStore cert_store(m_config.certstore_dir, m_config.schema_dir);
     const auto function_uid_map = build_function_uid_map(nir_json);
+    const auto function_feature_index = build_function_feature_index(nir_json);
     auto contract_index = build_contract_index(specdb_snapshot);
     if (!contract_index) {
         return std::unexpected(contract_index.error());
@@ -1572,7 +1845,9 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
 
     PoProcessingContext context{.cert_store = &cert_store,
                                 .function_uid_map = &function_uid_map,
+                                .function_features = &function_feature_index,
                                 .contract_index = &(*contract_index),
+                                .contract_scope_context = m_config.contract_scope,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
                                 .tu_id = *tu_id,

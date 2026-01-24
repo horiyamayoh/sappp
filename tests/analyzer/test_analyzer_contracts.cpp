@@ -5,6 +5,8 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -36,6 +38,27 @@ nlohmann::json make_nir()
         {         "tu_id",                                        make_sha256('a')},
         {     "functions",                                 nlohmann::json::array()}
     };
+}
+
+[[nodiscard]] nlohmann::json make_simple_cfg(const nlohmann::json& inst,
+                                             const nlohmann::json& edges)
+{
+    nlohmann::json block = {
+        {   "id",                          "B1"},
+        {"insts", nlohmann::json::array({inst})}
+    };
+    return nlohmann::json{
+        { "entry",                           "B1"},
+        {"blocks", nlohmann::json::array({block})},
+        { "edges",                          edges}
+    };
+}
+
+[[nodiscard]] nlohmann::json make_nir_with_function(const nlohmann::json& func)
+{
+    nlohmann::json nir = make_nir();
+    nir["functions"] = nlohmann::json::array({func});
+    return nir;
 }
 
 nlohmann::json make_nir_with_lifetime()
@@ -73,6 +96,63 @@ nlohmann::json make_nir_with_lifetime()
         {         "tu_id",                                        make_sha256('a')},
         {     "functions",                           nlohmann::json::array({func})}
     };
+}
+
+[[nodiscard]] nlohmann::json make_nir_with_exception_flow()
+{
+    nlohmann::json inst = {
+        {  "id",                    "I1"},
+        {  "op",                "invoke"},
+        {"args", nlohmann::json::array()}
+    };
+    nlohmann::json edges = nlohmann::json::array({
+        {{"from", "B1"}, {"to", "B1"}, {"kind", "exception"}}
+    });
+    nlohmann::json cfg = make_simple_cfg(inst, edges);
+    nlohmann::json func = {
+        {"function_uid",     "usr::foo"},
+        {"mangled_name",      "_Z3foov"},
+        {         "cfg", std::move(cfg)}
+    };
+    return make_nir_with_function(func);
+}
+
+[[nodiscard]] nlohmann::json make_nir_with_vcall()
+{
+    nlohmann::json inst = {
+        {  "id",                    "I1"},
+        {  "op",                 "vcall"},
+        {"args", nlohmann::json::array()}
+    };
+    nlohmann::json cfg = make_simple_cfg(inst, nlohmann::json::array());
+    nlohmann::json tables = {
+        {"vcall_candidates",
+         nlohmann::json::array(
+             {{{"id", "CS0"}, {"methods", nlohmann::json::array({"usr::foo"})}}})}
+    };
+    nlohmann::json func = {
+        {"function_uid",        "usr::foo"},
+        {"mangled_name",         "_Z3foov"},
+        {         "cfg",    std::move(cfg)},
+        {      "tables", std::move(tables)}
+    };
+    return make_nir_with_function(func);
+}
+
+[[nodiscard]] nlohmann::json make_nir_with_concurrency()
+{
+    nlohmann::json inst = {
+        {  "id",                    "I1"},
+        {  "op",          "thread.spawn"},
+        {"args", nlohmann::json::array()}
+    };
+    nlohmann::json cfg = make_simple_cfg(inst, nlohmann::json::array());
+    nlohmann::json func = {
+        {"function_uid",     "usr::foo"},
+        {"mangled_name",      "_Z3foov"},
+        {         "cfg", std::move(cfg)}
+    };
+    return make_nir_with_function(func);
 }
 
 nlohmann::json make_po_list(std::string_view po_kind)
@@ -132,24 +212,28 @@ nlohmann::json make_use_after_lifetime_po_list()
     };
 }
 
-nlohmann::json make_contract_snapshot(bool include_contract)
+nlohmann::json make_contract_snapshot(bool include_contract,
+                                      bool include_concurrency_clause = false)
 {
     nlohmann::json contracts = nlohmann::json::array();
     if (include_contract) {
+        nlohmann::json contract_body = {
+            {"pre", nlohmann::json{{"expr", nlohmann::json{{"op", "true"}}}, {"pretty", "true"}}}
+        };
+        if (include_concurrency_clause) {
+            contract_body["concurrency"] = nlohmann::json::object();
+        }
         contracts.push_back(nlohmann::json{
-            {"schema_version",                    "contract_ir.v1"                              },
-            {   "contract_id",                                                  make_sha256('d')},
-            {        "target",                               nlohmann::json{{"usr", "usr::foo"}}},
-            {          "tier",                                                           "Tier1"},
+            {"schema_version","contract_ir.v1"                              },
+            {   "contract_id",                    make_sha256('d')},
+            {        "target", nlohmann::json{{"usr", "usr::foo"}}},
+            {          "tier",                             "Tier1"},
             { "version_scope",
              nlohmann::json{{"abi", "x86_64"},
              {"library_version", "1.0.0"},
              {"conditions", nlohmann::json::array()},
-             {"priority", 0}}                                                                   },
-            {      "contract",
-             nlohmann::json{
-             {"pre",
-             nlohmann::json{{"expr", nlohmann::json{{"op", "true"}}}, {"pretty", "true"}}}}     }
+             {"priority", 0}}                                     },
+            {      "contract",            std::move(contract_body)}
         });
     }
 
@@ -158,6 +242,50 @@ nlohmann::json make_contract_snapshot(bool include_contract)
         {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
         {  "generated_at",                                  "1970-01-01T00:00:00Z"},
         {     "contracts",                                               contracts}
+    };
+}
+
+[[nodiscard]] nlohmann::json make_contract_entry(std::string contract_id,
+                                                 std::string abi,
+                                                 std::string library_version,
+                                                 std::vector<std::string> conditions,
+                                                 int priority)
+{
+    nlohmann::json scope = {
+        {  "priority",                priority},
+        {"conditions", nlohmann::json::array()}
+    };
+    if (!abi.empty()) {
+        scope["abi"] = std::move(abi);
+    }
+    if (!library_version.empty()) {
+        scope["library_version"] = std::move(library_version);
+    }
+    for (auto& condition : conditions) {
+        scope["conditions"].push_back(std::move(condition));
+    }
+
+    nlohmann::json contract_body = {
+        {"pre", nlohmann::json{{"expr", nlohmann::json{{"op", "true"}}}, {"pretty", "true"}}}
+    };
+
+    return nlohmann::json{
+        {"schema_version",                    "contract_ir.v1"},
+        {   "contract_id",              std::move(contract_id)},
+        {        "target", nlohmann::json{{"usr", "usr::foo"}}},
+        {          "tier",                             "Tier1"},
+        { "version_scope",                    std::move(scope)},
+        {      "contract",            std::move(contract_body)}
+    };
+}
+
+[[nodiscard]] nlohmann::json make_contract_snapshot_from_contracts(nlohmann::json contracts)
+{
+    return nlohmann::json{
+        {"schema_version",                                    "specdb_snapshot.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {     "contracts",                                    std::move(contracts)}
     };
 }
 
@@ -173,7 +301,8 @@ TEST(AnalyzerContractTest, AddsContractRefsAndKeepsUnknownDetails)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
     });
 
     auto nir = make_nir();
@@ -219,7 +348,8 @@ TEST(AnalyzerContractTest, MissingContractProducesUnknownCode)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
     });
 
     auto nir = make_nir();
@@ -245,7 +375,8 @@ TEST(AnalyzerContractTest, UseAfterLifetimeProducesBug)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
     });
 
     auto nir = make_nir_with_lifetime();
@@ -276,7 +407,8 @@ TEST(AnalyzerContractTest, DoubleFreePoProducesLifetimeUnknown)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
     });
 
     auto nir = make_nir();
@@ -301,7 +433,8 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
     });
 
     auto nir = make_nir();
@@ -314,6 +447,153 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
     const auto& unknowns = output->unknown_ledger.at("unknowns");
     ASSERT_EQ(unknowns.size(), 1U);
     EXPECT_EQ(unknowns.at(0).at("unknown_code"), "DomainTooWeak.Memory");
+}
+
+TEST(AnalyzerContractTest, ExceptionFlowProducesUnknownCode)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_exception_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
+    });
+
+    auto nir = make_nir_with_exception_flow();
+    auto po_list = make_po_list("UB.DivZero");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "ExceptionFlowConservative");
+}
+
+TEST(AnalyzerContractTest, VirtualDispatchProducesUnknownCode)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
+    });
+
+    auto nir = make_nir_with_vcall();
+    auto po_list = make_po_list("UB.DivZero");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "VirtualDispatchUnknown");
+}
+
+TEST(AnalyzerContractTest, ConcurrencyUnsupportedProducesUnknownCode)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_concurrency_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
+    });
+
+    auto nir = make_nir_with_concurrency();
+    auto po_list = make_po_list("UB.DivZero");
+    auto specdb_snapshot = make_contract_snapshot(true, true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "ConcurrencyUnsupported");
+}
+
+TEST(AnalyzerContractTest, ResolvesContractsByScopeAndPriority)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_contract_resolution");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"       },
+        .contract_scope = {      .abi = "x86_64",
+                     .library_version = "1.0.0",
+                     .conditions = {"COND_A", "COND_B"}}
+    });
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UB.DivZero");
+
+    nlohmann::json contracts = nlohmann::json::array(
+        {make_contract_entry(make_sha256('d'), "x86_64", "1.0.0", {"COND_A"}, 0),
+         make_contract_entry(make_sha256('e'), "x86_64", "1.0.0", {}, 9),
+         make_contract_entry(make_sha256('f'), "", "", {}, 10)});
+    auto specdb_snapshot = make_contract_snapshot_from_contracts(std::move(contracts));
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    ASSERT_TRUE(unknowns.at(0).contains("depends_on"));
+    const auto& matched = unknowns.at(0).at("depends_on").at("contracts");
+    ASSERT_EQ(matched.size(), 1U);
+    EXPECT_EQ(matched.at(0), make_sha256('d'));
+}
+
+TEST(AnalyzerContractTest, ResolvesContractsByPriorityWhenScopeEqual)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_contract_priority");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {      .abi = "x86_64", .library_version = "", .conditions = {}}
+    });
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UB.DivZero");
+
+    nlohmann::json contracts =
+        nlohmann::json::array({make_contract_entry(make_sha256('g'), "x86_64", "", {}, 1),
+                               make_contract_entry(make_sha256('h'), "x86_64", "", {}, 7)});
+    auto specdb_snapshot = make_contract_snapshot_from_contracts(std::move(contracts));
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    ASSERT_TRUE(unknowns.at(0).contains("depends_on"));
+    const auto& matched = unknowns.at(0).at("depends_on").at("contracts");
+    ASSERT_EQ(matched.size(), 1U);
+    EXPECT_EQ(matched.at(0), make_sha256('h'));
 }
 
 }  // namespace sappp::analyzer::test

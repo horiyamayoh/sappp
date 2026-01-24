@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -104,6 +105,50 @@ TEST(SpecdbTest, BuildSnapshotCollectsSidecarAndAnnotation)
     ASSERT_EQ(contracts.size(), 2U);
     EXPECT_EQ(contracts.at(0).at("target").at("usr"), "usr::annotation");
     EXPECT_EQ(contracts.at(1).at("target").at("usr"), "usr::sidecar");
+}
+
+TEST(SpecdbTest, NormalizeScopeContextSortsConditions)
+{
+    sappp::specdb::VersionScopeContext context{
+        .abi = "x86_64",
+        .library_version = "1.0.0",
+        .conditions = {"Z", "A", "A"}
+    };
+    auto normalized = sappp::specdb::normalize_scope_context(std::move(context));
+    EXPECT_EQ(normalized.conditions, (std::vector<std::string>{"A", "Z"}));
+}
+
+TEST(SpecdbTest, EvaluateVersionScopeMatchesAndRanks)
+{
+    nlohmann::json scope = {
+        {            "abi",                        "x86_64"},
+        {"library_version",                         "1.0.0"},
+        {     "conditions", nlohmann::json::array({"COND"})},
+        {       "priority",                               3}
+    };
+    sappp::specdb::VersionScopeContext context{
+        .abi = "x86_64",
+        .library_version = "1.0.0",
+        .conditions = {"COND", "OTHER"}
+    };
+    auto match =
+        sappp::specdb::evaluate_version_scope(scope,
+                                              sappp::specdb::normalize_scope_context(context));
+    ASSERT_TRUE(match);
+    EXPECT_TRUE(match->matches);
+    EXPECT_EQ(match->rank.abi_rank, 2);
+    EXPECT_EQ(match->rank.library_version_rank, 2);
+    EXPECT_EQ(match->rank.conditions_rank, 2);
+    EXPECT_EQ(match->rank.priority, 3);
+
+    sappp::specdb::VersionScopeContext mismatch_context{.abi = "arm64",
+                                                        .library_version = "",
+                                                        .conditions = {}};
+    auto mismatch = sappp::specdb::evaluate_version_scope(
+        scope,
+        sappp::specdb::normalize_scope_context(std::move(mismatch_context)));
+    ASSERT_TRUE(mismatch);
+    EXPECT_FALSE(mismatch->matches);
 }
 
 }  // namespace sappp::specdb::test

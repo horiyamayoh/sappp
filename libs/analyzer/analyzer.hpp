@@ -6,6 +6,7 @@
  */
 
 #include "sappp/common.hpp"
+#include "sappp/specdb.hpp"
 #include "sappp/version.hpp"
 
 #include <string>
@@ -19,6 +20,7 @@ struct AnalyzerConfig
     std::string schema_dir;
     std::string certstore_dir;
     sappp::VersionTriple versions;
+    sappp::specdb::VersionScopeContext contract_scope;
 };
 
 struct AnalyzeOutput

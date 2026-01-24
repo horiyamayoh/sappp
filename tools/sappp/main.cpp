@@ -528,6 +528,41 @@ input_digest_from_build_snapshot(const nlohmann::json& snapshot)
     return sappp::canonical::hash_canonical(snapshot);
 }
 
+[[nodiscard]] [[maybe_unused]] std::string
+resolve_abi_from_build_snapshot(const nlohmann::json& snapshot)
+{
+    if (!snapshot.contains("compile_units") || !snapshot.at("compile_units").is_array()) {
+        return {};
+    }
+    std::string abi;
+    bool has_abi = false;
+    for (const auto& unit : snapshot.at("compile_units")) {
+        if (!unit.is_object()) {
+            continue;
+        }
+        if (!unit.contains("target") || !unit.at("target").is_object()) {
+            continue;
+        }
+        const auto& target = unit.at("target");
+        if (!target.contains("abi") || !target.at("abi").is_string()) {
+            continue;
+        }
+        std::string unit_abi = target.at("abi").get<std::string>();
+        if (unit_abi.empty()) {
+            continue;
+        }
+        if (!has_abi) {
+            abi = std::move(unit_abi);
+            has_abi = true;
+            continue;
+        }
+        if (abi != unit_abi) {
+            return {};
+        }
+    }
+    return abi;
+}
+
 // NOLINTBEGIN(bugprone-easily-swappable-parameters) - Signature groups path + schema.
 [[nodiscard]] sappp::Result<nlohmann::json>
 read_and_validate_json(const std::filesystem::path& path,
@@ -1635,9 +1670,12 @@ load_specdb_snapshot(const AnalyzeOptions& options,
                      specdb_snapshot_json.error().message);
         return exit_code_for_error(specdb_snapshot_json.error());
     }
+    sappp::specdb::VersionScopeContext contract_scope{
+        .abi = resolve_abi_from_build_snapshot(*snapshot_json)};
     sappp::analyzer::Analyzer analyzer({.schema_dir = options.schema_dir,
                                         .certstore_dir = paths->certstore_dir.string(),
-                                        .versions = options.versions});
+                                        .versions = options.versions,
+                                        .contract_scope = std::move(contract_scope)});
     auto analyzer_output = analyzer.analyze(result->nir, *po_list_result, &*specdb_snapshot_json);
     if (!analyzer_output) {
         std::println(stderr, "Error: analyzer failed: {}", analyzer_output.error().message);

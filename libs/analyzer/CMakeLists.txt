@@ -12,6 +12,7 @@ target_include_directories(sappp_analyzer PUBLIC
 target_link_libraries(sappp_analyzer PUBLIC
     sappp_common
     sappp_certstore
+    sappp_specdb
     sappp_canonical
     nlohmann_json::nlohmann_json
 )

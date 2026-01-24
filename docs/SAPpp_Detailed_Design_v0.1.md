@@ -662,6 +662,13 @@ pack/
 
 同率の場合は `priority`（数値）で決定、未指定は 0。
 
+実装規約（v1）:
+- 同一USR内で契約集合を比較し、`version_scope` は context（abi/library_version/conditions）と照合する。
+- context が提供されていないフィールドは「不明」と扱い、該当フィールド未指定の契約を優先する。
+- 評価順は `abi → library_version → conditions` の辞書順（高順位優先）。
+- `priority` は scope 同率時のタイブレークにのみ使用する（大きいほど優先）。
+- さらに同率なら `contract_id` 昇順で全件採用し、決定性を維持する。
+
 #### 5.5.5 Tier 運用
 
 - Tier0: 実装適合が検証済み
@@ -883,4 +890,3 @@ Validator が行うチェック:
 3. IR 正規化のさらなる微小編集耐性（アンカー強化）
 4. 証拠の hash_scope の厳密化（pretty/notes の扱い）
 5. Concurrency/Exception の v1 保守的 UNKNOWN 条件の細分化
-

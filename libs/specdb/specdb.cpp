@@ -529,6 +529,116 @@ sappp::Result<nlohmann::json> normalize_contract_ir(const nlohmann::json& input,
     return contract;
 }
 
+VersionScopeContext normalize_scope_context(VersionScopeContext context)
+{
+    std::ranges::stable_sort(context.conditions);
+    auto unique_conditions = std::ranges::unique(context.conditions);
+    context.conditions.erase(unique_conditions.begin(), unique_conditions.end());
+    return context;
+}
+
+sappp::Result<VersionScopeMatch> evaluate_version_scope(const nlohmann::json& version_scope,
+                                                        const VersionScopeContext& context)
+{
+    if (!version_scope.is_object()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidContract", "version_scope must be an object"));
+    }
+
+    auto read_optional_string =
+        [&version_scope](std::string_view key) -> sappp::Result<std::string> {
+        if (!version_scope.contains(key)) {
+            return std::string{};
+        }
+        if (!version_scope.at(key).is_string()) {
+            return std::unexpected(sappp::Error::make(
+                "InvalidContract",
+                std::string("version_scope.") + std::string(key) + " must be a string"));
+        }
+        return version_scope.at(key).get<std::string>();
+    };
+
+    auto scope_abi = read_optional_string("abi");
+    if (!scope_abi) {
+        return std::unexpected(scope_abi.error());
+    }
+    auto scope_library_version = read_optional_string("library_version");
+    if (!scope_library_version) {
+        return std::unexpected(scope_library_version.error());
+    }
+
+    std::vector<std::string> scope_conditions;
+    if (version_scope.contains("conditions")) {
+        const auto& conditions = version_scope.at("conditions");
+        if (!conditions.is_array()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidContract", "version_scope.conditions must be an array"));
+        }
+        for (const auto& entry : conditions) {
+            if (!entry.is_string()) {
+                return std::unexpected(
+                    sappp::Error::make("InvalidContract",
+                                       "version_scope.conditions entries must be strings"));
+            }
+            scope_conditions.push_back(entry.get<std::string>());
+        }
+    }
+
+    int priority = 0;
+    if (version_scope.contains("priority")) {
+        const auto& priority_value = version_scope.at("priority");
+        if (!priority_value.is_number_integer()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidContract", "version_scope.priority must be an integer"));
+        }
+        priority = priority_value.get<int>();
+    }
+
+    VersionScopeMatch match;
+    match.matches = true;
+    match.rank.priority = priority;
+
+    if (scope_abi->empty()) {
+        match.rank.abi_rank = 1;
+    } else if (context.abi.empty()) {
+        match.rank.abi_rank = 0;
+    } else if (*scope_abi == context.abi) {
+        match.rank.abi_rank = 2;
+    } else {
+        match.matches = false;
+        return match;
+    }
+
+    if (scope_library_version->empty()) {
+        match.rank.library_version_rank = 1;
+    } else if (context.library_version.empty()) {
+        match.rank.library_version_rank = 0;
+    } else if (*scope_library_version == context.library_version) {
+        match.rank.library_version_rank = 2;
+    } else {
+        match.matches = false;
+        return match;
+    }
+
+    if (scope_conditions.empty()) {
+        match.rank.conditions_rank = 1;
+    } else if (context.conditions.empty()) {
+        match.rank.conditions_rank = 0;
+    } else {
+        std::unordered_set<std::string> context_conditions(context.conditions.begin(),
+                                                           context.conditions.end());
+        for (const auto& condition : scope_conditions) {
+            if (!context_conditions.contains(condition)) {
+                match.matches = false;
+                return match;
+            }
+        }
+        match.rank.conditions_rank = 2;
+    }
+
+    return match;
+}
+
 sappp::Result<nlohmann::json> build_snapshot(const BuildOptions& options)
 {
     std::vector<nlohmann::json> contracts;
