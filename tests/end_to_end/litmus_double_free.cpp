@@ -7,7 +7,7 @@ int main()
 {
     int* ptr = new int(7);
     delete ptr;
-    sappp_sink("double_free");
+    sappp_sink("double-free");
     delete ptr;
     return 0;
 }
