@@ -419,6 +419,7 @@ nlohmann::json make_invalid_free_po_list()
     };
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): Test helper keeps call sites compact.
 nlohmann::json make_po_list_for_function(std::string_view function_usr,
                                          std::string_view mangled_name,
                                          std::string_view block_id,
@@ -452,6 +453,7 @@ nlohmann::json make_po_list_for_function(std::string_view function_usr,
     };
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters): Test helper keeps call sites compact.
 nlohmann::json make_use_after_lifetime_po_list_for_target(std::string_view target,
                                                           std::string_view inst_id)
 {
@@ -852,7 +854,9 @@ TEST(AnalyzerContractTest, UninitReadPoProducesSafe)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_uninit_read_safe();
