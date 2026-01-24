@@ -1,5 +1,5 @@
 // Litmus test: Double free
-// Expected: UNKNOWN (DoubleFree)
+// Expected: BUG (DoubleFree)
 
 void sappp_sink(const char* kind);
 

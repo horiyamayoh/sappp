@@ -335,6 +335,18 @@ const clang::Expr* strip_parens(const clang::Expr* expr)
     return expr != nullptr ? expr->IgnoreParenImpCasts() : nullptr;
 }
 
+std::optional<std::string> extract_pointer_label(const clang::Expr* expr)
+{
+    const auto* stripped = strip_parens(expr);
+    if (const auto* decl_ref = clang::dyn_cast_or_null<clang::DeclRefExpr>(stripped)) {
+        return decl_ref->getNameInfo().getAsString();
+    }
+    if (const auto* member_expr = clang::dyn_cast_or_null<clang::MemberExpr>(stripped)) {
+        return member_expr->getMemberNameInfo().getAsString();
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> extract_string_literal(const clang::Expr* expr)
 {
     const auto* stripped = strip_parens(expr);
@@ -815,6 +827,83 @@ void append_ctor_instructions_for_stmt(const clang::Stmt* stmt,
     });
 }
 
+void append_heap_events_for_stmt(const clang::Stmt* stmt,
+                                 const BlockInstructionContext& context,
+                                 int& inst_index)
+{
+    if (stmt == nullptr) {
+        return;
+    }
+
+    const auto emit_alloc = [&](std::string_view label, const clang::CXXNewExpr* new_expr) {
+        std::string kind = "new";
+        if (new_expr != nullptr && new_expr->isArray()) {
+            kind = "new[]";
+        }
+        append_simple_instruction(
+            context,
+            inst_index,
+            "alloc",
+            {nlohmann::json(std::string(label)), nlohmann::json(kind)},
+            make_location(
+                {.source_manager = context.source_manager,
+                 .loc = new_expr != nullptr ? new_expr->getBeginLoc() : clang::SourceLocation()}));
+    };
+
+    const auto emit_free = [&](std::string_view label, const clang::CXXDeleteExpr* delete_expr) {
+        std::string kind = "delete";
+        if (delete_expr != nullptr && delete_expr->isArrayForm()) {
+            kind = "delete[]";
+        }
+        append_simple_instruction(
+            context,
+            inst_index,
+            "free",
+            {nlohmann::json(std::string(label)), nlohmann::json(kind)},
+            make_location({.source_manager = context.source_manager,
+                           .loc = delete_expr != nullptr ? delete_expr->getBeginLoc()
+                                                         : clang::SourceLocation()}));
+    };
+
+    if (const auto* decl_stmt = clang::dyn_cast<clang::DeclStmt>(stmt)) {
+        for (const auto* decl : decl_stmt->decls()) {
+            const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl);
+            if (var_decl == nullptr) {
+                continue;
+            }
+            const auto* init_expr = strip_parens(var_decl->getInit());
+            const auto* new_expr = clang::dyn_cast_or_null<clang::CXXNewExpr>(init_expr);
+            if (new_expr == nullptr) {
+                continue;
+            }
+            emit_alloc(describe_var(var_decl), new_expr);
+        }
+    }
+
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(node);
+        if (bin_op == nullptr || bin_op->getOpcode() != clang::BO_Assign) {
+            return;
+        }
+        const auto* rhs = strip_parens(bin_op->getRHS());
+        const auto* new_expr = clang::dyn_cast_or_null<clang::CXXNewExpr>(rhs);
+        if (new_expr == nullptr) {
+            return;
+        }
+        auto target = extract_pointer_label(bin_op->getLHS());
+        emit_alloc(target.value_or("unknown"), new_expr);
+    });
+
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        const auto* delete_expr = clang::dyn_cast<clang::CXXDeleteExpr>(node);
+        if (delete_expr == nullptr) {
+            return;
+        }
+        auto target = extract_pointer_label(delete_expr->getArgument());
+        emit_free(target.value_or("unknown"), delete_expr);
+    });
+}
+
 std::optional<ir::Instruction> build_vcall_instruction(const clang::Stmt* stmt,
                                                        const BlockInstructionContext& context,
                                                        int& inst_index)
@@ -857,6 +946,7 @@ void append_cfg_stmt_element(const clang::CFGStmt& stmt_elem,
 {
     const clang::Stmt* stmt = stmt_elem.getStmt();
     append_lifetime_begin_for_stmt(stmt, context, inst_index);
+    append_heap_events_for_stmt(stmt, context, inst_index);
     if (auto vcall_inst = build_vcall_instruction(stmt, context, inst_index)) {
         append_instruction(*context.nir_block,
                            *context.function_uid,

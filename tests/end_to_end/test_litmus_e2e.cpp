@@ -329,8 +329,21 @@ TEST(LitmusE2E, DoubleFree)
         .name = "double_free",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_double_free.cpp",
         .expected_po_kinds = {"DoubleFree"},
-        .expected_categories = {"UNKNOWN"},
-        .required_ops = {},
+        .expected_categories = {"BUG"},
+        .required_ops = {"alloc", "free"},
+        .required_edge_kinds = {},
+        .require_vcall_candidates = false,
+    });
+}
+
+TEST(LitmusE2E, InvalidFree)
+{
+    run_litmus_case(LitmusCase{
+        .name = "invalid_free",
+        .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_invalid_free.cpp",
+        .expected_po_kinds = {"InvalidFree"},
+        .expected_categories = {"BUG"},
+        .required_ops = {"free"},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
     });

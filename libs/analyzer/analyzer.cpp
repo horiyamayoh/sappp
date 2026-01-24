@@ -17,6 +17,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -587,6 +588,208 @@ struct UnknownDetails
     std::string refinement_domain;
 };
 
+enum class HeapState { kUnallocated, kAllocated, kFreed, kUnknown };
+
+struct LifetimeSummary
+{
+    bool has_double_free = false;
+    bool has_invalid_free = false;
+    bool can_decide_safe = false;
+    bool has_unknown_ops = false;
+};
+
+struct LinearWalk
+{
+    std::vector<const nlohmann::json*> blocks;
+    bool has_exception_edges = false;
+    bool covers_all_blocks = false;
+
+    // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+    LinearWalk()
+        : blocks()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , has_exception_edges(false)
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , covers_all_blocks(false)
+    {}
+};
+
+using LifetimeSummaryMap = std::unordered_map<std::string, LifetimeSummary>;
+
+[[nodiscard]] bool is_unknown_label(std::string_view label)
+{
+    return label.empty() || label == "unknown" || label.starts_with("temporary");
+}
+
+[[nodiscard]] std::optional<std::string> extract_heap_label(const nlohmann::json& inst)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.empty() || !args.at(0).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(0).get<std::string>();
+}
+
+[[nodiscard]] std::optional<LinearWalk> build_linear_walk(const nlohmann::json& func)
+{
+    if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+        return std::nullopt;
+    }
+    const auto& cfg = func.at("cfg");
+    if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+        return std::nullopt;
+    }
+    if (!cfg.contains("entry") || !cfg.at("entry").is_string()) {
+        return std::nullopt;
+    }
+
+    std::unordered_map<std::string, const nlohmann::json*> block_map;
+    for (const auto& block : cfg.at("blocks")) {
+        if (!block.contains("id") || !block.at("id").is_string()) {
+            continue;
+        }
+        block_map.emplace(block.at("id").get<std::string>(), &block);
+    }
+    std::string entry = cfg.at("entry").get<std::string>();
+    if (!block_map.contains(entry)) {
+        return std::nullopt;
+    }
+
+    std::unordered_map<std::string, std::vector<std::string>> succ_map;
+    bool has_exception_edges = false;
+    if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+        for (const auto& edge : cfg.at("edges")) {
+            if (!edge.contains("from") || !edge.contains("to") || !edge.contains("kind")) {
+                continue;
+            }
+            if (!edge.at("from").is_string() || !edge.at("to").is_string()
+                || !edge.at("kind").is_string()) {
+                continue;
+            }
+            std::string kind = edge.at("kind").get<std::string>();
+            if (kind == "exception") {
+                has_exception_edges = true;
+                continue;
+            }
+            if (!kind.starts_with("succ")) {
+                continue;
+            }
+            succ_map[edge.at("from").get<std::string>()].push_back(
+                edge.at("to").get<std::string>());
+        }
+    }
+
+    for (auto& [block_id, succs] : succ_map) {
+        (void)block_id;
+        std::ranges::stable_sort(succs);
+    }
+
+    LinearWalk walk;
+    walk.has_exception_edges = has_exception_edges;
+
+    std::unordered_set<std::string> visited;
+    std::string current = entry;
+    while (true) {
+        if (visited.contains(current)) {
+            return std::nullopt;
+        }
+        auto block_it = block_map.find(current);
+        if (block_it == block_map.end()) {
+            return std::nullopt;
+        }
+        walk.blocks.push_back(block_it->second);
+        visited.insert(current);
+
+        auto succ_it = succ_map.find(current);
+        if (succ_it == succ_map.end() || succ_it->second.empty()) {
+            break;
+        }
+        if (succ_it->second.size() != 1U) {
+            return std::nullopt;
+        }
+        current = succ_it->second.front();
+    }
+
+    walk.covers_all_blocks = visited.size() == block_map.size();
+    return walk;
+}
+
+[[nodiscard]] LifetimeSummary analyze_lifetime_summary(const LinearWalk& walk)
+{
+    LifetimeSummary summary;
+    std::unordered_map<std::string, HeapState> states;
+
+    for (const auto* block : walk.blocks) {
+        if (block == nullptr || !block->contains("insts") || !block->at("insts").is_array()) {
+            continue;
+        }
+        for (const auto& inst : block->at("insts")) {
+            if (!inst.contains("op") || !inst.at("op").is_string()) {
+                continue;
+            }
+            const std::string op = inst.at("op").get<std::string>();
+            if (op != "alloc" && op != "free") {
+                continue;
+            }
+            auto label = extract_heap_label(inst);
+            if (!label || is_unknown_label(*label)) {
+                summary.has_unknown_ops = true;
+                continue;
+            }
+            auto [it, inserted] = states.try_emplace(*label, HeapState::kUnallocated);
+            HeapState& state = it->second;
+            if (op == "alloc") {
+                state = HeapState::kAllocated;
+                continue;
+            }
+            if (state == HeapState::kUnallocated) {
+                summary.has_invalid_free = true;
+                state = HeapState::kFreed;
+                continue;
+            }
+            if (state == HeapState::kFreed) {
+                summary.has_double_free = true;
+                state = HeapState::kFreed;
+                continue;
+            }
+            if (state == HeapState::kUnknown) {
+                summary.has_unknown_ops = true;
+            }
+            state = HeapState::kFreed;
+        }
+    }
+
+    summary.can_decide_safe =
+        walk.covers_all_blocks && !walk.has_exception_edges && !summary.has_unknown_ops;
+    return summary;
+}
+
+[[nodiscard]] sappp::Result<LifetimeSummaryMap>
+build_lifetime_summary_map(const nlohmann::json& nir_json)
+{
+    LifetimeSummaryMap summaries;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return summaries;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        std::string function_uid = func.at("function_uid").get<std::string>();
+        auto walk = build_linear_walk(func);
+        if (!walk) {
+            summaries.emplace(std::move(function_uid), LifetimeSummary{});
+            continue;
+        }
+        summaries.emplace(std::move(function_uid), analyze_lifetime_summary(*walk));
+    }
+    return summaries;
+}
+
 [[nodiscard]] UnknownDetails build_missing_contract_details(std::string_view clause)
 {
     std::string code = std::string("MissingContract.") + std::string(clause);
@@ -779,6 +982,7 @@ struct PoProcessingContext
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
     const ContractIndex* contract_index = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
+    const LifetimeSummaryMap* lifetime_summaries = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
 };
@@ -985,12 +1189,52 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
     return std::optional<bool>();
 }
 
-[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po)
+[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
+                                                  const PoProcessingContext& context)
 {
     auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
     if (!po_kind) {
         return std::unexpected(po_kind.error());
     }
+
+    if (*po_kind == "DoubleFree" || *po_kind == "InvalidFree") {
+        if (context.lifetime_summaries != nullptr && context.function_uid_map != nullptr) {
+            auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+            if (!function_uid) {
+                return std::unexpected(function_uid.error());
+            }
+            auto summary_it = context.lifetime_summaries->find(*function_uid);
+            if (summary_it != context.lifetime_summaries->end()) {
+                const LifetimeSummary& summary = summary_it->second;
+                PoDecision decision;
+                if (*po_kind == "DoubleFree") {
+                    if (summary.has_double_free) {
+                        decision.is_bug = true;
+                        return decision;
+                    }
+                    if (summary.can_decide_safe) {
+                        decision.is_safe = true;
+                        return decision;
+                    }
+                } else {
+                    if (summary.has_invalid_free) {
+                        decision.is_bug = true;
+                        return decision;
+                    }
+                    if (summary.can_decide_safe) {
+                        decision.is_safe = true;
+                        return decision;
+                    }
+                }
+            }
+        }
+        auto details = build_unknown_details(*po_kind);
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = std::move(details);
+        return decision;
+    }
+
     auto predicate_expr = extract_predicate_expr(po);
     if (!predicate_expr) {
         return std::unexpected(predicate_expr.error());
@@ -1046,7 +1290,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
 [[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
                                                            PoProcessingContext& context)
 {
-    auto decision = decide_po(po);
+    auto decision = decide_po(po, context);
     if (!decision) {
         return std::unexpected(decision.error());
     }
@@ -1096,37 +1340,6 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     return output;
 }
 
-[[nodiscard]] sappp::VoidResult
-ensure_unknowns(std::vector<nlohmann::json>& unknowns,
-                const std::vector<const nlohmann::json*>& ordered_pos,
-                const PoProcessingContext& context)
-{
-    if (!unknowns.empty() || ordered_pos.empty()) {
-        return {};
-    }
-
-    const nlohmann::json& po = *ordered_pos.front();
-    auto po_id = require_string(JsonFieldContext{.obj = &po, .key = "po_id", .context = "po"});
-    if (!po_id) {
-        return std::unexpected(po_id.error());
-    }
-    auto contract_match = resolve_contracts(po, context);
-    if (!contract_match) {
-        return std::unexpected(contract_match.error());
-    }
-    UnknownDetails details = build_unknown_details("UB.Unknown");
-    if (contract_match->contracts.empty() || !contract_match->has_pre) {
-        details = build_missing_contract_details("Pre");
-    }
-    auto contract_ids = collect_contract_ids(*contract_match);
-    auto unknown_entry = build_unknown_entry(po, *po_id, details, contract_ids);
-    if (!unknown_entry) {
-        return std::unexpected(unknown_entry.error());
-    }
-    unknowns.push_back(std::move(*unknown_entry));
-    return {};
-}
-
 }  // namespace
 
 Analyzer::Analyzer(AnalyzerConfig config)
@@ -1164,6 +1377,10 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
+    auto lifetime_summaries = build_lifetime_summary_map(nir_json);
+    if (!lifetime_summaries) {
+        return std::unexpected(lifetime_summaries.error());
+    }
     std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::vector<nlohmann::json> unknowns;
@@ -1173,6 +1390,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .function_uid_map = &function_uid_map,
                                 .contract_index = &(*contract_index),
                                 .contract_ref_cache = &contract_ref_cache,
+                                .lifetime_summaries = &(*lifetime_summaries),
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};
 
@@ -1185,11 +1403,6 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
         if (processed->has_unknown) {
             unknowns.push_back(std::move(processed->unknown_entry));
         }
-    }
-
-    if (auto ensure_result = ensure_unknowns(unknowns, ordered_pos_value, context);
-        !ensure_result) {
-        return std::unexpected(ensure_result.error());
     }
 
     std::ranges::stable_sort(unknowns, [](const nlohmann::json& a, const nlohmann::json& b) {

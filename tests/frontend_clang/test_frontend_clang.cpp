@@ -125,6 +125,20 @@ std::string vcall_source()
            "}\n";
 }
 
+std::string heap_source()
+{
+    return "struct Widget {\n"
+           "  ~Widget() {}\n"
+           "};\n"
+           "int main() {\n"
+           "  int* p = new int(1);\n"
+           "  delete p;\n"
+           "  Widget* w = new Widget();\n"
+           "  delete w;\n"
+           "  return 0;\n"
+           "}\n";
+}
+
 std::string manual_marker_source()
 {
     return "void sappp_sink(const char* kind);\n"
@@ -436,6 +450,54 @@ TEST(FrontendClangTest, EmitsVirtualCallCandidates)
 
     std::vector<std::string> methods = methods_json.get<std::vector<std::string>>();
     EXPECT_TRUE(is_sorted_strings(methods));
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsAllocFreeEvents)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir = std::filesystem::temp_directory_path()
+                                     / ("sappp_frontend_heap_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, heap_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    std::unordered_set<std::string> ops = collect_ops(result->nir);
+    EXPECT_NE(ops.find("alloc"), ops.end());
+    EXPECT_NE(ops.find("free"), ops.end());
+
+    bool saw_alloc_p = false;
+    bool saw_free_p = false;
+    for (const auto& func : result->nir.at("functions")) {
+        for (const auto& block : func.at("cfg").at("blocks")) {
+            for (const auto& inst : block.at("insts")) {
+                if (!inst.contains("args") || !inst.at("args").is_array() || inst.at("args").empty()
+                    || !inst.at("args").at(0).is_string()) {
+                    continue;
+                }
+                const std::string op = inst.at("op").get<std::string>();
+                const std::string label = inst.at("args").at(0).get<std::string>();
+                if (op == "alloc" && label == "p") {
+                    saw_alloc_p = true;
+                }
+                if (op == "free" && label == "p") {
+                    saw_free_p = true;
+                }
+            }
+        }
+    }
+
+    EXPECT_TRUE(saw_alloc_p);
+    EXPECT_TRUE(saw_free_p);
 
     std::filesystem::remove_all(temp_dir);
 }
