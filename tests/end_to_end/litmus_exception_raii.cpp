@@ -1,5 +1,5 @@
 // Litmus test: Exception RAII
-// Expected: SAFE (UB.Shift) plus exception/lifetime/vcall ops in NIR
+// Expected: SAFE (UB.Shift) plus exception/lifetime ops in NIR
 
 void sappp_check(const char* kind, bool predicate);
 
