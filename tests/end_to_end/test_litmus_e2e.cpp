@@ -401,7 +401,7 @@ TEST(LitmusE2E, ExceptionRaii)
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_exception_raii.cpp",
         .expected_po_kinds = {"UB.Shift"},
         .expected_categories = {"SAFE"},
-        .required_ops = {"invoke", "throw", "landingpad", "dtor"},
+        .required_ops = {"invoke", "throw", "landingpad", "resume", "dtor"},
         .required_edge_kinds = {"exception"},
         .require_vcall_candidates = false,
         .expected_unknown_codes = {},

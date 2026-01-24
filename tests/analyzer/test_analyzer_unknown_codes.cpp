@@ -35,7 +35,8 @@ struct VCallTestConfig
 };
 
 nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
-                                 const VCallTestConfig& vcall_config = {})
+                                 const VCallTestConfig& vcall_config = {},
+                                 const std::vector<nlohmann::json>& edges = {})
 {
     nlohmann::json insts = nlohmann::json::array();
     int index = 0;
@@ -56,13 +57,18 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
         {"insts", insts}
     };
 
+    nlohmann::json edge_list = nlohmann::json::array();
+    for (const auto& edge : edges) {
+        edge_list.push_back(edge);
+    }
+
     nlohmann::json func = {
         {"function_uid","usr::foo"                        },
-        {"mangled_name",            "_Z3foov"},
+        {"mangled_name",         "_Z3foov"},
         {         "cfg",
          {{"entry", "B1"},
          {"blocks", nlohmann::json::array({block})},
-         {"edges", nlohmann::json::array()}} }
+         {"edges", std::move(edge_list)}} }
     };
 
     if (vcall_config.include_candidates) {
@@ -181,13 +187,18 @@ void expect_unknown_code(const nlohmann::json& unknowns,
 
 }  // namespace
 
-TEST(AnalyzerUnknownCodeTest, ExceptionFlowConservativeForInvoke)
+TEST(AnalyzerUnknownCodeTest, ExceptionFlowConservativeForUnmodeledExceptionEdge)
 {
     auto temp_dir = ensure_temp_dir("sappp_analyzer_exception_unknown");
     auto cert_dir = temp_dir / "certstore";
 
     auto analyzer = make_analyzer(cert_dir);
-    auto nir = make_nir_with_ops({"invoke"});
+    auto nir = make_nir_with_ops(
+        {
+            "call"
+    },
+        {},
+        {nlohmann::json{{"from", "B1"}, {"to", "B1"}, {"kind", "exception"}}});
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot();
 

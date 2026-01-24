@@ -627,6 +627,19 @@ enum class LifetimeFlow {
     kException,
 };
 
+struct FlowPredecessors
+{
+    std::vector<std::string> normal;
+    std::vector<std::string> exception;
+
+    FlowPredecessors()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : normal()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , exception()
+    {}
+};
+
 [[nodiscard]] std::optional<std::string>
 extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readability-function-size)
 {
@@ -667,18 +680,6 @@ struct FunctionLifetimeAnalysis
     std::string entry_block;
     std::map<std::string, const nlohmann::json*> blocks;
     std::vector<std::string> block_order;
-    struct FlowPredecessors
-    {
-        std::vector<std::string> normal;
-        std::vector<std::string> exception;
-
-        FlowPredecessors()
-            // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
-            : normal()
-            // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
-            , exception()
-        {}
-    };
     std::map<std::string, FlowPredecessors> predecessors;
     std::map<std::string, bool> has_exception_successor;
     std::map<std::string, bool> has_landingpad;
@@ -717,6 +718,7 @@ struct LifetimeAnalysisCache
 struct FunctionFeatureFlags
 {
     bool has_exception_flow = false;
+    bool has_unmodeled_exception_flow = false;
     bool has_vcall = false;
     bool has_atomic = false;
     bool has_thread = false;
@@ -769,17 +771,55 @@ using FunctionFeatureCache = std::map<std::string, FunctionFeatureFlags>;
     return merged;
 }
 
-[[nodiscard]] LifetimeState apply_block_transfer(const LifetimeState& in_state,
-                                                 const nlohmann::json& block)
+struct LifetimeTransferResult
 {
-    LifetimeState state = in_state;
+    LifetimeState normal_out;
+    std::optional<LifetimeState> exception_out;
+    bool has_exception_op = false;
+};
+
+[[nodiscard]] LifetimeTransferResult
+apply_lifetime_block_transfer_with_exception(const LifetimeState& in_state,
+                                             const nlohmann::json& block)
+{
+    LifetimeState normal_state = in_state;
+    std::optional<LifetimeState> exception_state;
+    bool has_exception_op = false;
+
     if (!block.contains("insts") || !block.at("insts").is_array()) {
-        return state;
+        return LifetimeTransferResult{.normal_out = normal_state,
+                                      .exception_out = std::move(exception_state),
+                                      .has_exception_op = has_exception_op};
     }
+
     for (const auto& inst : block.at("insts")) {
-        apply_lifetime_effect(inst, state);
+        std::string_view op = "";
+        if (inst.contains("op") && inst.at("op").is_string()) {
+            op = inst.at("op").get_ref<const std::string&>();
+        }
+        const bool is_invoke = op == "invoke";
+        const bool is_throw = op == "throw" || op == "resume";
+        if (is_invoke || is_throw) {
+            apply_lifetime_effect(inst, normal_state);
+            has_exception_op = true;
+            if (exception_state.has_value()) {
+                exception_state = merge_lifetime_states(*exception_state, normal_state);
+            } else {
+                exception_state = normal_state;
+            }
+            if (is_throw) {
+                return LifetimeTransferResult{.normal_out = normal_state,
+                                              .exception_out = std::move(exception_state),
+                                              .has_exception_op = has_exception_op};
+            }
+            continue;
+        }
+        apply_lifetime_effect(inst, normal_state);
     }
-    return state;
+
+    return LifetimeTransferResult{.normal_out = normal_state,
+                                  .exception_out = std::move(exception_state),
+                                  .has_exception_op = has_exception_op};
 }
 
 void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
@@ -793,15 +833,30 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
             LifetimeState exception_in =
                 merge_predecessor_states(analysis, block_id, LifetimeFlow::kException);
 
+            auto pred_it = analysis.predecessors.find(block_id);
+            bool has_normal_preds = false;
+            bool has_exception_preds = false;
+            if (pred_it != analysis.predecessors.end()) {
+                has_normal_preds = !pred_it->second.normal.empty();
+                has_exception_preds = !pred_it->second.exception.empty();
+            }
+
+            LifetimeState normal_entry = normal_in;
+            if (has_exception_preds && !has_normal_preds) {
+                normal_entry = exception_in;
+            } else if (has_exception_preds && has_normal_preds) {
+                normal_entry = merge_lifetime_states(normal_entry, exception_in);
+            }
+
             if (auto landingpad_it = analysis.has_landingpad.find(block_id);
                 landingpad_it != analysis.has_landingpad.end() && landingpad_it->second) {
-                normal_in = merge_lifetime_states(normal_in, exception_in);
+                normal_entry = merge_lifetime_states(normal_entry, exception_in);
             }
 
             auto normal_in_it = analysis.normal_in_states.find(block_id);
             if (normal_in_it == analysis.normal_in_states.end()
-                || normal_in_it->second.values != normal_in.values) {
-                analysis.normal_in_states[block_id] = normal_in;
+                || normal_in_it->second.values != normal_entry.values) {
+                analysis.normal_in_states[block_id] = normal_entry;
                 changed = true;
             }
 
@@ -816,7 +871,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
             if (block_it == analysis.blocks.end()) {
                 continue;
             }
-            LifetimeState normal_out = apply_block_transfer(normal_in, *block_it->second);
+            auto normal_transfer =
+                apply_lifetime_block_transfer_with_exception(normal_entry, *block_it->second);
+            LifetimeState normal_out = std::move(normal_transfer.normal_out);
             auto normal_out_it = analysis.normal_out_states.find(block_id);
             if (normal_out_it == analysis.normal_out_states.end()
                 || normal_out_it->second.values != normal_out.values) {
@@ -824,14 +881,27 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
                 changed = true;
             }
 
-            LifetimeState exception_source = exception_in;
+            LifetimeState exception_source = merge_lifetime_states(normal_entry, exception_in);
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                exception_source = merge_lifetime_states(exception_source, normal_in);
+                exception_source = merge_lifetime_states(exception_source, normal_entry);
             }
 
-            LifetimeState exception_out = apply_block_transfer(exception_source, *block_it->second);
+            LifetimeState exception_out = exception_source;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                auto exception_transfer =
+                    apply_lifetime_block_transfer_with_exception(exception_source,
+                                                                 *block_it->second);
+                if (exception_transfer.exception_out.has_value()) {
+                    exception_out = std::move(*exception_transfer.exception_out);
+                } else {
+                    exception_out =
+                        merge_lifetime_states(exception_source, exception_transfer.normal_out);
+                }
+            }
             auto exception_out_it = analysis.exception_out_states.find(block_id);
             if (exception_out_it == analysis.exception_out_states.end()
                 || exception_out_it->second.values != exception_out.values) {
@@ -1162,9 +1232,11 @@ struct FunctionPointsToAnalysis
     std::string entry_block;
     std::map<std::string, const nlohmann::json*> blocks;
     std::vector<std::string> block_order;
-    std::map<std::string, std::vector<std::string>> predecessors;
+    std::map<std::string, FlowPredecessors> predecessors;
+    std::map<std::string, bool> has_exception_successor;
     std::map<std::string, PointsToState> in_states;
     std::map<std::string, PointsToState> out_states;
+    std::map<std::string, PointsToState> exception_out_states;
 
     // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
     FunctionPointsToAnalysis()
@@ -1173,8 +1245,10 @@ struct FunctionPointsToAnalysis
         , blocks()
         , block_order()
         , predecessors()
+        , has_exception_successor()
         , in_states()
         , out_states()
+        , exception_out_states()
     {}
     // NOLINTEND(readability-redundant-member-init)
 };
@@ -1194,15 +1268,28 @@ merge_predecessor_points_to_states(const FunctionPointsToAnalysis& analysis,
                                    std::string_view block_id)
 {
     auto pred_it = analysis.predecessors.find(std::string(block_id));
-    if (pred_it == analysis.predecessors.end() || pred_it->second.empty()) {
+    if (pred_it == analysis.predecessors.end()) {
         return PointsToState{};
     }
 
     bool first = true;
     PointsToState merged;
-    for (const auto& pred : pred_it->second) {
+    for (const auto& pred : pred_it->second.normal) {
         auto out_it = analysis.out_states.find(pred);
         if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_points_to_states(merged, out_it->second);
+    }
+
+    for (const auto& pred : pred_it->second.exception) {
+        auto out_it = analysis.exception_out_states.find(pred);
+        if (out_it == analysis.exception_out_states.end()) {
             continue;
         }
         if (first) {
@@ -1219,19 +1306,59 @@ merge_predecessor_points_to_states(const FunctionPointsToAnalysis& analysis,
     return merged;
 }
 
-[[nodiscard]] sappp::Result<PointsToState>
-apply_points_to_block_transfer(const PointsToState& in_state, const nlohmann::json& block)
+struct PointsToTransferResult
 {
-    PointsToState state = in_state;
+    PointsToState normal_out;
+    std::optional<PointsToState> exception_out;
+    bool has_exception_op = false;
+};
+
+[[nodiscard]] sappp::Result<PointsToTransferResult>
+apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
+                                              const nlohmann::json& block)
+{
+    PointsToState normal_state = in_state;
+    std::optional<PointsToState> exception_state;
+    bool has_exception_op = false;
+
     if (!block.contains("insts") || !block.at("insts").is_array()) {
-        return state;
+        return PointsToTransferResult{.normal_out = normal_state,
+                                      .exception_out = std::move(exception_state),
+                                      .has_exception_op = has_exception_op};
     }
+
     for (const auto& inst : block.at("insts")) {
-        if (auto applied = apply_points_to_effects(inst, state); !applied) {
+        std::string_view op = "";
+        if (inst.contains("op") && inst.at("op").is_string()) {
+            op = inst.at("op").get_ref<const std::string&>();
+        }
+        const bool is_invoke = op == "invoke";
+        const bool is_throw = op == "throw" || op == "resume";
+        if (is_invoke || is_throw) {
+            if (auto applied = apply_points_to_effects(inst, normal_state); !applied) {
+                return std::unexpected(applied.error());
+            }
+            has_exception_op = true;
+            if (exception_state.has_value()) {
+                exception_state = merge_points_to_states(*exception_state, normal_state);
+            } else {
+                exception_state = normal_state;
+            }
+            if (is_throw) {
+                return PointsToTransferResult{.normal_out = normal_state,
+                                              .exception_out = std::move(exception_state),
+                                              .has_exception_op = has_exception_op};
+            }
+            continue;
+        }
+        if (auto applied = apply_points_to_effects(inst, normal_state); !applied) {
             return std::unexpected(applied.error());
         }
     }
-    return state;
+
+    return PointsToTransferResult{.normal_out = normal_state,
+                                  .exception_out = std::move(exception_state),
+                                  .has_exception_op = has_exception_op};
 }
 
 [[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis)
@@ -1251,13 +1378,31 @@ apply_points_to_block_transfer(const PointsToState& in_state, const nlohmann::js
             if (block_it == analysis.blocks.end()) {
                 continue;
             }
-            auto out_state = apply_points_to_block_transfer(in_state, *block_it->second);
-            if (!out_state) {
-                return std::unexpected(out_state.error());
+            auto transfer =
+                apply_points_to_block_transfer_with_exception(in_state, *block_it->second);
+            if (!transfer) {
+                return std::unexpected(transfer.error());
             }
             auto out_it = analysis.out_states.find(block_id);
-            if (out_it == analysis.out_states.end() || out_it->second != *out_state) {
-                analysis.out_states[block_id] = std::move(*out_state);
+            if (out_it == analysis.out_states.end() || out_it->second != transfer->normal_out) {
+                analysis.out_states[block_id] = transfer->normal_out;
+                changed = true;
+            }
+
+            PointsToState exception_out = in_state;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                if (transfer->exception_out.has_value()) {
+                    exception_out = std::move(*transfer->exception_out);
+                } else {
+                    exception_out = merge_points_to_states(in_state, transfer->normal_out);
+                }
+            }
+            auto exception_out_it = analysis.exception_out_states.find(block_id);
+            if (exception_out_it == analysis.exception_out_states.end()
+                || exception_out_it->second != exception_out) {
+                analysis.exception_out_states[block_id] = std::move(exception_out);
                 changed = true;
             }
         }
@@ -1331,6 +1476,8 @@ build_points_to_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readab
             analysis.blocks.emplace(block_id, &block);
             analysis.in_states.emplace(block_id, PointsToState{});
             analysis.out_states.emplace(block_id, PointsToState{});
+            analysis.exception_out_states.emplace(block_id, PointsToState{});
+            analysis.has_exception_successor.emplace(block_id, false);
         }
 
         if (cfg.contains("edges") && cfg.at("edges").is_array()) {
@@ -1346,15 +1493,28 @@ build_points_to_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readab
                 }
                 std::string from = edge.at("from").get<std::string>();
                 std::string to = edge.at("to").get<std::string>();
-                analysis.predecessors[to].push_back(std::move(from));
+                std::string kind;
+                if (edge.contains("kind") && edge.at("kind").is_string()) {
+                    kind = edge.at("kind").get<std::string>();
+                }
+                auto& preds = analysis.predecessors[to];
+                if (kind == "exception") {
+                    preds.exception.push_back(from);
+                    analysis.has_exception_successor[from] = true;
+                } else {
+                    preds.normal.push_back(from);
+                }
             }
         }
 
         for (auto& [block_id, preds] : analysis.predecessors) {
             (void)block_id;
-            std::ranges::stable_sort(preds);
-            auto unique_end = std::ranges::unique(preds);
-            preds.erase(unique_end.begin(), preds.end());
+            std::ranges::stable_sort(preds.normal);
+            auto normal_unique = std::ranges::unique(preds.normal);
+            preds.normal.erase(normal_unique.begin(), normal_unique.end());
+            std::ranges::stable_sort(preds.exception);
+            auto exception_unique = std::ranges::unique(preds.exception);
+            preds.exception.erase(exception_unique.begin(), exception_unique.end());
         }
 
         if (!analysis.block_order.empty()) {
@@ -1450,9 +1610,11 @@ struct FunctionHeapLifetimeAnalysis
     std::string entry_block;
     std::map<std::string, const nlohmann::json*> blocks;
     std::vector<std::string> block_order;
-    std::map<std::string, std::vector<std::string>> predecessors;
+    std::map<std::string, FlowPredecessors> predecessors;
+    std::map<std::string, bool> has_exception_successor;
     std::map<std::string, HeapLifetimeState> in_states;
     std::map<std::string, HeapLifetimeState> out_states;
+    std::map<std::string, HeapLifetimeState> exception_out_states;
     HeapLifetimeState initial_state;
 
     // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
@@ -1462,8 +1624,10 @@ struct FunctionHeapLifetimeAnalysis
         , blocks()
         , block_order()
         , predecessors()
+        , has_exception_successor()
         , in_states()
         , out_states()
+        , exception_out_states()
         , initial_state()
     {}
     // NOLINTEND(readability-redundant-member-init)
@@ -1514,15 +1678,28 @@ merge_heap_predecessor_states(const FunctionHeapLifetimeAnalysis& analysis,
                               std::string_view block_id)
 {
     auto pred_it = analysis.predecessors.find(std::string(block_id));
-    if (pred_it == analysis.predecessors.end() || pred_it->second.empty()) {
+    if (pred_it == analysis.predecessors.end()) {
         return analysis.initial_state;
     }
 
     bool first = true;
     HeapLifetimeState merged;
-    for (const auto& pred : pred_it->second) {
+    for (const auto& pred : pred_it->second.normal) {
         auto out_it = analysis.out_states.find(pred);
         if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_heap_states(merged, out_it->second);
+    }
+
+    for (const auto& pred : pred_it->second.exception) {
+        auto out_it = analysis.exception_out_states.find(pred);
+        if (out_it == analysis.exception_out_states.end()) {
             continue;
         }
         if (first) {
@@ -1539,17 +1716,55 @@ merge_heap_predecessor_states(const FunctionHeapLifetimeAnalysis& analysis,
     return merged;
 }
 
-[[nodiscard]] HeapLifetimeState apply_heap_block_transfer(const HeapLifetimeState& in_state,
-                                                          const nlohmann::json& block)
+struct HeapLifetimeTransferResult
 {
-    HeapLifetimeState state = in_state;
+    HeapLifetimeState normal_out;
+    std::optional<HeapLifetimeState> exception_out;
+    bool has_exception_op = false;
+};
+
+[[nodiscard]] HeapLifetimeTransferResult
+apply_heap_block_transfer_with_exception(const HeapLifetimeState& in_state,
+                                         const nlohmann::json& block)
+{
+    HeapLifetimeState normal_state = in_state;
+    std::optional<HeapLifetimeState> exception_state;
+    bool has_exception_op = false;
+
     if (!block.contains("insts") || !block.at("insts").is_array()) {
-        return state;
+        return HeapLifetimeTransferResult{.normal_out = normal_state,
+                                          .exception_out = std::move(exception_state),
+                                          .has_exception_op = has_exception_op};
     }
+
     for (const auto& inst : block.at("insts")) {
-        apply_heap_lifetime_effect(inst, state);
+        std::string_view op = "";
+        if (inst.contains("op") && inst.at("op").is_string()) {
+            op = inst.at("op").get_ref<const std::string&>();
+        }
+        const bool is_invoke = op == "invoke";
+        const bool is_throw = op == "throw" || op == "resume";
+        if (is_invoke || is_throw) {
+            apply_heap_lifetime_effect(inst, normal_state);
+            has_exception_op = true;
+            if (exception_state.has_value()) {
+                exception_state = merge_heap_states(*exception_state, normal_state);
+            } else {
+                exception_state = normal_state;
+            }
+            if (is_throw) {
+                return HeapLifetimeTransferResult{.normal_out = normal_state,
+                                                  .exception_out = std::move(exception_state),
+                                                  .has_exception_op = has_exception_op};
+            }
+            continue;
+        }
+        apply_heap_lifetime_effect(inst, normal_state);
     }
-    return state;
+
+    return HeapLifetimeTransferResult{.normal_out = normal_state,
+                                      .exception_out = std::move(exception_state),
+                                      .has_exception_op = has_exception_op};
 }
 
 void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis)
@@ -1569,10 +1784,28 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis)
             if (block_it == analysis.blocks.end()) {
                 continue;
             }
-            HeapLifetimeState out_state = apply_heap_block_transfer(in_state, *block_it->second);
+            auto transfer = apply_heap_block_transfer_with_exception(in_state, *block_it->second);
+            HeapLifetimeState out_state = std::move(transfer.normal_out);
             auto out_it = analysis.out_states.find(block_id);
             if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
                 analysis.out_states[block_id] = out_state;
+                changed = true;
+            }
+
+            HeapLifetimeState exception_out = in_state;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                if (transfer.exception_out.has_value()) {
+                    exception_out = std::move(*transfer.exception_out);
+                } else {
+                    exception_out = merge_heap_states(in_state, out_state);
+                }
+            }
+            auto exception_out_it = analysis.exception_out_states.find(block_id);
+            if (exception_out_it == analysis.exception_out_states.end()
+                || exception_out_it->second.values != exception_out.values) {
+                analysis.exception_out_states[block_id] = std::move(exception_out);
                 changed = true;
             }
         }
@@ -1645,6 +1878,8 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
             analysis.blocks.emplace(block_id, &block);
             analysis.in_states.emplace(block_id, analysis.initial_state);
             analysis.out_states.emplace(block_id, analysis.initial_state);
+            analysis.exception_out_states.emplace(block_id, analysis.initial_state);
+            analysis.has_exception_successor.emplace(block_id, false);
         }
 
         if (cfg.contains("edges") && cfg.at("edges").is_array()) {
@@ -1660,15 +1895,28 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
                 }
                 std::string from = edge.at("from").get<std::string>();
                 std::string to = edge.at("to").get<std::string>();
-                analysis.predecessors[to].push_back(std::move(from));
+                std::string kind;
+                if (edge.contains("kind") && edge.at("kind").is_string()) {
+                    kind = edge.at("kind").get<std::string>();
+                }
+                auto& preds = analysis.predecessors[to];
+                if (kind == "exception") {
+                    preds.exception.push_back(from);
+                    analysis.has_exception_successor[from] = true;
+                } else {
+                    preds.normal.push_back(from);
+                }
             }
         }
 
         for (auto& [block_id, preds] : analysis.predecessors) {
             (void)block_id;
-            std::ranges::stable_sort(preds);
-            auto unique_end = std::ranges::unique(preds);
-            preds.erase(unique_end.begin(), unique_end.end());
+            std::ranges::stable_sort(preds.normal);
+            auto normal_unique = std::ranges::unique(preds.normal);
+            preds.normal.erase(normal_unique.begin(), normal_unique.end());
+            std::ranges::stable_sort(preds.exception);
+            auto exception_unique = std::ranges::unique(preds.exception);
+            preds.exception.erase(exception_unique.begin(), exception_unique.end());
         }
 
         if (!analysis.block_order.empty()) {
@@ -1689,6 +1937,14 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
         {"invoke", "throw", "landingpad", "resume"}
     };
     return std::ranges::find(kExceptionOps, op) != kExceptionOps.end();
+}
+
+[[nodiscard]] bool is_exception_boundary_op(std::string_view op)
+{
+    constexpr std::array<std::string_view, 3> kExceptionBoundaryOps{
+        {"invoke", "throw", "resume"}
+    };
+    return std::ranges::find(kExceptionBoundaryOps, op) != kExceptionBoundaryOps.end();
 }
 
 [[nodiscard]] bool is_thread_op(std::string_view op)
@@ -1739,6 +1995,7 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
         }
         const std::string function_uid = func.at("function_uid").get<std::string>();
         FunctionFeatureFlags flags;
+        std::map<std::string, bool> block_has_exception_boundary;
 
         if (func.contains("tables") && func.at("tables").is_object()) {
             const auto& tables = func.at("tables");
@@ -1750,24 +2007,14 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
 
         if (func.contains("cfg") && func.at("cfg").is_object()) {
             const auto& cfg = func.at("cfg");
-            if (cfg.contains("edges") && cfg.at("edges").is_array()) {
-                for (const auto& edge : cfg.at("edges")) {
-                    if (!edge.is_object() || !edge.contains("kind")
-                        || !edge.at("kind").is_string()) {
-                        continue;
-                    }
-                    const auto& kind = edge.at("kind").get_ref<const std::string&>();
-                    if (kind == "exception") {
-                        flags.has_exception_flow = true;
-                    }
-                }
-            }
             if (cfg.contains("blocks") && cfg.at("blocks").is_array()) {
                 for (const auto& block : cfg.at("blocks")) {
-                    if (!block.is_object() || !block.contains("insts")
-                        || !block.at("insts").is_array()) {
+                    if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()
+                        || !block.contains("insts") || !block.at("insts").is_array()) {
                         continue;
                     }
+                    const std::string block_id = block.at("id").get<std::string>();
+                    bool has_exception_boundary = false;
                     for (const auto& inst : block.at("insts")) {
                         if (!inst.is_object() || !inst.contains("op")
                             || !inst.at("op").is_string()) {
@@ -1775,6 +2022,33 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
                         }
                         const auto& op = inst.at("op").get_ref<const std::string&>();
                         update_feature_flags(op, flags);
+                        if (is_exception_boundary_op(op)) {
+                            has_exception_boundary = true;
+                        }
+                    }
+                    block_has_exception_boundary.emplace(block_id, has_exception_boundary);
+                }
+            }
+            if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+                for (const auto& edge : cfg.at("edges")) {
+                    if (!edge.is_object() || !edge.contains("kind")
+                        || !edge.at("kind").is_string()) {
+                        continue;
+                    }
+                    const auto& kind = edge.at("kind").get_ref<const std::string&>();
+                    if (kind != "exception") {
+                        continue;
+                    }
+                    flags.has_exception_flow = true;
+                    if (edge.contains("from") && edge.at("from").is_string()) {
+                        const std::string from = edge.at("from").get<std::string>();
+                        auto boundary_it = block_has_exception_boundary.find(from);
+                        if (boundary_it == block_has_exception_boundary.end()
+                            || !boundary_it->second) {
+                            flags.has_unmodeled_exception_flow = true;
+                        }
+                    } else {
+                        flags.has_unmodeled_exception_flow = true;
                     }
                 }
             }
@@ -2446,7 +2720,7 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
     if (features.has_thread || features.has_sync) {
         return build_concurrency_unsupported_unknown_details();
     }
-    if (features.has_exception_flow) {
+    if (features.has_unmodeled_exception_flow) {
         return build_exception_flow_unknown_details();
     }
     if (features.has_vcall) {
