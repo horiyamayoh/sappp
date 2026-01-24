@@ -367,7 +367,7 @@ TEST(LitmusE2E, UninitRead)
         .name = "uninit_read",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_uninit_read.cpp",
         .expected_po_kinds = {"UninitRead"},
-        .expected_categories = {"UNKNOWN"},
+        .expected_categories = {"BUG"},
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,

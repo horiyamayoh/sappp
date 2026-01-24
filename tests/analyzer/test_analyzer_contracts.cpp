@@ -5,6 +5,7 @@
 #include <fstream>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -35,6 +36,31 @@ nlohmann::json make_nir()
         {  "generated_at",                                  "1970-01-01T00:00:00Z"},
         {         "tu_id",                                        make_sha256('a')},
         {     "functions",                                 nlohmann::json::array()}
+    };
+}
+
+nlohmann::json make_nir_with_insts(std::vector<nlohmann::json> insts)
+{
+    nlohmann::json block = {
+        {   "id",             "B1"},
+        {"insts", std::move(insts)}
+    };
+
+    nlohmann::json func = {
+        {"function_uid","usr::foo"                        },
+        {"mangled_name",            "_Z3foov"},
+        {         "cfg",
+         {{"entry", "B1"},
+         {"blocks", nlohmann::json::array({block})},
+         {"edges", nlohmann::json::array()}} }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                "nir.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {     "functions",                           nlohmann::json::array({func})}
     };
 }
 
@@ -125,6 +151,35 @@ nlohmann::json make_po_list(std::string_view po_kind)
          nlohmann::json{
          {"expr", nlohmann::json{{"op", "custom.op"}, {"args", nlohmann::json::array({true})}}},
          {"pretty", "custom"}}                                                              }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                 "po.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {           "pos",                             nlohmann::json::array({po})}
+    };
+}
+
+nlohmann::json make_uninit_po_list(std::string_view target, std::string_view inst_id)
+{
+    nlohmann::json po = {
+        {               "po_id",                      make_sha256('b')                                },
+        {             "po_kind",                                                          "UninitRead"},
+        {     "profile_version",                                                      "safety.core.v1"},
+        {   "semantics_version",                                                              "sem.v1"},
+        {"proof_system_version",                                                            "proof.v1"},
+        {       "repo_identity",
+         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}               },
+        {            "function",           nlohmann::json{{"usr", "usr::foo"}, {"mangled", "_Z3foov"}}},
+        {              "anchor", nlohmann::json{{"block_id", "B1"}, {"inst_id", std::string(inst_id)}}},
+        {           "predicate",
+         nlohmann::json{
+         {"expr",
+         nlohmann::json{{"op", "sink.marker"},
+         {"args", nlohmann::json::array({"UninitRead", std::string(target)})}}},
+         {"pretty", "uninit_read"}}                                                                   }
     };
 
     return nlohmann::json{
@@ -385,9 +440,9 @@ TEST(AnalyzerContractTest, DoubleFreePoProducesLifetimeUnknown)
     EXPECT_EQ(unknowns.at(0).at("unknown_code"), "LifetimeUnmodeled");
 }
 
-TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
+TEST(AnalyzerContractTest, UninitReadPoProducesBugWhenUninit)
 {
-    auto temp_dir = ensure_temp_dir("sappp_analyzer_uninit_unknown");
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_uninit_bug");
     auto cert_dir = temp_dir / "certstore";
 
     Analyzer analyzer({
@@ -398,8 +453,19 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
                      .profile = "safety.core.v1"}
     });
 
-    auto nir = make_nir();
-    auto po_list = make_po_list("UninitRead");
+    nlohmann::json assign_inst = {
+        {  "id",                                                                             "I0"},
+        {  "op",                                                                         "assign"},
+        {"args", nlohmann::json::array({nlohmann::json{{"op", "ref"}, {"name", "value"}}, false})}
+    };
+    nlohmann::json sink_inst = {
+        {  "id",                                            "I1"},
+        {  "op",                                   "sink.marker"},
+        {"args", nlohmann::json::array({"uninit_read", "value"})}
+    };
+
+    auto nir = make_nir_with_insts({assign_inst, sink_inst});
+    auto po_list = make_uninit_po_list("value", "I1");
     auto specdb_snapshot = make_contract_snapshot(true);
 
     auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
@@ -407,7 +473,61 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
     ASSERT_EQ(unknowns.size(), 1U);
-    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "DomainTooWeak.Memory");
+
+    sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
+    std::ifstream index_file(cert_dir / "index" / (make_sha256('b') + ".json"));
+    ASSERT_TRUE(index_file.is_open());
+    nlohmann::json index_json = nlohmann::json::parse(index_file);
+    std::string root_hash = index_json.at("root").get<std::string>();
+
+    auto root_cert = cert_store.get(root_hash);
+    ASSERT_TRUE(root_cert);
+    EXPECT_EQ(root_cert->at("result"), "BUG");
+}
+
+TEST(AnalyzerContractTest, UninitReadPoProducesSafeWhenInit)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_uninit_safe");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    nlohmann::json assign_inst = {
+        {  "id",                                                                            "I0"},
+        {  "op",                                                                        "assign"},
+        {"args", nlohmann::json::array({nlohmann::json{{"op", "ref"}, {"name", "value"}}, true})}
+    };
+    nlohmann::json sink_inst = {
+        {  "id",                                            "I1"},
+        {  "op",                                   "sink.marker"},
+        {"args", nlohmann::json::array({"uninit_read", "value"})}
+    };
+
+    auto nir = make_nir_with_insts({assign_inst, sink_inst});
+    auto po_list = make_uninit_po_list("value", "I1");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+
+    sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
+    std::ifstream index_file(cert_dir / "index" / (make_sha256('b') + ".json"));
+    ASSERT_TRUE(index_file.is_open());
+    nlohmann::json index_json = nlohmann::json::parse(index_file);
+    std::string root_hash = index_json.at("root").get<std::string>();
+
+    auto root_cert = cert_store.get(root_hash);
+    ASSERT_TRUE(root_cert);
+    EXPECT_EQ(root_cert->at("result"), "SAFE");
 }
 
 TEST(AnalyzerContractTest, VCallMissingContractProducesUnknownCode)
