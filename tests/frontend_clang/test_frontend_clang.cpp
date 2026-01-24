@@ -136,6 +136,23 @@ std::string manual_marker_source()
            "}\n";
 }
 
+std::string operand_source()
+{
+    return "void may_throw();\n"
+           "void no_throw() noexcept;\n"
+           "int add(int a, int b) { return a + b; }\n"
+           "int main() {\n"
+           "  int x = 1;\n"
+           "  int y = x;\n"
+           "  x;\n"
+           "  x = y;\n"
+           "  x = add(y, 2);\n"
+           "  no_throw();\n"
+           "  may_throw();\n"
+           "  return x;\n"
+           "}\n";
+}
+
 void write_source_file(const std::filesystem::path& path, const std::string& contents)
 {
     std::ofstream source_file(path);
@@ -268,6 +285,29 @@ bool has_ub_check_with_kind(const nlohmann::json& nir, std::string_view kind, bo
     return false;
 }
 
+void expect_signature_shape(const nlohmann::json& func)
+{
+    ASSERT_TRUE(func.contains("signature")) << "missing signature in function";
+    const auto& signature = func.at("signature");
+    ASSERT_TRUE(signature.is_object());
+    ASSERT_TRUE(signature.contains("return_type"));
+    EXPECT_TRUE(signature.at("return_type").is_string());
+    ASSERT_TRUE(signature.contains("params"));
+    ASSERT_TRUE(signature.at("params").is_array());
+    ASSERT_TRUE(signature.contains("noexcept"));
+    EXPECT_TRUE(signature.at("noexcept").is_boolean());
+    ASSERT_TRUE(signature.contains("variadic"));
+    EXPECT_TRUE(signature.at("variadic").is_boolean());
+
+    for (const auto& param : signature.at("params")) {
+        ASSERT_TRUE(param.is_object());
+        ASSERT_TRUE(param.contains("name"));
+        EXPECT_TRUE(param.at("name").is_string());
+        ASSERT_TRUE(param.contains("type"));
+        EXPECT_TRUE(param.at("type").is_string());
+    }
+}
+
 }  // namespace
 
 TEST(FrontendClangTest, GeneratesValidNirAndSourceMap)
@@ -302,6 +342,10 @@ TEST(FrontendClangTest, GeneratesValidNirAndSourceMap)
 
     EXPECT_TRUE(result->source_map.contains("entries"));
     EXPECT_FALSE(result->source_map.at("entries").empty());
+
+    for (const auto& func : result->nir.at("functions")) {
+        expect_signature_shape(func);
+    }
 
     std::filesystem::remove_all(temp_dir);
 }
@@ -460,6 +504,58 @@ TEST(FrontendClangTest, EmitsManualMarkers)
     std::unordered_set<std::string> sink_kinds = collect_sink_kinds(result->nir);
     EXPECT_NE(sink_kinds.find("use-after-lifetime"), sink_kinds.end());
     EXPECT_TRUE(has_ub_check_with_kind(result->nir, "shift", false));
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsOperandsForLoadStoreAssignAndCalls)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir = std::filesystem::temp_directory_path()
+                                     / ("sappp_frontend_operands_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, operand_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    const std::unordered_set<std::string> target_ops = {
+        "load",
+        "store",
+        "assign",
+        "call",
+        "invoke",
+    };
+
+    std::unordered_set<std::string> seen_ops;
+    for (const auto& func : result->nir.at("functions")) {
+        for (const auto& block : func.at("cfg").at("blocks")) {
+            for (const auto& inst : block.at("insts")) {
+                const auto op = inst.at("op").get<std::string>();
+                if (!target_ops.contains(op)) {
+                    continue;
+                }
+                seen_ops.insert(op);
+                ASSERT_TRUE(inst.contains("args"));
+                ASSERT_TRUE(inst.at("args").is_array());
+                ASSERT_FALSE(inst.at("args").empty());
+                if (op == "call" || op == "invoke") {
+                    EXPECT_GE(inst.at("args").size(), 2U);
+                    EXPECT_TRUE(inst.at("args").at(0).is_object());
+                }
+            }
+        }
+    }
+
+    for (const auto& op : target_ops) {
+        EXPECT_NE(seen_ops.find(op), seen_ops.end()) << "missing op: " << op;
+    }
 
     std::filesystem::remove_all(temp_dir);
 }
