@@ -1,6 +1,7 @@
 /**
  * @file test_litmus_e2e.cpp
- * @brief End-to-end litmus tests for div0/null/oob.
+ * @brief End-to-end litmus tests for div0, null, out-of-bounds, use-after-lifetime,
+ *        double-free, uninitialized read, exception RAII, and virtual calls.
  */
 
 #include <cctype>
