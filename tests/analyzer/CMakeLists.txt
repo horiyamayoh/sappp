@@ -1,6 +1,7 @@
 add_executable(analyzer_tests
     test_analyzer_contracts.cpp
     test_analyzer_unknown_codes.cpp
+    test_analyzer_points_to.cpp
 )
 
 sappp_target_strict_warnings(analyzer_tests)

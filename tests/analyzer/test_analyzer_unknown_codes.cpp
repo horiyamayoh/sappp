@@ -1,6 +1,7 @@
 #include "analyzer.hpp"
 
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -26,16 +27,28 @@ std::filesystem::path ensure_temp_dir(const std::string& name)
     return temp_dir;
 }
 
+struct VCallTestConfig
+{
+    std::optional<std::string_view> candidate_id;
+    bool include_candidates = false;
+    std::vector<std::string_view> candidate_methods;
+};
+
 nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
-                                 bool include_vcall_candidates = false)
+                                 const VCallTestConfig& vcall_config = {})
 {
     nlohmann::json insts = nlohmann::json::array();
     int index = 0;
     for (const auto& op : ops) {
-        insts.push_back(nlohmann::json{
+        nlohmann::json inst = nlohmann::json{
             {"id", "I" + std::to_string(index++)},
             {"op",               std::string(op)}
-        });
+        };
+        if (op == "vcall" && vcall_config.candidate_id.has_value()) {
+            inst["args"] =
+                nlohmann::json::array({"receiver", std::string(*vcall_config.candidate_id)});
+        }
+        insts.push_back(std::move(inst));
     }
 
     nlohmann::json block = {
@@ -52,11 +65,13 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
          {"edges", nlohmann::json::array()}} }
     };
 
-    if (include_vcall_candidates) {
+    if (vcall_config.include_candidates) {
+        nlohmann::json methods = nlohmann::json::array();
+        for (const auto& method : vcall_config.candidate_methods) {
+            methods.push_back(std::string(method));
+        }
         func["tables"] = nlohmann::json{
-            {"vcall_candidates",
-             nlohmann::json::array(
-                 {{{"id", "CS0"}, {"methods", nlohmann::json::array({"_Z3barv"})}}})}
+            {"vcall_candidates", nlohmann::json::array({{{"id", "CS0"}, {"methods", methods}}})}
         };
     }
 
@@ -96,7 +111,8 @@ nlohmann::json make_po_list(std::string_view po_kind)
     };
 }
 
-nlohmann::json make_contract_snapshot(bool include_concurrency = false)
+nlohmann::json make_contract_snapshot(bool include_concurrency = false,
+                                      const std::vector<std::string_view>& extra_targets = {})
 {
     nlohmann::json contract_body = nlohmann::json{
         {"pre", nlohmann::json{{"expr", nlohmann::json{{"op", "true"}}}, {"pretty", "true"}}}
@@ -105,18 +121,34 @@ nlohmann::json make_contract_snapshot(bool include_concurrency = false)
         contract_body["concurrency"] = nlohmann::json::object();
     }
 
-    nlohmann::json contracts = nlohmann::json::array({
-        nlohmann::json{{"schema_version", "contract_ir.v1"},
-                       {"contract_id", make_sha256('d')},
-                       {"target", nlohmann::json{{"usr", "usr::foo"}}},
-                       {"tier", "Tier1"},
-                       {"version_scope",
-                        nlohmann::json{{"abi", "x86_64"},
-                                       {"library_version", "1.0.0"},
-                                       {"conditions", nlohmann::json::array()},
-                                       {"priority", 0}}},
-                       {"contract", contract_body}}
+    nlohmann::json contracts = nlohmann::json::array();
+    contracts.push_back(nlohmann::json{
+        {"schema_version","contract_ir.v1"                          },
+        {   "contract_id",                    make_sha256('d')},
+        {        "target", nlohmann::json{{"usr", "usr::foo"}}},
+        {          "tier",                             "Tier1"},
+        { "version_scope",
+         nlohmann::json{{"abi", "x86_64"},
+         {"library_version", "1.0.0"},
+         {"conditions", nlohmann::json::array()},
+         {"priority", 0}}                                     },
+        {      "contract",                       contract_body}
     });
+    char contract_id_fill = 'e';
+    for (const auto& target : extra_targets) {
+        contracts.push_back(nlohmann::json{
+            {"schema_version","contract_ir.v1"                              },
+            {   "contract_id",              make_sha256(contract_id_fill++)},
+            {        "target", nlohmann::json{{"usr", std::string(target)}}},
+            {          "tier",                                      "Tier1"},
+            { "version_scope",
+             nlohmann::json{{"abi", "x86_64"},
+             {"library_version", "1.0.0"},
+             {"conditions", nlohmann::json::array()},
+             {"priority", 0}}                                              },
+            {      "contract",                                contract_body}
+        });
+    }
 
     return nlohmann::json{
         {"schema_version",                                    "specdb_snapshot.v1"},
@@ -172,9 +204,31 @@ TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownForVcall)
     auto cert_dir = temp_dir / "certstore";
 
     auto analyzer = make_analyzer(cert_dir);
-    auto nir = make_nir_with_ops({"vcall"}, true);
+    auto nir = make_nir_with_ops({"vcall"});
     auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot();
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "VirtualCall.CandidateSetMissing", "refine-vcall");
+}
+
+TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownWithVcallCandidates)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_dispatch_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    VCallTestConfig vcall_config{
+        .candidate_id = "CS0",
+        .include_candidates = true,
+        .candidate_methods = {"_Z3barv"},
+    };
+    auto nir = make_nir_with_ops({"vcall"}, vcall_config);
+    auto po_list = make_po_list("UB.DivZero");
+    auto specdb_snapshot = make_contract_snapshot(false, {"_Z3barv"});
 
     auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
     ASSERT_TRUE(output);
