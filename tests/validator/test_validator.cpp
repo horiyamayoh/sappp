@@ -560,6 +560,55 @@ TEST(ValidatorTest, AcceptsLargeNumericIntervals)
     EXPECT_EQ(entry.at("certificate_root"), root_hash);
 }
 
+TEST(ValidatorTest, AcceptsLifetimeAndInitState)
+{
+    TempDir temp_dir("sappp_validator_lifetime_init");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-safe-lifetime");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-safe-lifetime");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr);
+    nlohmann::json ir_cert = make_ir_cert(tu_id);
+
+    nlohmann::json state = {
+        {"predicates",        nlohmann::json::array({predicate_expr})                  },
+        {  "lifetime",
+         nlohmann::json::array(
+         {{{"obj", "obj1"}, {"value", "alive"}}, {{"obj", "obj2"}, {"value", "dead"}}})},
+        {      "init",
+         nlohmann::json::array(
+         {{{"var", "x"}, {"value", "init"}}, {{"var", "y"}, {"value", "uninit"}}})     }
+    };
+    nlohmann::json safety_proof = make_safety_proof(state);
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string safety_hash = put_cert_or_fail(store, safety_proof, "safety_proof");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, safety_hash, "SAFE");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    ASSERT_EQ(results->at("results").size(), 1U);
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "SAFE");
+    EXPECT_EQ(entry.at("validator_status"), "Validated");
+    EXPECT_EQ(entry.at("certificate_root"), root_hash);
+}
+
 TEST(ValidatorTest, DowngradesOnInconsistentAbstractState)
 {
     TempDir temp_dir("sappp_validator_safe_inconsistent_state");

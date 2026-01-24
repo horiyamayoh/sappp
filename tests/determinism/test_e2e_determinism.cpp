@@ -109,8 +109,68 @@ private:
     std::ofstream out(source_path);
     out << R"(#include <cstddef>
 
+void sappp_sink(const char* kind);
+void sappp_check(const char* kind, bool predicate);
+
+struct Guard {
+    ~Guard() {}
+};
+
+struct Base {
+    virtual int value() { return 1; }
+    virtual ~Base() = default;
+};
+
+struct Derived : Base {
+    int value() override { return 2; }
+};
+
+void may_throw();
+
 int div0(int x) {
     return 1 / x;
+}
+
+int use_after_lifetime() {
+    int* ptr = nullptr;
+    {
+        int use_after_lifetime = 7;
+        ptr = &use_after_lifetime;
+    }
+    sappp_sink("use-after-lifetime");
+    return *ptr;
+}
+
+int double_free() {
+    int* ptr = new int(1);
+    delete ptr;
+    sappp_sink("double_free");
+    delete ptr;
+    return 0;
+}
+
+int uninit_read() {
+    int value;
+    sappp_sink("uninit_read");
+    return value;
+}
+
+int virtual_call() {
+    Base* ptr = new Derived();
+    int out = ptr->value();
+    delete ptr;
+    return out;
+}
+
+int exception_raii() {
+    try {
+        Guard guard;
+        may_throw();
+        sappp_check("shift", false);
+        throw 1;
+    } catch (...) {
+        return 0;
+    }
 }
 
 int main() {
@@ -119,7 +179,8 @@ int main() {
         return *p;
     }
     int arr[2] = {0, 1};
-    return arr[0] + div0(1);
+    return arr[0] + div0(1) + use_after_lifetime() + double_free() + uninit_read()
+           + virtual_call() + exception_raii();
 }
 )";
     return source_path;
@@ -134,7 +195,7 @@ int main() {
     compile_commands.push_back({
         {"directory",                                    build_dir.string()},
         {     "file",                                  source_path.string()},
-        {"arguments", {"clang++", "-std=c++20", "-c", source_path.string()}}
+        {"arguments", {"clang++", "-std=c++23", "-c", source_path.string()}}
     });
 
     fs::path compile_commands_path = build_dir / "compile_commands.json";

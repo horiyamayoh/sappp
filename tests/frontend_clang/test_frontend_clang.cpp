@@ -125,6 +125,17 @@ std::string vcall_source()
            "}\n";
 }
 
+std::string manual_marker_source()
+{
+    return "void sappp_sink(const char* kind);\n"
+           "void sappp_check(const char* kind, bool predicate);\n"
+           "int main() {\n"
+           "  sappp_sink(\"use-after-lifetime\");\n"
+           "  sappp_check(\"shift\", false);\n"
+           "  return 0;\n"
+           "}\n";
+}
+
 void write_source_file(const std::filesystem::path& path, const std::string& contents)
 {
     std::ofstream source_file(path);
@@ -230,6 +241,31 @@ std::vector<nlohmann::json> collect_vcall_insts(const nlohmann::json& func)
 bool is_sorted_strings(const std::vector<std::string>& values)
 {
     return std::ranges::is_sorted(values);
+}
+
+bool has_ub_check_with_kind(const nlohmann::json& nir, std::string_view kind, bool predicate_value)
+{
+    for (const auto& func : nir.at("functions")) {
+        for (const auto& block : func.at("cfg").at("blocks")) {
+            for (const auto& inst : block.at("insts")) {
+                if (inst.at("op").get<std::string>() != "ub.check") {
+                    continue;
+                }
+                if (!inst.contains("args") || !inst.at("args").is_array()) {
+                    continue;
+                }
+                const auto& args = inst.at("args");
+                if (args.size() < 2U || !args.at(0).is_string() || !args.at(1).is_boolean()) {
+                    continue;
+                }
+                if (args.at(0).get<std::string>() == kind
+                    && args.at(1).get<bool>() == predicate_value) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 }  // namespace
@@ -400,6 +436,30 @@ TEST(FrontendClangTest, EmitsVirtualCallCandidates)
 
     std::vector<std::string> methods = methods_json.get<std::vector<std::string>>();
     EXPECT_TRUE(is_sorted_strings(methods));
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsManualMarkers)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir = std::filesystem::temp_directory_path()
+                                     / ("sappp_frontend_manual_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, manual_marker_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    std::unordered_set<std::string> sink_kinds = collect_sink_kinds(result->nir);
+    EXPECT_NE(sink_kinds.find("use-after-lifetime"), sink_kinds.end());
+    EXPECT_TRUE(has_ub_check_with_kind(result->nir, "shift", false));
 
     std::filesystem::remove_all(temp_dir);
 }
