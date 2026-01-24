@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <deque>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -621,6 +622,11 @@ struct LifetimeState
     return result;
 }
 
+enum class LifetimeFlow {
+    kNormal,
+    kException,
+};
+
 [[nodiscard]] std::optional<std::string>
 extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readability-function-size)
 {
@@ -661,9 +667,25 @@ struct FunctionLifetimeAnalysis
     std::string entry_block;
     std::map<std::string, const nlohmann::json*> blocks;
     std::vector<std::string> block_order;
-    std::map<std::string, std::vector<std::string>> predecessors;
-    std::map<std::string, LifetimeState> in_states;
-    std::map<std::string, LifetimeState> out_states;
+    struct FlowPredecessors
+    {
+        std::vector<std::string> normal;
+        std::vector<std::string> exception;
+
+        FlowPredecessors()
+            // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+            : normal()
+            // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+            , exception()
+        {}
+    };
+    std::map<std::string, FlowPredecessors> predecessors;
+    std::map<std::string, bool> has_exception_successor;
+    std::map<std::string, bool> has_landingpad;
+    std::map<std::string, LifetimeState> normal_in_states;
+    std::map<std::string, LifetimeState> normal_out_states;
+    std::map<std::string, LifetimeState> exception_in_states;
+    std::map<std::string, LifetimeState> exception_out_states;
 
     // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
     FunctionLifetimeAnalysis()
@@ -672,8 +694,12 @@ struct FunctionLifetimeAnalysis
         , blocks()
         , block_order()
         , predecessors()
-        , in_states()
-        , out_states()
+        , has_exception_successor()
+        , has_landingpad()
+        , normal_in_states()
+        , normal_out_states()
+        , exception_in_states()
+        , exception_out_states()
     {}
     // NOLINTEND(readability-redundant-member-init)
 };
@@ -700,18 +726,33 @@ struct FunctionFeatureFlags
 using FunctionFeatureCache = std::map<std::string, FunctionFeatureFlags>;
 
 [[nodiscard]] LifetimeState merge_predecessor_states(const FunctionLifetimeAnalysis& analysis,
-                                                     std::string_view block_id)
+                                                     std::string_view block_id,
+                                                     LifetimeFlow flow)
 {
     auto pred_it = analysis.predecessors.find(std::string(block_id));
-    if (pred_it == analysis.predecessors.end() || pred_it->second.empty()) {
+    if (pred_it == analysis.predecessors.end()) {
+        return LifetimeState{};
+    }
+
+    const std::vector<std::string>* pred_list = nullptr;
+    const std::map<std::string, LifetimeState>* out_states = nullptr;
+    if (flow == LifetimeFlow::kNormal) {
+        pred_list = &pred_it->second.normal;
+        out_states = &analysis.normal_out_states;
+    } else {
+        pred_list = &pred_it->second.exception;
+        out_states = &analysis.exception_out_states;
+    }
+
+    if (pred_list->empty()) {
         return LifetimeState{};
     }
 
     bool first = true;
     LifetimeState merged;
-    for (const auto& pred : pred_it->second) {
-        auto out_it = analysis.out_states.find(pred);
-        if (out_it == analysis.out_states.end()) {
+    for (const auto& pred : *pred_list) {
+        auto out_it = out_states->find(pred);
+        if (out_it == out_states->end()) {
             continue;
         }
         if (first) {
@@ -747,10 +788,27 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
     while (changed) {
         changed = false;
         for (const auto& block_id : analysis.block_order) {
-            LifetimeState in_state = merge_predecessor_states(analysis, block_id);
-            auto in_it = analysis.in_states.find(block_id);
-            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
-                analysis.in_states[block_id] = in_state;
+            LifetimeState normal_in =
+                merge_predecessor_states(analysis, block_id, LifetimeFlow::kNormal);
+            LifetimeState exception_in =
+                merge_predecessor_states(analysis, block_id, LifetimeFlow::kException);
+
+            if (auto landingpad_it = analysis.has_landingpad.find(block_id);
+                landingpad_it != analysis.has_landingpad.end() && landingpad_it->second) {
+                normal_in = merge_lifetime_states(normal_in, exception_in);
+            }
+
+            auto normal_in_it = analysis.normal_in_states.find(block_id);
+            if (normal_in_it == analysis.normal_in_states.end()
+                || normal_in_it->second.values != normal_in.values) {
+                analysis.normal_in_states[block_id] = normal_in;
+                changed = true;
+            }
+
+            auto exception_in_it = analysis.exception_in_states.find(block_id);
+            if (exception_in_it == analysis.exception_in_states.end()
+                || exception_in_it->second.values != exception_in.values) {
+                analysis.exception_in_states[block_id] = exception_in;
                 changed = true;
             }
 
@@ -758,10 +816,26 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
             if (block_it == analysis.blocks.end()) {
                 continue;
             }
-            LifetimeState out_state = apply_block_transfer(in_state, *block_it->second);
-            auto out_it = analysis.out_states.find(block_id);
-            if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
-                analysis.out_states[block_id] = out_state;
+            LifetimeState normal_out = apply_block_transfer(normal_in, *block_it->second);
+            auto normal_out_it = analysis.normal_out_states.find(block_id);
+            if (normal_out_it == analysis.normal_out_states.end()
+                || normal_out_it->second.values != normal_out.values) {
+                analysis.normal_out_states[block_id] = normal_out;
+                changed = true;
+            }
+
+            LifetimeState exception_source = exception_in;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                exception_source = merge_lifetime_states(exception_source, normal_in);
+            }
+
+            LifetimeState exception_out = apply_block_transfer(exception_source, *block_it->second);
+            auto exception_out_it = analysis.exception_out_states.find(block_id);
+            if (exception_out_it == analysis.exception_out_states.end()
+                || exception_out_it->second.values != exception_out.values) {
+                analysis.exception_out_states[block_id] = exception_out;
                 changed = true;
             }
         }
@@ -775,10 +849,34 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
     if (block_it == analysis.blocks.end()) {
         return std::nullopt;
     }
-    auto in_it = analysis.in_states.find(anchor.block_id);
     LifetimeState state;
-    if (in_it != analysis.in_states.end()) {
-        state = in_it->second;
+    auto pred_it = analysis.predecessors.find(anchor.block_id);
+    bool has_normal_preds = false;
+    bool has_exception_preds = false;
+    if (pred_it != analysis.predecessors.end()) {
+        has_normal_preds = !pred_it->second.normal.empty();
+        has_exception_preds = !pred_it->second.exception.empty();
+    }
+
+    auto normal_it = analysis.normal_in_states.find(anchor.block_id);
+    auto exception_it = analysis.exception_in_states.find(anchor.block_id);
+    if (auto landingpad_it = analysis.has_landingpad.find(anchor.block_id);
+        landingpad_it != analysis.has_landingpad.end() && landingpad_it->second) {
+        if (normal_it != analysis.normal_in_states.end()) {
+            state = normal_it->second;
+        }
+    } else if (has_exception_preds && !has_normal_preds) {
+        if (exception_it != analysis.exception_in_states.end()) {
+            state = exception_it->second;
+        }
+    } else if (has_normal_preds && has_exception_preds
+               && normal_it != analysis.normal_in_states.end()
+               && exception_it != analysis.exception_in_states.end()) {
+        state = merge_lifetime_states(normal_it->second, exception_it->second);
+    } else if (normal_it != analysis.normal_in_states.end()) {
+        state = normal_it->second;
+    } else if (exception_it != analysis.exception_in_states.end()) {
+        state = exception_it->second;
     }
     const nlohmann::json& block = *block_it->second;
     if (!block.contains("insts") || !block.at("insts").is_array()) {
@@ -830,8 +928,25 @@ build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readabi
             std::string block_id = block.at("id").get<std::string>();
             analysis.block_order.push_back(block_id);
             analysis.blocks.emplace(block_id, &block);
-            analysis.in_states.emplace(block_id, LifetimeState{});
-            analysis.out_states.emplace(block_id, LifetimeState{});
+            analysis.normal_in_states.emplace(block_id, LifetimeState{});
+            analysis.normal_out_states.emplace(block_id, LifetimeState{});
+            analysis.exception_in_states.emplace(block_id, LifetimeState{});
+            analysis.exception_out_states.emplace(block_id, LifetimeState{});
+            analysis.has_exception_successor.emplace(block_id, false);
+
+            bool block_has_landingpad = false;
+            if (block.contains("insts") && block.at("insts").is_array()) {
+                for (const auto& inst : block.at("insts")) {
+                    if (!inst.is_object() || !inst.contains("op") || !inst.at("op").is_string()) {
+                        continue;
+                    }
+                    if (inst.at("op").get<std::string>() == "landingpad") {
+                        block_has_landingpad = true;
+                        break;
+                    }
+                }
+            }
+            analysis.has_landingpad.emplace(block_id, block_has_landingpad);
         }
 
         if (cfg.contains("edges") && cfg.at("edges").is_array()) {
@@ -847,15 +962,28 @@ build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readabi
                 }
                 std::string from = edge.at("from").get<std::string>();
                 std::string to = edge.at("to").get<std::string>();
-                analysis.predecessors[to].push_back(std::move(from));
+                std::string kind;
+                if (edge.contains("kind") && edge.at("kind").is_string()) {
+                    kind = edge.at("kind").get<std::string>();
+                }
+                auto& preds = analysis.predecessors[to];
+                if (kind == "exception") {
+                    preds.exception.push_back(from);
+                    analysis.has_exception_successor[from] = true;
+                } else {
+                    preds.normal.push_back(from);
+                }
             }
         }
 
         for (auto& [block_id, preds] : analysis.predecessors) {
             (void)block_id;
-            std::ranges::stable_sort(preds);
-            auto unique_end = std::ranges::unique(preds);
-            preds.erase(unique_end.begin(), unique_end.end());
+            std::ranges::stable_sort(preds.normal);
+            auto normal_unique = std::ranges::unique(preds.normal);
+            preds.normal.erase(normal_unique.begin(), normal_unique.end());
+            std::ranges::stable_sort(preds.exception);
+            auto exception_unique = std::ranges::unique(preds.exception);
+            preds.exception.erase(exception_unique.begin(), exception_unique.end());
         }
 
         if (!analysis.block_order.empty()) {
@@ -1359,17 +1487,237 @@ make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const
     };
 }
 
-[[nodiscard]] nlohmann::json make_bug_trace(const std::string& po_id,
-                                            const nlohmann::json& ir_ref_obj)
+struct TraceBlockInst
 {
-    nlohmann::json step = nlohmann::json{
-        {"ir", ir_ref_obj}
+    std::string inst_id;
+    std::string op;
+};
+
+struct TraceEdge
+{
+    std::string to;
+    std::string kind;
+};
+
+struct TracePathNode
+{
+    std::string block_id;
+    std::optional<std::string> edge_kind;
+};
+
+[[nodiscard]] const nlohmann::json* find_function_json(const nlohmann::json& nir_json,
+                                                       std::string_view function_uid)
+{
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return nullptr;
+    }
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object() || !func.contains("function_uid")
+            || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        if (func.at("function_uid").get<std::string>() == function_uid) {
+            return &func;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] std::optional<std::vector<TracePathNode>>
+build_block_path(const nlohmann::json& cfg, std::string_view entry_block, std::string_view target)
+{
+    std::map<std::string, std::vector<TraceEdge>> edges;
+    if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+        for (const auto& edge : cfg.at("edges")) {
+            if (!edge.is_object() || !edge.contains("from") || !edge.contains("to")
+                || !edge.contains("kind")) {
+                continue;
+            }
+            if (!edge.at("from").is_string() || !edge.at("to").is_string()
+                || !edge.at("kind").is_string()) {
+                continue;
+            }
+            std::string from = edge.at("from").get<std::string>();
+            edges[from].push_back(TraceEdge{.to = edge.at("to").get<std::string>(),
+                                            .kind = edge.at("kind").get<std::string>()});
+        }
+    }
+
+    for (auto& [block_id, block_edges] : edges) {
+        (void)block_id;
+        std::ranges::stable_sort(block_edges, [](const TraceEdge& a, const TraceEdge& b) noexcept {
+            if (a.to == b.to) {
+                return a.kind < b.kind;
+            }
+            return a.to < b.to;
+        });
+    }
+
+    std::deque<std::string> queue;
+    std::unordered_map<std::string, bool> visited;
+    struct PrevEntry
+    {
+        std::string from;
+        std::string edge_kind;
     };
+    std::unordered_map<std::string, PrevEntry> prev;
+
+    queue.push_back(std::string(entry_block));
+    visited.emplace(std::string(entry_block), true);
+
+    while (!queue.empty()) {
+        std::string current = std::move(queue.front());
+        queue.pop_front();
+        if (current == target) {
+            break;
+        }
+        auto edge_it = edges.find(current);
+        if (edge_it == edges.end()) {
+            continue;
+        }
+        for (const auto& edge : edge_it->second) {
+            if (visited.contains(edge.to)) {
+                continue;
+            }
+            visited.emplace(edge.to, true);
+            prev.emplace(edge.to, PrevEntry{.from = current, .edge_kind = edge.kind});
+            queue.push_back(edge.to);
+        }
+    }
+
+    if (!visited.contains(std::string(target))) {
+        return std::nullopt;
+    }
+
+    std::vector<TracePathNode> reversed;
+    std::string current = std::string(target);
+    while (current != entry_block) {
+        auto prev_it = prev.find(current);
+        if (prev_it == prev.end()) {
+            return std::nullopt;
+        }
+        reversed.push_back(
+            TracePathNode{.block_id = current, .edge_kind = prev_it->second.edge_kind});
+        current = prev_it->second.from;
+    }
+    reversed.push_back(
+        TracePathNode{.block_id = std::string(entry_block), .edge_kind = std::nullopt});
+    std::vector<TracePathNode> path;
+    path.reserve(reversed.size());
+    for (auto it = reversed.rbegin(); it != reversed.rend(); ++it) {
+        path.push_back(*it);
+    }
+    return path;
+}
+
+[[nodiscard]] std::optional<std::string> select_trace_inst(const std::vector<TraceBlockInst>& insts,
+                                                           std::string_view anchor_inst_id,
+                                                           bool is_anchor_block)
+{
+    if (is_anchor_block) {
+        return std::string(anchor_inst_id);
+    }
+    for (const auto& inst : insts) {
+        if (inst.op == "dtor") {
+            return inst.inst_id;
+        }
+    }
+    if (!insts.empty()) {
+        return insts.front().inst_id;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::vector<nlohmann::json>>
+build_bug_trace_steps(const nlohmann::json& nir_json,
+                      std::string_view tu_id,
+                      std::string_view function_uid,
+                      const IrAnchor& anchor)
+{
+    const nlohmann::json* function_json = find_function_json(nir_json, function_uid);
+    if (function_json == nullptr || !function_json->contains("cfg")) {
+        return std::nullopt;
+    }
+    const auto& cfg = function_json->at("cfg");
+    if (!cfg.contains("entry") || !cfg.at("entry").is_string()) {
+        return std::nullopt;
+    }
+    std::string entry_block = cfg.at("entry").get<std::string>();
+    if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+        return std::nullopt;
+    }
+
+    std::map<std::string, std::vector<TraceBlockInst>> block_insts;
+    for (const auto& block : cfg.at("blocks")) {
+        if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()
+            || !block.contains("insts") || !block.at("insts").is_array()) {
+            continue;
+        }
+        std::string block_id = block.at("id").get<std::string>();
+        std::vector<TraceBlockInst> insts;
+        for (const auto& inst : block.at("insts")) {
+            if (!inst.is_object() || !inst.contains("id") || !inst.at("id").is_string()
+                || !inst.contains("op") || !inst.at("op").is_string()) {
+                continue;
+            }
+            insts.push_back(TraceBlockInst{.inst_id = inst.at("id").get<std::string>(),
+                                           .op = inst.at("op").get<std::string>()});
+        }
+        block_insts.emplace(std::move(block_id), std::move(insts));
+    }
+
+    auto anchor_block_it = block_insts.find(anchor.block_id);
+    if (anchor_block_it == block_insts.end()) {
+        return std::nullopt;
+    }
+    bool anchor_inst_found = false;
+    for (const auto& inst : anchor_block_it->second) {
+        if (inst.inst_id == anchor.inst_id) {
+            anchor_inst_found = true;
+            break;
+        }
+    }
+    if (!anchor_inst_found) {
+        return std::nullopt;
+    }
+
+    auto path = build_block_path(cfg, entry_block, anchor.block_id);
+    if (!path) {
+        return std::nullopt;
+    }
+
+    std::vector<nlohmann::json> steps;
+    steps.reserve(path->size());
+    for (const auto& node : *path) {
+        auto inst_it = block_insts.find(node.block_id);
+        if (inst_it == block_insts.end()) {
+            return std::nullopt;
+        }
+        bool is_anchor_block = node.block_id == anchor.block_id;
+        auto inst_id = select_trace_inst(inst_it->second, anchor.inst_id, is_anchor_block);
+        if (!inst_id) {
+            return std::nullopt;
+        }
+        IrAnchor inst_anchor{.block_id = node.block_id, .inst_id = *inst_id};
+        nlohmann::json step = nlohmann::json{
+            {"ir", make_ir_ref_obj(std::string(tu_id), std::string(function_uid), inst_anchor)}
+        };
+        if (node.edge_kind) {
+            step["edge_kind"] = *node.edge_kind;
+        }
+        steps.push_back(std::move(step));
+    }
+    return steps;
+}
+
+[[nodiscard]] nlohmann::json make_bug_trace(const std::string& po_id,
+                                            const std::vector<nlohmann::json>& steps)
+{
     return nlohmann::json{
         {"schema_version",                                                    "cert.v1"},
         {          "kind",                                                   "BugTrace"},
         {    "trace_kind",                                                 "ir_path.v1"},
-        {         "steps",                                nlohmann::json::array({step})},
+        {         "steps",                                                        steps},
         {     "violation", nlohmann::json{{"po_id", po_id}, {"predicate_holds", false}}}
     };
 }
@@ -1933,6 +2281,7 @@ struct PoProcessingContext
     const VCallSummaryMap* vcall_summaries = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
+    const nlohmann::json* nir_json = nullptr;
     const PointsToAnalysisCache* points_to_cache = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
@@ -1955,6 +2304,7 @@ struct EvidenceInput
 {
     const nlohmann::json* po = nullptr;
     const nlohmann::json* ir_ref = nullptr;
+    const nlohmann::json* nir_json = nullptr;
     std::string_view po_id;
     std::string_view function_uid;
     const IrAnchor* anchor = nullptr;
@@ -1967,7 +2317,22 @@ struct EvidenceInput
 [[nodiscard]] sappp::Result<EvidenceResult> build_evidence(const EvidenceInput& input)
 {
     if (input.is_bug) {
-        return EvidenceResult{.evidence = make_bug_trace(std::string(input.po_id), *input.ir_ref),
+        std::vector<nlohmann::json> steps;
+        if (input.nir_json != nullptr && input.anchor != nullptr) {
+            auto trace_steps = build_bug_trace_steps(*input.nir_json,
+                                                     input.ir_ref->at("tu_id").get<std::string>(),
+                                                     input.function_uid,
+                                                     *input.anchor);
+            if (trace_steps) {
+                steps = std::move(*trace_steps);
+            }
+        }
+        if (steps.empty()) {
+            steps.push_back(nlohmann::json{
+                {"ir", *input.ir_ref}
+            });
+        }
+        return EvidenceResult{.evidence = make_bug_trace(std::string(input.po_id), steps),
                               .result_kind = "BUG"};
     }
 
@@ -2048,6 +2413,7 @@ struct PoBaseData
 
     EvidenceInput evidence_input{.po = &po,
                                  .ir_ref = &base.ir_ref,
+                                 .nir_json = context.nir_json,
                                  .po_id = base.po_id,
                                  .function_uid = base.function_uid,
                                  .anchor = &base.anchor,
@@ -2676,6 +3042,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .vcall_summaries = &vcall_summaries,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
+                                .nir_json = &nir_json,
                                 .points_to_cache = &(*points_to_cache),
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};

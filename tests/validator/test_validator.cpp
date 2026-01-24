@@ -17,8 +17,10 @@ namespace {
 
 namespace fs = std::filesystem;
 constexpr std::string_view kTestFunctionUid = "func1";
+constexpr std::string_view kTestCalleeUid = "func2";
 constexpr std::string_view kTestBlockId = "B1";
 constexpr std::string_view kTestMangledName = "_Z4testv";
+constexpr std::string_view kTestCalleeMangledName = "_Z6calleev";
 constexpr std::string_view kDefaultSafetyDomain = "interval+null+lifetime+init";
 
 /// RAII helper to create and clean up a temporary directory
@@ -77,7 +79,9 @@ void bind_po_or_fail(sappp::certstore::CertStore& store,
 }
 
 [[nodiscard]] nlohmann::json make_po_cert(const std::string& po_id,
-                                          const nlohmann::json& predicate_expr)
+                                          const nlohmann::json& predicate_expr,
+                                          std::string_view inst_id = "I1",
+                                          std::string_view block_id = kTestBlockId)
 {
     return {
         {"schema_version",             "cert.v1"                          },
@@ -92,20 +96,22 @@ void bind_po_or_fail(sappp::certstore::CertStore& store,
          {{"path", "src/test.cpp"},
          {"content_sha256", sappp::common::sha256_prefixed("content")}}},
          {"function", {{"usr", "c:@F@test"}, {"mangled", std::string(kTestMangledName)}}},
-         {"anchor", {{"block_id", std::string(kTestBlockId)}, {"inst_id", "I1"}}},
+         {"anchor", {{"block_id", std::string(block_id)}, {"inst_id", std::string(inst_id)}}},
          {"predicate", {{"expr", predicate_expr}, {"pretty", "x != 0"}}}} }
     };
 }
 
-[[nodiscard]] nlohmann::json make_ir_cert(const std::string& tu_id)
+[[nodiscard]] nlohmann::json make_ir_cert(const std::string& tu_id,
+                                          std::string_view inst_id = "I1",
+                                          std::string_view block_id = kTestBlockId)
 {
     return {
         {"schema_version",                     "cert.v1"},
         {          "kind",                       "IrRef"},
         {         "tu_id",                         tu_id},
         {  "function_uid", std::string(kTestFunctionUid)},
-        {      "block_id",     std::string(kTestBlockId)},
-        {       "inst_id",                          "I1"}
+        {      "block_id",         std::string(block_id)},
+        {       "inst_id",          std::string(inst_id)}
     };
 }
 
@@ -340,6 +346,35 @@ sappp::VoidResult write_nir_file(const fs::path& input_dir,
     return write_json_file(nir_path.string(), nir);
 }
 
+sappp::VoidResult write_nir_file_custom(const fs::path& input_dir,
+                                        const std::string& tu_id,
+                                        const nlohmann::json& functions)
+{
+    if (!functions.is_array()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "Expected functions array for custom NIR"));
+    }
+    nlohmann::json nir = {
+        {      "schema_version",                                                                         "nir.v1"},
+        {                "tool", {{"name", "sappp"}, {"version", sappp::kVersion}, {"build_id", sappp::kBuildId}}},
+        {        "generated_at",                                                           "1970-01-01T00:00:00Z"},
+        {               "tu_id",                                                                            tu_id},
+        {   "semantics_version",                                                         sappp::kSemanticsVersion},
+        {"proof_system_version",                                                       sappp::kProofSystemVersion},
+        {     "profile_version",                                                           sappp::kProfileVersion},
+        {           "functions",                                                                        functions}
+    };
+
+    fs::path nir_path = input_dir / "frontend" / "nir.json";
+    std::error_code ec;
+    fs::create_directories(nir_path.parent_path(), ec);
+    if (ec) {
+        return std::unexpected(
+            sappp::Error::make("IOError", "Failed to create NIR directory: " + ec.message()));
+    }
+    return write_json_file(nir_path.string(), nir);
+}
+
 }  // namespace
 
 TEST(ValidatorTest, ValidatesBugTrace)
@@ -422,6 +457,141 @@ TEST(ValidatorTest, ValidatesBugTraceWithLifetimeExceptionVcall)
                                          NirInstSpec{ .id = "I9",          .op = "vcall"},
                                          NirInstSpec{.id = "I10",   .op = "lifetime.end"}
     });
+    ASSERT_TRUE(nir_result);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    ASSERT_EQ(results->at("results").size(), 1U);
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "BUG");
+    EXPECT_EQ(entry.at("validator_status"), "Validated");
+    EXPECT_EQ(entry.at("certificate_root"), root_hash);
+}
+
+TEST(ValidatorTest, ValidatesBugTraceWithExceptionEdge)
+{
+    TempDir temp_dir("sappp_validator_bug_exception_edge");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-bug-exception");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-bug-exception");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr, "I2");
+    nlohmann::json ir_cert = make_ir_cert(tu_id, "I2");
+
+    std::vector<nlohmann::json> steps = {
+        make_trace_step(tu_id, kTestFunctionUid, "B0", "I1"),
+        make_trace_step(tu_id, kTestFunctionUid, "B1", "I2", "exception"),
+    };
+    nlohmann::json bug_trace = make_bug_trace(po_id, tu_id, steps);
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string bug_hash = put_cert_or_fail(store, bug_trace, "bug_trace");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, bug_hash, "BUG");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
+
+    nlohmann::json function_json = {
+        {"function_uid",              std::string(kTestFunctionUid)                        },
+        {"mangled_name",                                      std::string(kTestMangledName)},
+        {         "cfg",
+         {{"entry", "B0"},
+         {"blocks",
+         nlohmann::json::array({
+         {{"id", "B0"}, {"insts", nlohmann::json::array({{{"id", "I1"}, {"op", "invoke"}}})}},
+         {{"id", "B1"},
+         {"insts", nlohmann::json::array({{{"id", "I2"}, {"op", "landingpad"}}})}},
+         })},
+         {"edges",
+         nlohmann::json::array({{{"from", "B0"}, {"to", "B1"}, {"kind", "exception"}}})}}  }
+    };
+    auto nir_result =
+        write_nir_file_custom(temp_dir.path(), tu_id, nlohmann::json::array({function_json}));
+    ASSERT_TRUE(nir_result);
+
+    sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
+    auto results = validator.validate(false);
+    ASSERT_TRUE(results);
+
+    ASSERT_EQ(results->at("results").size(), 1U);
+    const nlohmann::json& entry = results->at("results").at(0);
+    EXPECT_EQ(entry.at("category"), "BUG");
+    EXPECT_EQ(entry.at("validator_status"), "Validated");
+    EXPECT_EQ(entry.at("certificate_root"), root_hash);
+}
+
+TEST(ValidatorTest, ValidatesBugTraceWithCallStack)
+{
+    TempDir temp_dir("sappp_validator_bug_callstack");
+    std::string schema_dir = SAPPP_SCHEMA_DIR;
+
+    fs::path certstore_dir = temp_dir.path() / "certstore";
+    sappp::certstore::CertStore store(certstore_dir.string(), schema_dir);
+
+    std::string po_id = sappp::common::sha256_prefixed("po-bug-callstack");
+    std::string tu_id = sappp::common::sha256_prefixed("tu-bug-callstack");
+
+    nlohmann::json predicate_expr = {
+        {"op", "neq"}
+    };
+    nlohmann::json po_cert = make_po_cert(po_id, predicate_expr, "I2");
+    nlohmann::json ir_cert = make_ir_cert(tu_id, "I2");
+
+    std::vector<nlohmann::json> steps = {
+        make_trace_step(tu_id, kTestFunctionUid, "B0", "I1"),
+        make_trace_step(tu_id, kTestCalleeUid, "B0", "I1"),
+        make_trace_step(tu_id, kTestFunctionUid, "B0", "I2"),
+    };
+    nlohmann::json bug_trace = make_bug_trace(po_id, tu_id, steps);
+
+    std::string po_hash = put_cert_or_fail(store, po_cert, "po_cert");
+    std::string ir_hash = put_cert_or_fail(store, ir_cert, "ir_cert");
+    std::string bug_hash = put_cert_or_fail(store, bug_trace, "bug_trace");
+
+    nlohmann::json proof_root = make_proof_root(po_hash, ir_hash, bug_hash, "BUG");
+    std::string root_hash = put_cert_or_fail(store, proof_root, "proof_root");
+
+    bind_po_or_fail(store, po_id, root_hash);
+
+    nlohmann::json caller_function = {
+        {"function_uid",std::string(kTestFunctionUid)                        },
+        {"mangled_name", std::string(kTestMangledName)},
+        {         "cfg",
+         {{"entry", "B0"},
+         {"blocks",
+         nlohmann::json::array(
+         {{{"id", "B0"},
+         {"insts",
+         nlohmann::json::array(
+         {{{"id", "I1"}, {"op", "call"}}, {{"id", "I2"}, {"op", "ub.check"}}})}}})},
+         {"edges", nlohmann::json::array()}}          }
+    };
+    nlohmann::json callee_function = {
+        {"function_uid",std::string(kTestCalleeUid)                        },
+        {"mangled_name", std::string(kTestCalleeMangledName)},
+        {         "cfg",
+         {{"entry", "B0"},
+         {"blocks",
+         nlohmann::json::array(
+         {{{"id", "B0"},
+         {"insts", nlohmann::json::array({{{"id", "I1"}, {"op", "ret"}}})}}})},
+         {"edges", nlohmann::json::array()}}                }
+    };
+    auto nir_result =
+        write_nir_file_custom(temp_dir.path(),
+                              tu_id,
+                              nlohmann::json::array({caller_function, callee_function}));
     ASSERT_TRUE(nir_result);
 
     sappp::validator::Validator validator(temp_dir.path().string(), schema_dir);
