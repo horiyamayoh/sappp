@@ -2644,22 +2644,20 @@ build_vcall_missing_candidates_details(const std::vector<std::string>& candidate
     if (!candidate_ids.empty()) {
         notes = "Virtual call candidate set missing: " + join_strings(candidate_ids, ", ");
     }
-    return UnknownDetails{.code = "VirtualCall.CandidateSetMissing",
+    return UnknownDetails{.code = "VirtualDispatchUnknown",
                           .missing_notes = std::move(notes),
-                          .refinement_message =
-                              "Emit or link vcall candidate sets to discharge this PO.",
-                          .refinement_action = "refine-vcall",
-                          .refinement_domain = "virtual-call"};
+                          .refinement_message = "Resolve virtual dispatch targets for this PO.",
+                          .refinement_action = "resolve-vcall",
+                          .refinement_domain = "dispatch"};
 }
 
 [[nodiscard]] UnknownDetails build_vcall_empty_candidates_details()
 {
-    return UnknownDetails{.code = "VirtualCall.CandidateSetEmpty",
+    return UnknownDetails{.code = "VirtualDispatchUnknown",
                           .missing_notes = "Virtual call candidate set has no methods.",
-                          .refinement_message =
-                              "Populate vcall candidate sets to discharge this PO.",
-                          .refinement_action = "refine-vcall",
-                          .refinement_domain = "virtual-call"};
+                          .refinement_message = "Resolve virtual dispatch targets for this PO.",
+                          .refinement_action = "resolve-vcall",
+                          .refinement_domain = "dispatch"};
 }
 
 [[nodiscard]] UnknownDetails
@@ -2744,9 +2742,27 @@ build_vcall_missing_contract_details(const std::vector<std::string>& missing_met
                           .refinement_domain = "unknown"};
 }
 
+[[nodiscard]] bool vcall_dispatch_resolved(const VCallSummary* summary)
+{
+    if (summary == nullptr) {
+        return false;
+    }
+    if (!summary->has_vcall) {
+        return false;
+    }
+    if (summary->missing_candidate_set || summary->empty_candidate_set) {
+        return false;
+    }
+    if (!summary->missing_contract_targets.empty()) {
+        return false;
+    }
+    return !summary->candidate_methods.empty();
+}
+
 [[nodiscard]] std::optional<UnknownDetails>
 build_feature_unknown_details(const FunctionFeatureFlags& features,
-                              const ContractMatchSummary& contract_match)
+                              const ContractMatchSummary& contract_match,
+                              const VCallSummary* vcall_summary)
 {
     if (features.has_sync && !contract_match.has_concurrency) {
         return build_sync_contract_missing_unknown_details();
@@ -2761,6 +2777,9 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
         return build_exception_flow_unknown_details();
     }
     if (features.has_vcall) {
+        if (vcall_dispatch_resolved(vcall_summary)) {
+            return std::nullopt;
+        }
         return build_virtual_dispatch_unknown_details();
     }
     return std::nullopt;
@@ -3633,12 +3652,14 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     }
 
     std::vector<const ContractInfo*> vcall_contracts;
+    const VCallSummary* vcall_summary_ptr = nullptr;
     auto vcall_summary = find_vcall_summary(po, context);
     if (!vcall_summary) {
         return std::unexpected(vcall_summary.error());
     }
     if (*vcall_summary != nullptr) {
-        vcall_contracts = (*vcall_summary)->candidate_contracts;
+        vcall_summary_ptr = *vcall_summary;
+        vcall_contracts = vcall_summary_ptr->candidate_contracts;
     }
 
     auto merged_contracts = merge_contracts(*contract_match, vcall_contracts);
@@ -3678,8 +3699,9 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
         if (context.feature_cache != nullptr && allow_feature_override(details.code)) {
             auto it = context.feature_cache->find(base->function_uid);
             if (it != context.feature_cache->end()) {
-                if (auto feature_details =
-                        build_feature_unknown_details(it->second, *contract_match)) {
+                if (auto feature_details = build_feature_unknown_details(it->second,
+                                                                         *contract_match,
+                                                                         vcall_summary_ptr)) {
                     details = std::move(*feature_details);
                 }
             }

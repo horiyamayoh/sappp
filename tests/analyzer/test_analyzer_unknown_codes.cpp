@@ -209,7 +209,7 @@ TEST(AnalyzerUnknownCodeTest, ExceptionFlowConservativeForUnmodeledExceptionEdge
     expect_unknown_code(unknowns, "ExceptionFlowConservative", "refine-exception");
 }
 
-TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownForVcall)
+TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownForVcallMissingCandidates)
 {
     auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_unknown");
     auto cert_dir = temp_dir / "certstore";
@@ -223,10 +223,10 @@ TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownForVcall)
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
-    expect_unknown_code(unknowns, "VirtualCall.CandidateSetMissing", "refine-vcall");
+    expect_unknown_code(unknowns, "VirtualDispatchUnknown", "resolve-vcall");
 }
 
-TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownWithVcallCandidates)
+TEST(AnalyzerUnknownCodeTest, NumericUnknownWithVcallCandidates)
 {
     auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_dispatch_unknown");
     auto cert_dir = temp_dir / "certstore";
@@ -245,7 +245,7 @@ TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownWithVcallCandidates)
     ASSERT_TRUE(output);
 
     const auto& unknowns = output->unknown_ledger.at("unknowns");
-    expect_unknown_code(unknowns, "VirtualDispatchUnknown", "resolve-vcall");
+    expect_unknown_code(unknowns, "DomainTooWeak.Numeric", "refine-numeric");
 }
 
 TEST(AnalyzerUnknownCodeTest, AtomicOrderUnknownForAtomicRead)
