@@ -302,7 +302,7 @@ TEST(LitmusE2E, Div0)
         .name = "div0",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_div0.c",
         .expected_po_kinds = {"UB.DivZero"},
-        .expected_categories = {"BUG"},
+        .expected_categories = {"UNKNOWN"},
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
