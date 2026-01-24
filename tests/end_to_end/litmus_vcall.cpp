@@ -1,5 +1,5 @@
 // Litmus test: Virtual call
-// Expected: BUG (entry ub.check) and vcall candidates in NIR
+// Expected: BUG and vcall candidates in NIR
 
 struct Base
 {
