@@ -48,6 +48,30 @@ struct ContractInfo
 
 using ContractIndex = std::map<std::string, std::vector<ContractInfo>>;
 
+struct VCallSummary
+{
+    bool has_vcall = false;
+    bool missing_candidate_set = false;
+    bool empty_candidate_set = false;
+    std::vector<std::string> missing_candidate_ids;
+    std::vector<std::string> candidate_methods;
+    std::vector<const ContractInfo*> candidate_contracts;
+    std::vector<std::string> missing_contract_targets;
+
+    VCallSummary()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : has_vcall(false)
+        , missing_candidate_set(false)
+        , empty_candidate_set(false)
+        , missing_candidate_ids()
+        , candidate_methods()
+        , candidate_contracts()
+        , missing_contract_targets()
+    {}
+};
+
+using VCallSummaryMap = std::map<std::string, VCallSummary>;
+
 struct JsonFieldContext
 {
     const nlohmann::json* obj = nullptr;
@@ -209,6 +233,160 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
     return index;
 }
 
+using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
+
+[[nodiscard]] std::optional<std::string> extract_vcall_candidate_id(const nlohmann::json& inst)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.size() < 2U || !args.at(1).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(1).get<std::string>();
+}
+
+[[nodiscard]] VCallCandidateSetMap collect_vcall_candidate_sets(const nlohmann::json& func)
+{
+    VCallCandidateSetMap sets;
+    if (!func.contains("tables") || !func.at("tables").is_object()) {
+        return sets;
+    }
+    const auto& tables = func.at("tables");
+    if (!tables.contains("vcall_candidates") || !tables.at("vcall_candidates").is_array()) {
+        return sets;
+    }
+    for (const auto& entry : tables.at("vcall_candidates")) {
+        if (!entry.is_object() || !entry.contains("id") || !entry.at("id").is_string()) {
+            continue;
+        }
+        std::vector<std::string> methods;
+        if (entry.contains("methods") && entry.at("methods").is_array()) {
+            for (const auto& method : entry.at("methods")) {
+                if (method.is_string()) {
+                    methods.push_back(method.get<std::string>());
+                }
+            }
+        }
+        std::ranges::stable_sort(methods);
+        auto unique_end = std::ranges::unique(methods);
+        methods.erase(unique_end.begin(), methods.end());
+        sets.emplace(entry.at("id").get<std::string>(), std::move(methods));
+    }
+    return sets;
+}
+
+[[nodiscard]] VCallSummaryMap build_vcall_summary_map(const nlohmann::json& nir_json,
+                                                      const ContractIndex& contract_index)
+{
+    VCallSummaryMap summaries;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return summaries;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        std::string function_uid = func.at("function_uid").get<std::string>();
+
+        VCallSummary summary;
+        const auto candidate_sets = collect_vcall_candidate_sets(func);
+
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("insts") || !block.at("insts").is_array()) {
+                continue;
+            }
+            for (const auto& inst : block.at("insts")) {
+                if (!inst.is_object() || !inst.contains("op") || !inst.at("op").is_string()) {
+                    continue;
+                }
+                if (inst.at("op").get<std::string>() != "vcall") {
+                    continue;
+                }
+                summary.has_vcall = true;
+                auto candidate_id = extract_vcall_candidate_id(inst);
+                if (!candidate_id) {
+                    summary.missing_candidate_set = true;
+                    summary.missing_candidate_ids.push_back("unknown");
+                    continue;
+                }
+                auto candidate_it = candidate_sets.find(*candidate_id);
+                if (candidate_it == candidate_sets.end()) {
+                    summary.missing_candidate_set = true;
+                    summary.missing_candidate_ids.push_back(*candidate_id);
+                    continue;
+                }
+                if (candidate_it->second.empty()) {
+                    summary.empty_candidate_set = true;
+                    continue;
+                }
+                summary.candidate_methods.insert(summary.candidate_methods.end(),
+                                                 candidate_it->second.begin(),
+                                                 candidate_it->second.end());
+            }
+        }
+
+        if (!summary.has_vcall) {
+            continue;
+        }
+
+        std::ranges::stable_sort(summary.missing_candidate_ids);
+        auto missing_unique = std::ranges::unique(summary.missing_candidate_ids);
+        summary.missing_candidate_ids.erase(missing_unique.begin(), missing_unique.end());
+
+        std::ranges::stable_sort(summary.candidate_methods);
+        auto method_unique = std::ranges::unique(summary.candidate_methods);
+        summary.candidate_methods.erase(method_unique.begin(), method_unique.end());
+
+        for (const auto& method : summary.candidate_methods) {
+            auto contract_it = contract_index.find(method);
+            bool has_pre = false;
+            if (contract_it != contract_index.end()) {
+                for (const auto& contract : contract_it->second) {
+                    summary.candidate_contracts.push_back(&contract);
+                    has_pre = has_pre || contract.has_pre;
+                }
+            }
+            if (!has_pre) {
+                summary.missing_contract_targets.push_back(method);
+            }
+        }
+
+        std::ranges::stable_sort(summary.missing_contract_targets);
+        auto missing_contract_unique = std::ranges::unique(summary.missing_contract_targets);
+        summary.missing_contract_targets.erase(missing_contract_unique.begin(),
+                                               missing_contract_unique.end());
+
+        std::ranges::stable_sort(summary.candidate_contracts,
+                                 [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                     return a->contract_id < b->contract_id;
+                                 });
+        auto contract_unique =
+            std::ranges::unique(summary.candidate_contracts,
+                                [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                    return a->contract_id == b->contract_id;
+                                });
+        summary.candidate_contracts.erase(contract_unique.begin(), contract_unique.end());
+
+        summaries.emplace(std::move(function_uid), std::move(summary));
+    }
+
+    return summaries;
+}
+
 [[nodiscard]] std::unordered_map<std::string, std::string>
 build_function_uid_map(const nlohmann::json& nir_json)
 {
@@ -297,17 +475,51 @@ match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_i
     return summary;
 }
 
-[[nodiscard]] std::vector<std::string> collect_contract_ids(const ContractMatchSummary& summary)
+[[nodiscard]] std::vector<std::string>
+collect_contract_ids(const ContractMatchSummary& summary,
+                     const std::vector<const ContractInfo*>& extra_contracts)
 {
     std::vector<std::string> ids;
-    ids.reserve(summary.contracts.size());
+    ids.reserve(summary.contracts.size() + extra_contracts.size());
     for (const auto* contract : summary.contracts) {
+        ids.push_back(contract->contract_id);
+    }
+    for (const auto* contract : extra_contracts) {
         ids.push_back(contract->contract_id);
     }
     std::ranges::stable_sort(ids);
     auto unique_ids = std::ranges::unique(ids);
     ids.erase(unique_ids.begin(), unique_ids.end());
     return ids;
+}
+
+[[nodiscard]] std::vector<std::string> collect_contract_ids(const ContractMatchSummary& summary)
+{
+    std::vector<const ContractInfo*> none;
+    return collect_contract_ids(summary, none);
+}
+
+[[nodiscard]] std::vector<const ContractInfo*>
+merge_contracts(const ContractMatchSummary& summary,
+                const std::vector<const ContractInfo*>& extra_contracts)
+{
+    std::vector<const ContractInfo*> merged;
+    merged.reserve(summary.contracts.size() + extra_contracts.size());
+    for (const auto* contract : summary.contracts) {
+        merged.push_back(contract);
+    }
+    for (const auto* contract : extra_contracts) {
+        merged.push_back(contract);
+    }
+    std::ranges::stable_sort(merged, [](const ContractInfo* a, const ContractInfo* b) noexcept {
+        return a->contract_id < b->contract_id;
+    });
+    auto unique_end =
+        std::ranges::unique(merged, [](const ContractInfo* a, const ContractInfo* b) noexcept {
+            return a->contract_id == b->contract_id;
+        });
+    merged.erase(unique_end.begin(), unique_end.end());
+    return merged;
 }
 
 struct IrAnchor
@@ -1253,6 +1465,19 @@ struct UnknownDetails
     std::string refinement_domain;
 };
 
+[[nodiscard]] std::string join_strings(const std::vector<std::string>& items,
+                                       std::string_view separator)
+{
+    std::string joined;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (i > 0) {
+            joined += separator;
+        }
+        joined += items[i];
+    }
+    return joined;
+}
+
 [[nodiscard]] UnknownDetails build_missing_contract_details(std::string_view clause)
 {
     std::string code = std::string("MissingContract.") + std::string(clause);
@@ -1263,6 +1488,46 @@ struct UnknownDetails
     return UnknownDetails{.code = std::move(code),
                           .missing_notes = std::move(notes),
                           .refinement_message = std::move(message),
+                          .refinement_action = "add-contract",
+                          .refinement_domain = "contract"};
+}
+
+[[nodiscard]] UnknownDetails
+build_vcall_missing_candidates_details(const std::vector<std::string>& candidate_ids)
+{
+    std::string notes = "Virtual call candidate set is missing in NIR.";
+    if (!candidate_ids.empty()) {
+        notes = "Virtual call candidate set missing: " + join_strings(candidate_ids, ", ");
+    }
+    return UnknownDetails{.code = "VirtualCall.CandidateSetMissing",
+                          .missing_notes = std::move(notes),
+                          .refinement_message =
+                              "Emit or link vcall candidate sets to discharge this PO.",
+                          .refinement_action = "refine-vcall",
+                          .refinement_domain = "virtual-call"};
+}
+
+[[nodiscard]] UnknownDetails build_vcall_empty_candidates_details()
+{
+    return UnknownDetails{.code = "VirtualCall.CandidateSetEmpty",
+                          .missing_notes = "Virtual call candidate set has no methods.",
+                          .refinement_message =
+                              "Populate vcall candidate sets to discharge this PO.",
+                          .refinement_action = "refine-vcall",
+                          .refinement_domain = "virtual-call"};
+}
+
+[[nodiscard]] UnknownDetails
+build_vcall_missing_contract_details(const std::vector<std::string>& missing_methods)
+{
+    std::string notes = "Missing contract precondition for vcall candidates.";
+    if (!missing_methods.empty()) {
+        notes += " Candidates: " + join_strings(missing_methods, ", ");
+    }
+    return UnknownDetails{.code = "VirtualCall.MissingContract.Pre",
+                          .missing_notes = std::move(notes),
+                          .refinement_message =
+                              "Provide preconditions for vcall candidate methods.",
                           .refinement_action = "add-contract",
                           .refinement_domain = "contract"};
 }
@@ -1454,6 +1719,7 @@ struct PoProcessingContext
     sappp::certstore::CertStore* cert_store = nullptr;
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
     const ContractIndex* contract_index = nullptr;
+    const VCallSummaryMap* vcall_summaries = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
     const PointsToAnalysisCache* points_to_cache = nullptr;
@@ -1902,9 +2168,62 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     }
 }
 
+[[nodiscard]] sappp::Result<const VCallSummary*>
+find_vcall_summary(const nlohmann::json& po, const PoProcessingContext& context)
+{
+    if (context.vcall_summaries == nullptr || context.function_uid_map == nullptr) {
+        return static_cast<const VCallSummary*>(nullptr);
+    }
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto it = context.vcall_summaries->find(*function_uid);
+    if (it == context.vcall_summaries->end()) {
+        return static_cast<const VCallSummary*>(nullptr);
+    }
+    return &it->second;
+}
+
+[[nodiscard]] sappp::Result<std::optional<UnknownDetails>>
+resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContext& context)
+{
+    auto summary = find_vcall_summary(po, context);
+    if (!summary) {
+        return std::unexpected(summary.error());
+    }
+    if (*summary == nullptr || !(*summary)->has_vcall) {
+        return std::optional<UnknownDetails>();
+    }
+    const VCallSummary& detail = *(*summary);
+    if (detail.missing_candidate_set) {
+        return std::optional<UnknownDetails>(
+            build_vcall_missing_candidates_details(detail.missing_candidate_ids));
+    }
+    if (detail.empty_candidate_set) {
+        return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
+    }
+    if (!detail.missing_contract_targets.empty()) {
+        return std::optional<UnknownDetails>(
+            build_vcall_missing_contract_details(detail.missing_contract_targets));
+    }
+    return std::optional<UnknownDetails>();
+}
+
 [[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
                                                   const PoProcessingContext& context)
 {
+    auto vcall_unknown = resolve_vcall_unknown_details(po, context);
+    if (!vcall_unknown) {
+        return std::unexpected(vcall_unknown.error());
+    }
+    if (vcall_unknown->has_value()) {
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = std::move(vcall_unknown->value());
+        return decision;
+    }
+
     auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
     if (!po_kind) {
         return std::unexpected(po_kind.error());
@@ -1990,10 +2309,21 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     if (!contract_match) {
         return std::unexpected(contract_match.error());
     }
+
+    std::vector<const ContractInfo*> vcall_contracts;
+    auto vcall_summary = find_vcall_summary(po, context);
+    if (!vcall_summary) {
+        return std::unexpected(vcall_summary.error());
+    }
+    if (*vcall_summary != nullptr) {
+        vcall_contracts = (*vcall_summary)->candidate_contracts;
+    }
+
+    auto merged_contracts = merge_contracts(*contract_match, vcall_contracts);
     std::vector<std::string> contract_hashes;
     if (context.contract_ref_cache != nullptr && context.contract_index != nullptr) {
-        contract_hashes.reserve(contract_match->contracts.size());
-        for (const auto* contract : contract_match->contracts) {
+        contract_hashes.reserve(merged_contracts.size());
+        for (const auto* contract : merged_contracts) {
             auto hash = ensure_contract_ref(*contract, context);
             if (!hash) {
                 return std::unexpected(hash.error());
@@ -2023,10 +2353,11 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     PoProcessingOutput output{.po_id = base->po_id};
     if (decision->is_unknown || (!base->is_bug && !base->is_safe)) {
         UnknownDetails details = decision->unknown_details;
-        if (contract_match->contracts.empty() || !contract_match->has_pre) {
+        if ((contract_match->contracts.empty() || !contract_match->has_pre)
+            && !details.code.starts_with("VirtualCall.")) {
             details = build_missing_contract_details("Pre");
         }
-        auto contract_ids = collect_contract_ids(*contract_match);
+        auto contract_ids = collect_contract_ids(*contract_match, vcall_contracts);
         auto unknown_entry = build_unknown_entry(po, base->po_id, details, contract_ids);
         if (!unknown_entry) {
             return std::unexpected(unknown_entry.error());
@@ -2106,6 +2437,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
+    const auto vcall_summaries = build_vcall_summary_map(nir_json, *contract_index);
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json);
     auto points_to_cache = build_points_to_analysis_cache(nir_json);
     if (!points_to_cache) {
@@ -2119,6 +2451,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     PoProcessingContext context{.cert_store = &cert_store,
                                 .function_uid_map = &function_uid_map,
                                 .contract_index = &(*contract_index),
+                                .vcall_summaries = &vcall_summaries,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
                                 .points_to_cache = &(*points_to_cache),
