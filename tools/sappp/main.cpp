@@ -788,6 +788,60 @@ extract_pack_if_needed(const std::filesystem::path& input_path)
     return config_json;
 }
 
+[[nodiscard]] std::optional<std::uint64_t> parse_budget_value(const nlohmann::json& budget,
+                                                              std::string_view key)
+{
+    if (!budget.contains(key)) {
+        return std::nullopt;
+    }
+    const auto& value = budget.at(key);
+    if (value.is_number_unsigned()) {
+        return value.get<std::uint64_t>();
+    }
+    if (value.is_number_integer()) {
+        const auto signed_value = value.get<std::int64_t>();
+        if (signed_value >= 0) {
+            return static_cast<std::uint64_t>(signed_value);
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] sappp::analyzer::AnalyzerConfig::AnalysisBudget
+parse_analysis_budget(const nlohmann::json& analysis_config)
+{
+    sappp::analyzer::AnalyzerConfig::AnalysisBudget budget;
+    if (!analysis_config.contains("analysis") || !analysis_config.at("analysis").is_object()) {
+        return budget;
+    }
+    const auto& analysis = analysis_config.at("analysis");
+    if (!analysis.contains("budget") || !analysis.at("budget").is_object()) {
+        return budget;
+    }
+    const auto& budget_json = analysis.at("budget");
+    budget.max_iterations = parse_budget_value(budget_json, "max_iterations");
+    budget.max_states = parse_budget_value(budget_json, "max_states");
+    budget.max_summary_nodes = parse_budget_value(budget_json, "max_summary_nodes");
+    budget.max_time_ms = parse_budget_value(budget_json, "max_time_ms");
+    return budget;
+}
+
+[[nodiscard]] std::optional<std::string> parse_memory_domain(const nlohmann::json& analysis_config)
+{
+    if (!analysis_config.contains("analysis") || !analysis_config.at("analysis").is_object()) {
+        return std::nullopt;
+    }
+    const auto& analysis = analysis_config.at("analysis");
+    if (!analysis.contains("domains") || !analysis.at("domains").is_object()) {
+        return std::nullopt;
+    }
+    const auto& domains = analysis.at("domains");
+    if (!domains.contains("memory") || !domains.at("memory").is_string()) {
+        return std::nullopt;
+    }
+    return domains.at("memory").get<std::string>();
+}
+
 [[nodiscard]] sappp::Result<nlohmann::json>
 load_specdb_snapshot(const AnalyzeOptions& options,
                      std::string_view generated_at,
@@ -803,9 +857,10 @@ load_specdb_snapshot(const AnalyzeOptions& options,
     return sappp::specdb::build_snapshot(specdb_options);
 }
 
-[[nodiscard]] sappp::VoidResult write_analysis_config_output(const AnalyzePaths& paths,
-                                                             const AnalyzeOptions& options,
-                                                             std::string_view generated_at)
+[[nodiscard]] sappp::Result<nlohmann::json>
+write_analysis_config_output(const AnalyzePaths& paths,
+                             const AnalyzeOptions& options,
+                             std::string_view generated_at)
 {
     auto analysis_config = load_analysis_config(options, generated_at);
     if (!analysis_config) {
@@ -815,7 +870,7 @@ load_specdb_snapshot(const AnalyzeOptions& options,
         !write) {
         return std::unexpected(write.error());
     }
-    return {};
+    return *analysis_config;
 }
 
 [[nodiscard]] sappp::VoidResult write_specdb_snapshot_output(const AnalyzePaths& paths,
@@ -1617,10 +1672,10 @@ load_specdb_snapshot(const AnalyzeOptions& options,
     }
 
     const std::string generated_at = generated_at_from_json(*snapshot_json);
-    if (auto write_result = write_analysis_config_output(*paths, options, generated_at);
-        !write_result) {
-        std::println(stderr, "Error: analysis_config failed: {}", write_result.error().message);
-        return exit_code_for_error(write_result.error());
+    auto analysis_config = write_analysis_config_output(*paths, options, generated_at);
+    if (!analysis_config) {
+        std::println(stderr, "Error: analysis_config failed: {}", analysis_config.error().message);
+        return exit_code_for_error(analysis_config.error());
     }
     if (auto write_result =
             write_specdb_snapshot_output(*paths, options, generated_at, *snapshot_json);
@@ -1635,9 +1690,13 @@ load_specdb_snapshot(const AnalyzeOptions& options,
                      specdb_snapshot_json.error().message);
         return exit_code_for_error(specdb_snapshot_json.error());
     }
+    auto analysis_budget = parse_analysis_budget(*analysis_config);
+    auto memory_domain = parse_memory_domain(*analysis_config);
     sappp::analyzer::Analyzer analyzer({.schema_dir = options.schema_dir,
                                         .certstore_dir = paths->certstore_dir.string(),
-                                        .versions = options.versions});
+                                        .versions = options.versions,
+                                        .budget = analysis_budget,
+                                        .memory_domain = memory_domain});
     auto analyzer_output = analyzer.analyze(result->nir, *po_list_result, &*specdb_snapshot_json);
     if (!analyzer_output) {
         std::println(stderr, "Error: analyzer failed: {}", analyzer_output.error().message);

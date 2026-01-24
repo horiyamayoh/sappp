@@ -8,6 +8,8 @@
 #include "sappp/common.hpp"
 #include "sappp/version.hpp"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -19,6 +21,14 @@ struct AnalyzerConfig
     std::string schema_dir;
     std::string certstore_dir;
     sappp::VersionTriple versions;
+    struct AnalysisBudget
+    {
+        std::optional<std::uint64_t> max_iterations;
+        std::optional<std::uint64_t> max_states;
+        std::optional<std::uint64_t> max_summary_nodes;
+        std::optional<std::uint64_t> max_time_ms;
+    } budget{};
+    std::optional<std::string> memory_domain;
 };
 
 struct AnalyzeOutput

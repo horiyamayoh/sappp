@@ -11,11 +11,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <deque>
 #include <map>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,7 +29,8 @@ namespace sappp::analyzer {
 namespace {
 
 constexpr std::string_view kBaseSafetyDomain = "interval+null+lifetime+init";
-constexpr std::string_view kPointsToDomain = "interval+null+lifetime+init+points-to.simple";
+constexpr std::string_view kPointsToDomainSimple = "interval+null+lifetime+init+points-to.simple";
+constexpr std::string_view kPointsToDomainContext = "interval+null+lifetime+init+points-to.context";
 constexpr std::string_view kPointsToNullTarget = "null";
 constexpr std::string_view kPointsToInBoundsTarget = "inbounds";
 constexpr std::string_view kPointsToOutOfBoundsTarget = "oob";
@@ -84,6 +87,92 @@ struct JsonFieldContext
     const nlohmann::json* obj = nullptr;
     std::string_view key;
     std::string_view context;
+};
+
+struct BudgetTracker
+{
+    AnalyzerConfig::AnalysisBudget budget;
+    std::chrono::steady_clock::time_point start_time;
+    std::uint64_t iterations = 0;
+    std::uint64_t states = 0;
+    std::uint64_t summary_nodes = 0;
+    std::optional<std::string> exceeded_limit;
+    std::set<std::string> summary_nodes_seen;
+
+    explicit BudgetTracker(AnalyzerConfig::AnalysisBudget budget_in)
+        : budget(std::move(budget_in))
+        , start_time(std::chrono::steady_clock::now())
+        , iterations(0)
+        , states(0)
+        , summary_nodes(0)
+        , exceeded_limit()
+        , summary_nodes_seen()
+    {}
+
+    [[nodiscard]] bool exceeded() const { return exceeded_limit.has_value(); }
+
+    [[nodiscard]] std::optional<std::string> limit_reason() const { return exceeded_limit; }
+
+    bool check_time()
+    {
+        if (exceeded()) {
+            return false;
+        }
+        if (!budget.max_time_ms.has_value()) {
+            return true;
+        }
+        const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    std::chrono::steady_clock::now() - start_time)
+                                    .count();
+        if (elapsed_ms > static_cast<long long>(*budget.max_time_ms)) {
+            exceeded_limit = "max_time_ms";
+            return false;
+        }
+        return true;
+    }
+
+    bool consume_iteration()
+    {
+        if (!check_time()) {
+            return false;
+        }
+        ++iterations;
+        if (budget.max_iterations.has_value() && iterations > *budget.max_iterations) {
+            exceeded_limit = "max_iterations";
+            return false;
+        }
+        return true;
+    }
+
+    bool consume_state(std::size_t count)
+    {
+        if (!check_time()) {
+            return false;
+        }
+        states += static_cast<std::uint64_t>(count);
+        if (budget.max_states.has_value() && states > *budget.max_states) {
+            exceeded_limit = "max_states";
+            return false;
+        }
+        return true;
+    }
+
+    bool consume_summary_node(std::string_view function_uid)
+    {
+        if (!check_time()) {
+            return false;
+        }
+        std::string key(function_uid);
+        if (!summary_nodes_seen.insert(key).second) {
+            return true;
+        }
+        ++summary_nodes;
+        if (budget.max_summary_nodes.has_value() && summary_nodes > *budget.max_summary_nodes) {
+            exceeded_limit = "max_summary_nodes";
+            return false;
+        }
+        return true;
+    }
 };
 
 [[nodiscard]] sappp::Result<std::string> require_string(const JsonFieldContext& input)
@@ -852,12 +941,18 @@ apply_lifetime_block_transfer_with_exception(const LifetimeState& in_state,
                                   .has_exception_op = has_exception_op};
 }
 
-void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
+void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker* budget)
 {
     bool changed = true;
     while (changed) {
+        if (budget != nullptr && budget->exceeded()) {
+            return;
+        }
         changed = false;
         for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return;
+            }
             LifetimeState normal_in =
                 merge_predecessor_states(analysis, block_id, LifetimeFlow::kNormal);
             LifetimeState exception_in =
@@ -888,6 +983,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
                 || normal_in_it->second.values != normal_entry.values) {
                 analysis.normal_in_states[block_id] = normal_entry;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(normal_in.values.size())) {
+                    return;
+                }
             }
 
             auto exception_in_it = analysis.exception_in_states.find(block_id);
@@ -895,6 +993,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
                 || exception_in_it->second.values != exception_in.values) {
                 analysis.exception_in_states[block_id] = exception_in;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(exception_in.values.size())) {
+                    return;
+                }
             }
 
             auto block_it = analysis.blocks.find(block_id);
@@ -909,6 +1010,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
                 || normal_out_it->second.values != normal_out.values) {
                 analysis.normal_out_states[block_id] = normal_out;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(normal_out.values.size())) {
+                    return;
+                }
             }
 
             LifetimeState exception_source = merge_lifetime_states(normal_entry, exception_in);
@@ -937,6 +1041,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
                 || exception_out_it->second.values != exception_out.values) {
                 analysis.exception_out_states[block_id] = exception_out;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(exception_out.values.size())) {
+                    return;
+                }
             }
         }
     }
@@ -994,9 +1101,13 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
 }
 
 [[nodiscard]] LifetimeAnalysisCache
-build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readability-function-size)
+build_lifetime_analysis_cache(const nlohmann::json& nir_json,
+                              BudgetTracker* budget)  // NOLINT(readability-function-size)
 {
     LifetimeAnalysisCache cache;
+    if (budget != nullptr && budget->exceeded()) {
+        return cache;
+    }
     if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
         return cache;
     }
@@ -1091,7 +1202,13 @@ build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readabi
             if (analysis.entry_block.empty()) {
                 analysis.entry_block = analysis.block_order.front();
             }
-            compute_lifetime_fixpoint(analysis);
+            if (budget != nullptr && !budget->consume_summary_node(analysis.function_uid)) {
+                return cache;
+            }
+            compute_lifetime_fixpoint(analysis, budget);
+            if (budget != nullptr && budget->exceeded()) {
+                return cache;
+            }
             cache.functions.emplace(analysis.function_uid, std::move(analysis));
         }
     }
@@ -1394,17 +1511,27 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                                   .has_exception_op = has_exception_op};
 }
 
-[[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis)
+[[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis,
+                                                           BudgetTracker* budget)
 {
     bool changed = true;
     while (changed) {
+        if (budget != nullptr && budget->exceeded()) {
+            return {};
+        }
         changed = false;
         for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return {};
+            }
             PointsToState in_state = merge_predecessor_points_to_states(analysis, block_id);
             auto in_it = analysis.in_states.find(block_id);
             if (in_it == analysis.in_states.end() || in_it->second != in_state) {
                 analysis.in_states[block_id] = in_state;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                    return {};
+                }
             }
 
             auto block_it = analysis.blocks.find(block_id);
@@ -1420,6 +1547,10 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
             if (out_it == analysis.out_states.end() || out_it->second != transfer->normal_out) {
                 analysis.out_states[block_id] = transfer->normal_out;
                 changed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(transfer->normal_out.values.size())) {
+                    return {};
+                }
             }
 
             PointsToState exception_out = in_state;
@@ -1437,6 +1568,11 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                 || exception_out_it->second != exception_out) {
                 analysis.exception_out_states[block_id] = std::move(exception_out);
                 changed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(
+                        analysis.exception_out_states.at(block_id).values.size())) {
+                    return {};
+                }
             }
         }
     }
@@ -1472,9 +1608,13 @@ points_to_state_at_anchor(const FunctionPointsToAnalysis& analysis, const IrAnch
 }
 
 [[nodiscard]] sappp::Result<PointsToAnalysisCache>
-build_points_to_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readability-function-size)
+build_points_to_analysis_cache(const nlohmann::json& nir_json,
+                               BudgetTracker* budget)  // NOLINT(readability-function-size)
 {
     PointsToAnalysisCache cache;
+    if (budget != nullptr && budget->exceeded()) {
+        return cache;
+    }
     if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
         return cache;
     }
@@ -1554,8 +1694,14 @@ build_points_to_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readab
             if (analysis.entry_block.empty()) {
                 analysis.entry_block = analysis.block_order.front();
             }
-            if (auto fixpoint = compute_points_to_fixpoint(analysis); !fixpoint) {
+            if (budget != nullptr && !budget->consume_summary_node(analysis.function_uid)) {
+                return cache;
+            }
+            if (auto fixpoint = compute_points_to_fixpoint(analysis, budget); !fixpoint) {
                 return std::unexpected(fixpoint.error());
+            }
+            if (budget != nullptr && budget->exceeded()) {
+                return cache;
             }
             cache.functions.emplace(analysis.function_uid, std::move(analysis));
         }
@@ -1800,17 +1946,26 @@ apply_heap_block_transfer_with_exception(const HeapLifetimeState& in_state,
                                       .has_exception_op = has_exception_op};
 }
 
-void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis)
+void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, BudgetTracker* budget)
 {
     bool changed = true;
     while (changed) {
+        if (budget != nullptr && budget->exceeded()) {
+            return;
+        }
         changed = false;
         for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return;
+            }
             HeapLifetimeState in_state = merge_heap_predecessor_states(analysis, block_id);
             auto in_it = analysis.in_states.find(block_id);
             if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
                 analysis.in_states[block_id] = in_state;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                    return;
+                }
             }
 
             auto block_it = analysis.blocks.find(block_id);
@@ -1823,6 +1978,9 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis)
             if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
                 analysis.out_states[block_id] = out_state;
                 changed = true;
+                if (budget != nullptr && !budget->consume_state(out_state.values.size())) {
+                    return;
+                }
             }
 
             HeapLifetimeState exception_out = in_state;
@@ -1873,9 +2031,12 @@ heap_state_at_anchor(const FunctionHeapLifetimeAnalysis& analysis, const IrAncho
 
 [[nodiscard]] HeapLifetimeAnalysisCache
 // NOLINTNEXTLINE(readability-function-size) - Cache heap lifetimes.
-build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
+build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json, BudgetTracker* budget)
 {
     HeapLifetimeAnalysisCache cache;
+    if (budget != nullptr && budget->exceeded()) {
+        return cache;
+    }
     if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
         return cache;
     }
@@ -1957,7 +2118,13 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
             if (analysis.entry_block.empty()) {
                 analysis.entry_block = analysis.block_order.front();
             }
-            compute_heap_lifetime_fixpoint(analysis);
+            if (budget != nullptr && !budget->consume_summary_node(analysis.function_uid)) {
+                return cache;
+            }
+            compute_heap_lifetime_fixpoint(analysis, budget);
+            if (budget != nullptr && budget->exceeded()) {
+                return cache;
+            }
             cache.functions.emplace(analysis.function_uid, std::move(analysis));
         }
     }
@@ -2637,6 +2804,20 @@ struct UnknownDetails
                                 "concurrency");
 }
 
+[[nodiscard]] UnknownDetails build_budget_exceeded_unknown_details(std::string_view limit)
+{
+    std::string notes = "Analysis budget exceeded";
+    if (!limit.empty()) {
+        notes += " (" + std::string(limit) + ")";
+    }
+    return UnknownDetails{.code = "BudgetExceeded",
+                          .missing_notes = std::move(notes),
+                          .refinement_message =
+                              "Increase analysis budget or narrow analysis scope.",
+                          .refinement_action = "increase-budget",
+                          .refinement_domain = "analysis-budget"};
+}
+
 [[nodiscard]] UnknownDetails
 build_vcall_missing_candidates_details(const std::vector<std::string>& candidate_ids)
 {
@@ -2787,8 +2968,19 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
 
 [[nodiscard]] bool allow_feature_override(std::string_view unknown_code)
 {
-    return !(unknown_code.starts_with("Lifetime") || unknown_code.starts_with("MissingContract.")
-             || unknown_code.starts_with("VirtualCall."));
+    if (unknown_code.starts_with("Lifetime")) {
+        return false;
+    }
+    if (unknown_code == "BudgetExceeded") {
+        return false;
+    }
+    if (unknown_code.starts_with("MissingContract.")) {
+        return false;
+    }
+    if (unknown_code.starts_with("VirtualCall.")) {
+        return false;
+    }
+    return true;
 }
 
 [[nodiscard]] UnknownDetails build_use_after_lifetime_unknown_details(std::string_view notes)
@@ -2948,6 +3140,8 @@ struct PoProcessingContext
     const nlohmann::json* nir_json = nullptr;
     const PointsToAnalysisCache* points_to_cache = nullptr;
     std::string_view tu_id;
+    std::optional<std::string> budget_exceeded_limit;
+    std::string points_to_domain;
     const sappp::VersionTriple* versions = nullptr;
 };
 
@@ -3304,7 +3498,7 @@ decide_points_to(const nlohmann::json& po,
         PoDecision decision;
         decision.is_safe = true;
         decision.points_to = build_points_to_entries(*pointer, points_to_set);
-        decision.safety_domain = std::string(kPointsToDomain);
+        decision.safety_domain = context.points_to_domain;
         return std::optional<PoDecision>(decision);
     }
 
@@ -3326,7 +3520,7 @@ decide_points_to(const nlohmann::json& po,
             PoDecision decision;
             decision.is_safe = true;
             decision.points_to = build_points_to_entries(*pointer, points_to_set);
-            decision.safety_domain = std::string(kPointsToDomain);
+            decision.safety_domain = context.points_to_domain;
             return std::optional<PoDecision>(decision);
         }
         PoDecision decision;
@@ -3543,6 +3737,14 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
 [[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
                                                   const PoProcessingContext& context)
 {
+    if (context.budget_exceeded_limit.has_value()) {
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_budget_exceeded_unknown_details(*context.budget_exceeded_limit);
+        return decision;
+    }
+
     auto vcall_unknown = resolve_vcall_unknown_details(po, context);
     if (!vcall_unknown) {
         return std::unexpected(vcall_unknown.error());
@@ -3706,7 +3908,8 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
                 }
             }
         }
-        if ((contract_match->contracts.empty() || !contract_match->has_pre)
+        if (details.code != "BudgetExceeded"
+            && (contract_match->contracts.empty() || !contract_match->has_pre)
             && !details.code.starts_with("VirtualCall.")) {
             details = build_missing_contract_details("Pre");
         }
@@ -3786,20 +3989,30 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
         build_unknown_ledger_base(nir_json, po_list_json, m_config.versions, *tool_obj, *tu_id);
 
     sappp::certstore::CertStore cert_store(m_config.certstore_dir, m_config.schema_dir);
+    BudgetTracker budget_tracker(m_config.budget);
     const auto function_uid_map = build_function_uid_map(nir_json);
     auto contract_index = build_contract_index(specdb_snapshot);
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
     const auto vcall_summaries = build_vcall_summary_map(nir_json, *contract_index);
-    const auto lifetime_cache = build_lifetime_analysis_cache(nir_json);
-    const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json);
-    auto points_to_cache = build_points_to_analysis_cache(nir_json);
+    const auto lifetime_cache = build_lifetime_analysis_cache(nir_json, &budget_tracker);
+    const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json, &budget_tracker);
+    auto points_to_cache = build_points_to_analysis_cache(nir_json, &budget_tracker);
     if (!points_to_cache) {
         return std::unexpected(points_to_cache.error());
     }
     const auto feature_cache = build_function_feature_cache(nir_json);
     std::unordered_map<std::string, std::string> contract_ref_cache;
+
+    std::string points_to_domain = std::string(kPointsToDomainSimple);
+    if (m_config.memory_domain.has_value()) {
+        if (*m_config.memory_domain == "points-to.context") {
+            points_to_domain = std::string(kPointsToDomainContext);
+        } else if (*m_config.memory_domain == "points-to.simple") {
+            points_to_domain = std::string(kPointsToDomainSimple);
+        }
+    }
 
     std::vector<nlohmann::json> unknowns;
     unknowns.reserve(ordered_pos_value.size());
@@ -3815,6 +4028,8 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .nir_json = &nir_json,
                                 .points_to_cache = &(*points_to_cache),
                                 .tu_id = *tu_id,
+                                .budget_exceeded_limit = budget_tracker.limit_reason(),
+                                .points_to_domain = std::move(points_to_domain),
                                 .versions = &m_config.versions};
 
     for (const nlohmann::json* po_entry : ordered_pos_value) {
