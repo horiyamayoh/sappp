@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <deque>
 #include <map>
 #include <optional>
@@ -25,7 +26,12 @@ namespace sappp::analyzer {
 
 namespace {
 
-constexpr std::string_view kSafetyDomain = "interval+null+lifetime+init";
+constexpr std::string_view kBaseSafetyDomain = "interval+null+lifetime+init";
+constexpr std::string_view kPointsToDomain = "interval+null+lifetime+init+points-to.simple";
+constexpr std::string_view kPointsToNullTarget = "null";
+constexpr std::string_view kPointsToInBoundsTarget = "inbounds";
+constexpr std::string_view kPointsToOutOfBoundsTarget = "oob";
+constexpr std::size_t kMaxPointsToTargets = 4;
 constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 
 struct ContractInfo
@@ -42,6 +48,30 @@ struct ContractInfo
 };
 
 using ContractIndex = std::map<std::string, std::vector<ContractInfo>>;
+
+struct VCallSummary
+{
+    bool has_vcall = false;
+    bool missing_candidate_set = false;
+    bool empty_candidate_set = false;
+    std::vector<std::string> missing_candidate_ids;
+    std::vector<std::string> candidate_methods;
+    std::vector<const ContractInfo*> candidate_contracts;
+    std::vector<std::string> missing_contract_targets;
+
+    VCallSummary()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : has_vcall(false)
+        , missing_candidate_set(false)
+        , empty_candidate_set(false)
+        , missing_candidate_ids()
+        , candidate_methods()
+        , candidate_contracts()
+        , missing_contract_targets()
+    {}
+};
+
+using VCallSummaryMap = std::map<std::string, VCallSummary>;
 
 struct JsonFieldContext
 {
@@ -204,6 +234,160 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
     return index;
 }
 
+using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
+
+[[nodiscard]] std::optional<std::string> extract_vcall_candidate_id(const nlohmann::json& inst)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.size() < 2U || !args.at(1).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(1).get<std::string>();
+}
+
+[[nodiscard]] VCallCandidateSetMap collect_vcall_candidate_sets(const nlohmann::json& func)
+{
+    VCallCandidateSetMap sets;
+    if (!func.contains("tables") || !func.at("tables").is_object()) {
+        return sets;
+    }
+    const auto& tables = func.at("tables");
+    if (!tables.contains("vcall_candidates") || !tables.at("vcall_candidates").is_array()) {
+        return sets;
+    }
+    for (const auto& entry : tables.at("vcall_candidates")) {
+        if (!entry.is_object() || !entry.contains("id") || !entry.at("id").is_string()) {
+            continue;
+        }
+        std::vector<std::string> methods;
+        if (entry.contains("methods") && entry.at("methods").is_array()) {
+            for (const auto& method : entry.at("methods")) {
+                if (method.is_string()) {
+                    methods.push_back(method.get<std::string>());
+                }
+            }
+        }
+        std::ranges::stable_sort(methods);
+        auto unique_end = std::ranges::unique(methods);
+        methods.erase(unique_end.begin(), methods.end());
+        sets.emplace(entry.at("id").get<std::string>(), std::move(methods));
+    }
+    return sets;
+}
+
+[[nodiscard]] VCallSummaryMap build_vcall_summary_map(const nlohmann::json& nir_json,
+                                                      const ContractIndex& contract_index)
+{
+    VCallSummaryMap summaries;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return summaries;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        std::string function_uid = func.at("function_uid").get<std::string>();
+
+        VCallSummary summary;
+        const auto candidate_sets = collect_vcall_candidate_sets(func);
+
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("insts") || !block.at("insts").is_array()) {
+                continue;
+            }
+            for (const auto& inst : block.at("insts")) {
+                if (!inst.is_object() || !inst.contains("op") || !inst.at("op").is_string()) {
+                    continue;
+                }
+                if (inst.at("op").get<std::string>() != "vcall") {
+                    continue;
+                }
+                summary.has_vcall = true;
+                auto candidate_id = extract_vcall_candidate_id(inst);
+                if (!candidate_id) {
+                    summary.missing_candidate_set = true;
+                    summary.missing_candidate_ids.push_back("unknown");
+                    continue;
+                }
+                auto candidate_it = candidate_sets.find(*candidate_id);
+                if (candidate_it == candidate_sets.end()) {
+                    summary.missing_candidate_set = true;
+                    summary.missing_candidate_ids.push_back(*candidate_id);
+                    continue;
+                }
+                if (candidate_it->second.empty()) {
+                    summary.empty_candidate_set = true;
+                    continue;
+                }
+                summary.candidate_methods.insert(summary.candidate_methods.end(),
+                                                 candidate_it->second.begin(),
+                                                 candidate_it->second.end());
+            }
+        }
+
+        if (!summary.has_vcall) {
+            continue;
+        }
+
+        std::ranges::stable_sort(summary.missing_candidate_ids);
+        auto missing_unique = std::ranges::unique(summary.missing_candidate_ids);
+        summary.missing_candidate_ids.erase(missing_unique.begin(), missing_unique.end());
+
+        std::ranges::stable_sort(summary.candidate_methods);
+        auto method_unique = std::ranges::unique(summary.candidate_methods);
+        summary.candidate_methods.erase(method_unique.begin(), method_unique.end());
+
+        for (const auto& method : summary.candidate_methods) {
+            auto contract_it = contract_index.find(method);
+            bool has_pre = false;
+            if (contract_it != contract_index.end()) {
+                for (const auto& contract : contract_it->second) {
+                    summary.candidate_contracts.push_back(&contract);
+                    has_pre = has_pre || contract.has_pre;
+                }
+            }
+            if (!has_pre) {
+                summary.missing_contract_targets.push_back(method);
+            }
+        }
+
+        std::ranges::stable_sort(summary.missing_contract_targets);
+        auto missing_contract_unique = std::ranges::unique(summary.missing_contract_targets);
+        summary.missing_contract_targets.erase(missing_contract_unique.begin(),
+                                               missing_contract_unique.end());
+
+        std::ranges::stable_sort(summary.candidate_contracts,
+                                 [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                     return a->contract_id < b->contract_id;
+                                 });
+        auto contract_unique =
+            std::ranges::unique(summary.candidate_contracts,
+                                [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                    return a->contract_id == b->contract_id;
+                                });
+        summary.candidate_contracts.erase(contract_unique.begin(), contract_unique.end());
+
+        summaries.emplace(std::move(function_uid), std::move(summary));
+    }
+
+    return summaries;
+}
+
 [[nodiscard]] std::unordered_map<std::string, std::string>
 build_function_uid_map(const nlohmann::json& nir_json)
 {
@@ -292,17 +476,51 @@ match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_i
     return summary;
 }
 
-[[nodiscard]] std::vector<std::string> collect_contract_ids(const ContractMatchSummary& summary)
+[[nodiscard]] std::vector<std::string>
+collect_contract_ids(const ContractMatchSummary& summary,
+                     const std::vector<const ContractInfo*>& extra_contracts)
 {
     std::vector<std::string> ids;
-    ids.reserve(summary.contracts.size());
+    ids.reserve(summary.contracts.size() + extra_contracts.size());
     for (const auto* contract : summary.contracts) {
+        ids.push_back(contract->contract_id);
+    }
+    for (const auto* contract : extra_contracts) {
         ids.push_back(contract->contract_id);
     }
     std::ranges::stable_sort(ids);
     auto unique_ids = std::ranges::unique(ids);
     ids.erase(unique_ids.begin(), unique_ids.end());
     return ids;
+}
+
+[[nodiscard]] std::vector<std::string> collect_contract_ids(const ContractMatchSummary& summary)
+{
+    std::vector<const ContractInfo*> none;
+    return collect_contract_ids(summary, none);
+}
+
+[[nodiscard]] std::vector<const ContractInfo*>
+merge_contracts(const ContractMatchSummary& summary,
+                const std::vector<const ContractInfo*>& extra_contracts)
+{
+    std::vector<const ContractInfo*> merged;
+    merged.reserve(summary.contracts.size() + extra_contracts.size());
+    for (const auto* contract : summary.contracts) {
+        merged.push_back(contract);
+    }
+    for (const auto* contract : extra_contracts) {
+        merged.push_back(contract);
+    }
+    std::ranges::stable_sort(merged, [](const ContractInfo* a, const ContractInfo* b) noexcept {
+        return a->contract_id < b->contract_id;
+    });
+    auto unique_end =
+        std::ranges::unique(merged, [](const ContractInfo* a, const ContractInfo* b) noexcept {
+            return a->contract_id == b->contract_id;
+        });
+    merged.erase(unique_end.begin(), unique_end.end());
+    return merged;
 }
 
 struct IrAnchor
@@ -767,6 +985,379 @@ build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readabi
     return cache;
 }
 
+struct PointsToSet
+{
+    bool is_unknown = false;
+    std::vector<std::string> targets;
+
+    // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+    PointsToSet()
+        : is_unknown(false)
+        , targets()
+    {}
+
+    PointsToSet(bool unknown, std::vector<std::string> targets_in)
+        : is_unknown(unknown)
+        , targets(std::move(targets_in))
+    {}
+
+    bool operator==(const PointsToSet&) const = default;
+};
+
+struct PointsToState
+{
+    std::map<std::string, PointsToSet> values;
+
+    PointsToState()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : values()
+    {}
+
+    bool operator==(const PointsToState&) const = default;
+};
+
+struct PointsToEffect
+{
+    std::string ptr;
+    std::vector<std::string> targets;
+
+    // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+    PointsToEffect()
+        : ptr()
+        , targets()
+    {}
+};
+
+[[nodiscard]] PointsToSet make_points_to_set(std::vector<std::string> targets)
+{
+    std::ranges::stable_sort(targets);
+    auto unique_end = std::ranges::unique(targets);
+    targets.erase(unique_end.begin(), targets.end());
+
+    if (targets.size() > kMaxPointsToTargets) {
+        return PointsToSet(true, {});
+    }
+
+    return PointsToSet(false, std::move(targets));
+}
+
+[[nodiscard]] PointsToSet merge_points_to_sets(const PointsToSet& a, const PointsToSet& b)
+{
+    if (a.is_unknown || b.is_unknown) {
+        return PointsToSet(true, {});
+    }
+
+    std::vector<std::string> merged = a.targets;
+    merged.insert(merged.end(), b.targets.begin(), b.targets.end());
+    return make_points_to_set(std::move(merged));
+}
+
+[[nodiscard]] PointsToState merge_points_to_states(const PointsToState& a, const PointsToState& b)
+{
+    PointsToState result;
+
+    for (const auto& [ptr, set] : a.values) {
+        PointsToSet other = PointsToSet(true, {});
+        auto it = b.values.find(ptr);
+        if (it != b.values.end()) {
+            other = it->second;
+        }
+        result.values.emplace(ptr, merge_points_to_sets(set, other));
+    }
+
+    for (const auto& [ptr, set] : b.values) {
+        if (result.values.contains(ptr)) {
+            continue;
+        }
+        PointsToSet other = PointsToSet(true, {});
+        auto it = a.values.find(ptr);
+        if (it != a.values.end()) {
+            other = it->second;
+        }
+        result.values.emplace(ptr, merge_points_to_sets(other, set));
+    }
+
+    return result;
+}
+
+[[nodiscard]] sappp::Result<std::vector<PointsToEffect>>
+extract_points_to_effects(const nlohmann::json& inst)
+{
+    if (!inst.contains("effects")) {
+        return std::vector<PointsToEffect>{};
+    }
+    if (!inst.at("effects").is_object()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "Expected effects object in nir instruction"));
+    }
+
+    const auto& effects = inst.at("effects");
+    if (!effects.contains("points_to")) {
+        return std::vector<PointsToEffect>{};
+    }
+    if (!effects.at("points_to").is_array()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "Expected effects.points_to array in nir"));
+    }
+
+    std::vector<PointsToEffect> output;
+    for (const auto& entry : effects.at("points_to")) {
+        if (!entry.is_object()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType", "Expected points_to entry object in nir"));
+        }
+        if (!entry.contains("ptr") || !entry.contains("targets")) {
+            return std::unexpected(
+                sappp::Error::make("MissingField", "points_to entry missing ptr or targets"));
+        }
+        if (!entry.at("ptr").is_string() || !entry.at("targets").is_array()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType", "points_to entry has invalid field types"));
+        }
+        PointsToEffect effect;
+        effect.ptr = entry.at("ptr").get<std::string>();
+        for (const auto& target : entry.at("targets")) {
+            if (!target.is_string()) {
+                return std::unexpected(
+                    sappp::Error::make("InvalidFieldType",
+                                       "points_to targets must be strings in nir"));
+            }
+            effect.targets.push_back(target.get<std::string>());
+        }
+        output.push_back(std::move(effect));
+    }
+
+    return output;
+}
+
+[[nodiscard]] sappp::VoidResult apply_points_to_effects(const nlohmann::json& inst,
+                                                        PointsToState& state)
+{
+    auto effects = extract_points_to_effects(inst);
+    if (!effects) {
+        return std::unexpected(effects.error());
+    }
+    for (const auto& effect : *effects) {
+        state.values[effect.ptr] = make_points_to_set(effect.targets);
+    }
+    return {};
+}
+
+struct FunctionPointsToAnalysis
+{
+    std::string function_uid;
+    std::string entry_block;
+    std::map<std::string, const nlohmann::json*> blocks;
+    std::vector<std::string> block_order;
+    std::map<std::string, std::vector<std::string>> predecessors;
+    std::map<std::string, PointsToState> in_states;
+    std::map<std::string, PointsToState> out_states;
+
+    // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
+    FunctionPointsToAnalysis()
+        : function_uid()
+        , entry_block()
+        , blocks()
+        , block_order()
+        , predecessors()
+        , in_states()
+        , out_states()
+    {}
+    // NOLINTEND(readability-redundant-member-init)
+};
+
+struct PointsToAnalysisCache
+{
+    std::map<std::string, FunctionPointsToAnalysis> functions;
+
+    PointsToAnalysisCache()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : functions()
+    {}
+};
+
+[[nodiscard]] PointsToState
+merge_predecessor_points_to_states(const FunctionPointsToAnalysis& analysis,
+                                   std::string_view block_id)
+{
+    auto pred_it = analysis.predecessors.find(std::string(block_id));
+    if (pred_it == analysis.predecessors.end() || pred_it->second.empty()) {
+        return PointsToState{};
+    }
+
+    bool first = true;
+    PointsToState merged;
+    for (const auto& pred : pred_it->second) {
+        auto out_it = analysis.out_states.find(pred);
+        if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_points_to_states(merged, out_it->second);
+    }
+
+    if (first) {
+        return PointsToState{};
+    }
+    return merged;
+}
+
+[[nodiscard]] sappp::Result<PointsToState>
+apply_points_to_block_transfer(const PointsToState& in_state, const nlohmann::json& block)
+{
+    PointsToState state = in_state;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return state;
+    }
+    for (const auto& inst : block.at("insts")) {
+        if (auto applied = apply_points_to_effects(inst, state); !applied) {
+            return std::unexpected(applied.error());
+        }
+    }
+    return state;
+}
+
+[[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis)
+{
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& block_id : analysis.block_order) {
+            PointsToState in_state = merge_predecessor_points_to_states(analysis, block_id);
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second != in_state) {
+                analysis.in_states[block_id] = in_state;
+                changed = true;
+            }
+
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            auto out_state = apply_points_to_block_transfer(in_state, *block_it->second);
+            if (!out_state) {
+                return std::unexpected(out_state.error());
+            }
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second != *out_state) {
+                analysis.out_states[block_id] = std::move(*out_state);
+                changed = true;
+            }
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] sappp::Result<std::optional<PointsToState>>
+points_to_state_at_anchor(const FunctionPointsToAnalysis& analysis, const IrAnchor& anchor)
+{
+    auto block_it = analysis.blocks.find(anchor.block_id);
+    if (block_it == analysis.blocks.end()) {
+        return std::optional<PointsToState>();
+    }
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    PointsToState state;
+    if (in_it != analysis.in_states.end()) {
+        state = in_it->second;
+    }
+    const nlohmann::json& block = *block_it->second;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return std::optional<PointsToState>();
+    }
+    for (const auto& inst : block.at("insts")) {
+        if (inst.contains("id") && inst.at("id").is_string()
+            && inst.at("id").get<std::string>() == anchor.inst_id) {
+            return std::optional<PointsToState>(state);
+        }
+        if (auto applied = apply_points_to_effects(inst, state); !applied) {
+            return std::unexpected(applied.error());
+        }
+    }
+    return std::optional<PointsToState>();
+}
+
+[[nodiscard]] sappp::Result<PointsToAnalysisCache>
+build_points_to_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readability-function-size)
+{
+    PointsToAnalysisCache cache;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return cache;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        FunctionPointsToAnalysis analysis;
+        analysis.function_uid = func.at("function_uid").get<std::string>();
+        if (cfg.contains("entry") && cfg.at("entry").is_string()) {
+            analysis.entry_block = cfg.at("entry").get<std::string>();
+        }
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()) {
+                continue;
+            }
+            std::string block_id = block.at("id").get<std::string>();
+            analysis.block_order.push_back(block_id);
+            analysis.blocks.emplace(block_id, &block);
+            analysis.in_states.emplace(block_id, PointsToState{});
+            analysis.out_states.emplace(block_id, PointsToState{});
+        }
+
+        if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+            for (const auto& edge : cfg.at("edges")) {
+                if (!edge.is_object()) {
+                    continue;
+                }
+                if (!edge.contains("from") || !edge.at("from").is_string()) {
+                    continue;
+                }
+                if (!edge.contains("to") || !edge.at("to").is_string()) {
+                    continue;
+                }
+                std::string from = edge.at("from").get<std::string>();
+                std::string to = edge.at("to").get<std::string>();
+                analysis.predecessors[to].push_back(std::move(from));
+            }
+        }
+
+        for (auto& [block_id, preds] : analysis.predecessors) {
+            (void)block_id;
+            std::ranges::stable_sort(preds);
+            auto unique_end = std::ranges::unique(preds);
+            preds.erase(unique_end.begin(), preds.end());
+        }
+
+        if (!analysis.block_order.empty()) {
+            if (analysis.entry_block.empty()) {
+                analysis.entry_block = analysis.block_order.front();
+            }
+            if (auto fixpoint = compute_points_to_fixpoint(analysis); !fixpoint) {
+                return std::unexpected(fixpoint.error());
+            }
+            cache.functions.emplace(analysis.function_uid, std::move(analysis));
+        }
+    }
+
+    return cache;
+}
+
 [[nodiscard]] nlohmann::json
 make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const IrAnchor& anchor)
 {
@@ -1018,13 +1609,18 @@ build_bug_trace_steps(const nlohmann::json& nir_json,
 [[nodiscard]] nlohmann::json make_safety_proof(const std::string& function_uid,
                                                const IrAnchor& anchor,
                                                const nlohmann::json& predicate_expr,
-                                               bool predicate_holds)
+                                               bool predicate_holds,
+                                               const std::optional<nlohmann::json>& points_to,
+                                               std::string_view domain)
 {
     nlohmann::json state = nlohmann::json::object();
     if (predicate_holds) {
         state["predicates"] = nlohmann::json::array({predicate_expr});
     } else {
         state["predicates"] = nlohmann::json::array();
+    }
+    if (points_to) {
+        state["points_to"] = *points_to;
     }
 
     nlohmann::json point = nlohmann::json{
@@ -1038,7 +1634,7 @@ build_bug_trace_steps(const nlohmann::json& nir_json,
     return nlohmann::json{
         {"schema_version",                      "cert.v1"},
         {          "kind",                  "SafetyProof"},
-        {        "domain",     std::string(kSafetyDomain)},
+        {        "domain",            std::string(domain)},
         {        "points", nlohmann::json::array({point})},
         {        "pretty",                   "stub proof"}
     };
@@ -1217,6 +1813,19 @@ struct UnknownDetails
     std::string refinement_domain;
 };
 
+[[nodiscard]] std::string join_strings(const std::vector<std::string>& items,
+                                       std::string_view separator)
+{
+    std::string joined;
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        if (i > 0) {
+            joined += separator;
+        }
+        joined += items[i];
+    }
+    return joined;
+}
+
 [[nodiscard]] UnknownDetails build_missing_contract_details(std::string_view clause)
 {
     std::string code = std::string("MissingContract.") + std::string(clause);
@@ -1227,6 +1836,46 @@ struct UnknownDetails
     return UnknownDetails{.code = std::move(code),
                           .missing_notes = std::move(notes),
                           .refinement_message = std::move(message),
+                          .refinement_action = "add-contract",
+                          .refinement_domain = "contract"};
+}
+
+[[nodiscard]] UnknownDetails
+build_vcall_missing_candidates_details(const std::vector<std::string>& candidate_ids)
+{
+    std::string notes = "Virtual call candidate set is missing in NIR.";
+    if (!candidate_ids.empty()) {
+        notes = "Virtual call candidate set missing: " + join_strings(candidate_ids, ", ");
+    }
+    return UnknownDetails{.code = "VirtualCall.CandidateSetMissing",
+                          .missing_notes = std::move(notes),
+                          .refinement_message =
+                              "Emit or link vcall candidate sets to discharge this PO.",
+                          .refinement_action = "refine-vcall",
+                          .refinement_domain = "virtual-call"};
+}
+
+[[nodiscard]] UnknownDetails build_vcall_empty_candidates_details()
+{
+    return UnknownDetails{.code = "VirtualCall.CandidateSetEmpty",
+                          .missing_notes = "Virtual call candidate set has no methods.",
+                          .refinement_message =
+                              "Populate vcall candidate sets to discharge this PO.",
+                          .refinement_action = "refine-vcall",
+                          .refinement_domain = "virtual-call"};
+}
+
+[[nodiscard]] UnknownDetails
+build_vcall_missing_contract_details(const std::vector<std::string>& missing_methods)
+{
+    std::string notes = "Missing contract precondition for vcall candidates.";
+    if (!missing_methods.empty()) {
+        notes += " Candidates: " + join_strings(missing_methods, ", ");
+    }
+    return UnknownDetails{.code = "VirtualCall.MissingContract.Pre",
+                          .missing_notes = std::move(notes),
+                          .refinement_message =
+                              "Provide preconditions for vcall candidate methods.",
                           .refinement_action = "add-contract",
                           .refinement_domain = "contract"};
 }
@@ -1418,9 +2067,11 @@ struct PoProcessingContext
     sappp::certstore::CertStore* cert_store = nullptr;
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
     const ContractIndex* contract_index = nullptr;
+    const VCallSummaryMap* vcall_summaries = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
     const nlohmann::json* nir_json = nullptr;
+    const PointsToAnalysisCache* points_to_cache = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
 };
@@ -1448,6 +2099,8 @@ struct EvidenceInput
     const IrAnchor* anchor = nullptr;
     bool is_bug = false;
     bool is_safe = false;
+    const std::optional<nlohmann::json>* points_to = nullptr;
+    std::string_view safety_domain = kBaseSafetyDomain;
 };
 
 [[nodiscard]] sappp::Result<EvidenceResult> build_evidence(const EvidenceInput& input)
@@ -1480,7 +2133,11 @@ struct EvidenceInput
     EvidenceResult output{.evidence = make_safety_proof(std::string(input.function_uid),
                                                         *input.anchor,
                                                         *predicate_expr,
-                                                        input.is_safe),
+                                                        input.is_safe,
+                                                        input.points_to != nullptr
+                                                            ? *input.points_to
+                                                            : std::optional<nlohmann::json>(),
+                                                        input.safety_domain),
                           .result_kind = "SAFE"};
     return output;
 }
@@ -1529,7 +2186,9 @@ struct PoBaseData
 [[nodiscard]] sappp::VoidResult store_po_proof(const nlohmann::json& po,
                                                const PoBaseData& base,
                                                const PoProcessingContext& context,
-                                               const std::vector<std::string>& contract_hashes)
+                                               const std::vector<std::string>& contract_hashes,
+                                               const std::optional<nlohmann::json>& points_to,
+                                               std::string_view safety_domain)
 {
     auto po_hash = put_cert(*context.cert_store, base.po_def);
     if (!po_hash) {
@@ -1548,7 +2207,9 @@ struct PoBaseData
                                  .function_uid = base.function_uid,
                                  .anchor = &base.anchor,
                                  .is_bug = base.is_bug,
-                                 .is_safe = base.is_safe};
+                                 .is_safe = base.is_safe,
+                                 .points_to = &points_to,
+                                 .safety_domain = safety_domain};
     auto evidence_result = build_evidence(evidence_input);
     if (!evidence_result) {
         return std::unexpected(evidence_result.error());
@@ -1626,6 +2287,8 @@ struct PoDecision
     bool is_safe = false;
     bool is_unknown = false;
     UnknownDetails unknown_details{};
+    std::optional<nlohmann::json> points_to = std::nullopt;
+    std::string safety_domain = std::string(kBaseSafetyDomain);
 };
 
 [[nodiscard]] sappp::Result<std::optional<bool>>
@@ -1666,6 +2329,135 @@ extract_lifetime_target(const nlohmann::json& predicate_expr)
         return args.at(0).get<std::string>();
     }
     return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::string>
+extract_points_to_pointer(const nlohmann::json& predicate_expr)
+{
+    if (!predicate_expr.contains("args") || !predicate_expr.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = predicate_expr.at("args");
+    if (args.size() < 2) {
+        return std::nullopt;
+    }
+    if (!args.at(1).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(1).get<std::string>();
+}
+
+[[nodiscard]] bool points_to_contains(const PointsToSet& set, std::string_view target)
+{
+    return std::ranges::find(set.targets, target) != set.targets.end();
+}
+
+[[nodiscard]] nlohmann::json build_points_to_entries(std::string_view ptr, const PointsToSet& set)
+{
+    return nlohmann::json::array({
+        nlohmann::json{{"ptr", std::string(ptr)}, {"targets", set.targets}}
+    });
+}
+
+[[nodiscard]] sappp::Result<std::optional<PoDecision>>
+decide_points_to(const nlohmann::json& po,
+                 const nlohmann::json& predicate_expr,
+                 std::string_view po_kind,
+                 const PoProcessingContext& context)
+{
+    if (context.points_to_cache == nullptr || context.function_uid_map == nullptr) {
+        return std::optional<PoDecision>();
+    }
+
+    auto pointer = extract_points_to_pointer(predicate_expr);
+    if (!pointer) {
+        return std::optional<PoDecision>();
+    }
+
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+
+    auto analysis_it = context.points_to_cache->functions.find(*function_uid);
+    if (analysis_it == context.points_to_cache->functions.end()) {
+        return std::optional<PoDecision>();
+    }
+
+    auto state = points_to_state_at_anchor(analysis_it->second, *anchor);
+    if (!state) {
+        return std::unexpected(state.error());
+    }
+    if (!state->has_value()) {
+        return std::optional<PoDecision>();
+    }
+
+    auto set_it = state->value().values.find(*pointer);
+    if (set_it == state->value().values.end()) {
+        return std::optional<PoDecision>();
+    }
+
+    const PointsToSet& points_to_set = set_it->second;
+    if (points_to_set.is_unknown || points_to_set.targets.empty()) {
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details(po_kind);
+        return std::optional<PoDecision>(decision);
+    }
+
+    if (po_kind == "UB.NullDeref") {
+        const bool has_null = points_to_contains(points_to_set, kPointsToNullTarget);
+        if (has_null) {
+            if (points_to_set.targets.size() == 1U) {
+                PoDecision decision;
+                decision.is_bug = true;
+                return std::optional<PoDecision>(decision);
+            }
+            PoDecision decision;
+            decision.is_unknown = true;
+            decision.unknown_details = build_unknown_details(po_kind);
+            return std::optional<PoDecision>(decision);
+        }
+
+        PoDecision decision;
+        decision.is_safe = true;
+        decision.points_to = build_points_to_entries(*pointer, points_to_set);
+        decision.safety_domain = std::string(kPointsToDomain);
+        return std::optional<PoDecision>(decision);
+    }
+
+    if (po_kind == "UB.OutOfBounds") {
+        const bool has_oob = points_to_contains(points_to_set, kPointsToOutOfBoundsTarget);
+        const bool has_inbounds = points_to_contains(points_to_set, kPointsToInBoundsTarget);
+        if (has_oob) {
+            if (points_to_set.targets.size() == 1U) {
+                PoDecision decision;
+                decision.is_bug = true;
+                return std::optional<PoDecision>(decision);
+            }
+            PoDecision decision;
+            decision.is_unknown = true;
+            decision.unknown_details = build_unknown_details(po_kind);
+            return std::optional<PoDecision>(decision);
+        }
+        if (has_inbounds && points_to_set.targets.size() == 1U) {
+            PoDecision decision;
+            decision.is_safe = true;
+            decision.points_to = build_points_to_entries(*pointer, points_to_set);
+            decision.safety_domain = std::string(kPointsToDomain);
+            return std::optional<PoDecision>(decision);
+        }
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details(po_kind);
+        return std::optional<PoDecision>(decision);
+    }
+
+    return std::optional<PoDecision>();
 }
 
 [[nodiscard]] sappp::Result<PoDecision>
@@ -1742,9 +2534,62 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     }
 }
 
+[[nodiscard]] sappp::Result<const VCallSummary*>
+find_vcall_summary(const nlohmann::json& po, const PoProcessingContext& context)
+{
+    if (context.vcall_summaries == nullptr || context.function_uid_map == nullptr) {
+        return static_cast<const VCallSummary*>(nullptr);
+    }
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto it = context.vcall_summaries->find(*function_uid);
+    if (it == context.vcall_summaries->end()) {
+        return static_cast<const VCallSummary*>(nullptr);
+    }
+    return &it->second;
+}
+
+[[nodiscard]] sappp::Result<std::optional<UnknownDetails>>
+resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContext& context)
+{
+    auto summary = find_vcall_summary(po, context);
+    if (!summary) {
+        return std::unexpected(summary.error());
+    }
+    if (*summary == nullptr || !(*summary)->has_vcall) {
+        return std::optional<UnknownDetails>();
+    }
+    const VCallSummary& detail = *(*summary);
+    if (detail.missing_candidate_set) {
+        return std::optional<UnknownDetails>(
+            build_vcall_missing_candidates_details(detail.missing_candidate_ids));
+    }
+    if (detail.empty_candidate_set) {
+        return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
+    }
+    if (!detail.missing_contract_targets.empty()) {
+        return std::optional<UnknownDetails>(
+            build_vcall_missing_contract_details(detail.missing_contract_targets));
+    }
+    return std::optional<UnknownDetails>();
+}
+
 [[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
                                                   const PoProcessingContext& context)
 {
+    auto vcall_unknown = resolve_vcall_unknown_details(po, context);
+    if (!vcall_unknown) {
+        return std::unexpected(vcall_unknown.error());
+    }
+    if (vcall_unknown->has_value()) {
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = std::move(vcall_unknown->value());
+        return decision;
+    }
+
     auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
     if (!po_kind) {
         return std::unexpected(po_kind.error());
@@ -1785,6 +2630,16 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
         return *decision;
     }
 
+    if (*po_kind == "UB.NullDeref" || *po_kind == "UB.OutOfBounds") {
+        auto points_to_decision = decide_points_to(po, *predicate_expr, *po_kind, context);
+        if (!points_to_decision) {
+            return std::unexpected(points_to_decision.error());
+        }
+        if (points_to_decision->has_value()) {
+            return points_to_decision->value();
+        }
+    }
+
     if (op == "sink.marker") {
         if (*po_kind == "UB.OutOfBounds" || *po_kind == "UB.NullDeref") {
             PoDecision decision;
@@ -1820,10 +2675,21 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     if (!contract_match) {
         return std::unexpected(contract_match.error());
     }
+
+    std::vector<const ContractInfo*> vcall_contracts;
+    auto vcall_summary = find_vcall_summary(po, context);
+    if (!vcall_summary) {
+        return std::unexpected(vcall_summary.error());
+    }
+    if (*vcall_summary != nullptr) {
+        vcall_contracts = (*vcall_summary)->candidate_contracts;
+    }
+
+    auto merged_contracts = merge_contracts(*contract_match, vcall_contracts);
     std::vector<std::string> contract_hashes;
     if (context.contract_ref_cache != nullptr && context.contract_index != nullptr) {
-        contract_hashes.reserve(contract_match->contracts.size());
-        for (const auto* contract : contract_match->contracts) {
+        contract_hashes.reserve(merged_contracts.size());
+        for (const auto* contract : merged_contracts) {
             auto hash = ensure_contract_ref(*contract, context);
             if (!hash) {
                 return std::unexpected(hash.error());
@@ -1840,17 +2706,24 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
         return std::unexpected(base.error());
     }
 
-    if (auto stored = store_po_proof(po, *base, context, contract_hashes); !stored) {
+    if (auto stored = store_po_proof(po,
+                                     *base,
+                                     context,
+                                     contract_hashes,
+                                     decision->points_to,
+                                     decision->safety_domain);
+        !stored) {
         return std::unexpected(stored.error());
     }
 
     PoProcessingOutput output{.po_id = base->po_id};
     if (decision->is_unknown || (!base->is_bug && !base->is_safe)) {
         UnknownDetails details = decision->unknown_details;
-        if (contract_match->contracts.empty() || !contract_match->has_pre) {
+        if ((contract_match->contracts.empty() || !contract_match->has_pre)
+            && !details.code.starts_with("VirtualCall.")) {
             details = build_missing_contract_details("Pre");
         }
-        auto contract_ids = collect_contract_ids(*contract_match);
+        auto contract_ids = collect_contract_ids(*contract_match, vcall_contracts);
         auto unknown_entry = build_unknown_entry(po, base->po_id, details, contract_ids);
         if (!unknown_entry) {
             return std::unexpected(unknown_entry.error());
@@ -1930,7 +2803,12 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
+    const auto vcall_summaries = build_vcall_summary_map(nir_json, *contract_index);
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json);
+    auto points_to_cache = build_points_to_analysis_cache(nir_json);
+    if (!points_to_cache) {
+        return std::unexpected(points_to_cache.error());
+    }
     std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::vector<nlohmann::json> unknowns;
@@ -1939,9 +2817,11 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     PoProcessingContext context{.cert_store = &cert_store,
                                 .function_uid_map = &function_uid_map,
                                 .contract_index = &(*contract_index),
+                                .vcall_summaries = &vcall_summaries,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
                                 .nir_json = &nir_json,
+                                .points_to_cache = &(*points_to_cache),
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};
 
