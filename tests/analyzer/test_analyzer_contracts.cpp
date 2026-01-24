@@ -166,7 +166,6 @@ nlohmann::json make_nir_with_vcall(std::string_view candidate_method)
     };
     return make_nir_with_function(func);
 }
-}
 
 nlohmann::json make_po_list(std::string_view po_kind)
 {

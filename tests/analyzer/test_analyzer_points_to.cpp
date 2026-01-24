@@ -163,7 +163,8 @@ TEST(AnalyzerPointsToTest, PointsToSimpleResolvesNullDeref)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .contract_scope = {}
     });
 
     auto nir = make_nir_with_points_to();
