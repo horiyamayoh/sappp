@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <map>
 #include <optional>
 #include <ranges>
@@ -224,6 +225,25 @@ build_function_uid_map(const nlohmann::json& nir_json)
                         func.at("function_uid").get<std::string>());
     }
     return mapping;
+}
+
+[[nodiscard]] std::unordered_map<std::string, const nlohmann::json*>
+build_function_index(const nlohmann::json& nir_json)
+{
+    std::unordered_map<std::string, const nlohmann::json*> index;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return index;
+    }
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        index.emplace(func.at("function_uid").get<std::string>(), &func);
+    }
+    return index;
 }
 
 [[nodiscard]] sappp::Result<std::string>
@@ -773,10 +793,14 @@ collect_ordered_pos(const nlohmann::json& po_list)
     return unknown_ledger;
 }
 
+struct FunctionInitResult;
+
 struct PoProcessingContext
 {
     sappp::certstore::CertStore* cert_store = nullptr;
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
+    const std::unordered_map<std::string, const nlohmann::json*>* function_index = nullptr;
+    std::unordered_map<std::string, FunctionInitResult>* init_cache = nullptr;
     const ContractIndex* contract_index = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     std::string_view tu_id;
@@ -969,6 +993,446 @@ struct PoDecision
     UnknownDetails unknown_details{};
 };
 
+enum class InitState {
+    kInit,
+    kUninit,
+    kMaybe,
+};
+
+struct InitStateMap
+{
+    std::map<std::string, InitState> vars;
+
+    InitStateMap()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : vars()
+    {}
+};
+
+[[nodiscard]] bool operator==(const InitStateMap& a, const InitStateMap& b)
+{
+    return a.vars == b.vars;
+}
+
+[[nodiscard]] bool operator!=(const InitStateMap& a, const InitStateMap& b)
+{
+    return !(a == b);
+}
+
+[[nodiscard]] InitState join_init_state(InitState lhs, InitState rhs)
+{
+    if (lhs == rhs) {
+        return lhs;
+    }
+    return InitState::kMaybe;
+}
+
+[[nodiscard]] InitState get_init_state(const InitStateMap& state, const std::string& key)
+{
+    auto it = state.vars.find(key);
+    if (it == state.vars.end()) {
+        return InitState::kMaybe;
+    }
+    return it->second;
+}
+
+[[nodiscard]] InitStateMap join_state_maps(const InitStateMap& lhs, const InitStateMap& rhs)
+{
+    InitStateMap joined;
+    for (const auto& [key, value] : lhs.vars) {
+        joined.vars.emplace(key, join_init_state(value, get_init_state(rhs, key)));
+    }
+    for (const auto& [key, value] : rhs.vars) {
+        if (lhs.vars.find(key) != lhs.vars.end()) {
+            continue;
+        }
+        joined.vars.emplace(key, join_init_state(get_init_state(lhs, key), value));
+    }
+    return joined;
+}
+
+[[nodiscard]] std::optional<std::string> read_string_arg(const nlohmann::json& inst,
+                                                         std::size_t index)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.size() <= index || !args.at(index).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(index).get<std::string>();
+}
+
+[[nodiscard]] InitState parse_init_label(std::string_view label)
+{
+    if (label == "init") {
+        return InitState::kInit;
+    }
+    if (label == "uninit") {
+        return InitState::kUninit;
+    }
+    return InitState::kMaybe;
+}
+
+void apply_init_transfer(const nlohmann::json& inst, InitStateMap& state)
+{
+    if (!inst.contains("op") || !inst.at("op").is_string()) {
+        return;
+    }
+    const std::string op = inst.at("op").get<std::string>();
+    if (op == "assign") {
+        auto var_id = read_string_arg(inst, 0);
+        if (!var_id) {
+            return;
+        }
+        auto label = read_string_arg(inst, 1);
+        InitState init_state = label ? parse_init_label(*label) : InitState::kMaybe;
+        state.vars[*var_id] = init_state;
+        return;
+    }
+    if (op == "store") {
+        auto var_id = read_string_arg(inst, 0);
+        if (!var_id) {
+            return;
+        }
+        state.vars[*var_id] = InitState::kInit;
+        return;
+    }
+    if (op == "move") {
+        auto var_id = read_string_arg(inst, 1);
+        if (!var_id) {
+            var_id = read_string_arg(inst, 0);
+        }
+        if (!var_id) {
+            return;
+        }
+        state.vars[*var_id] = InitState::kUninit;
+    }
+}
+
+struct NirInstructionView
+{
+    std::string id;
+    const nlohmann::json* inst = nullptr;
+};
+
+struct NirBlockView
+{
+    std::string id;
+    std::vector<NirInstructionView> insts;
+    std::vector<std::string> preds;
+    std::vector<std::string> succs;
+
+    NirBlockView()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : id()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , insts()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , preds()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , succs()
+    {}
+};
+
+struct NirFunctionView
+{
+    std::string uid;
+    std::string entry;
+    std::vector<std::string> block_order;
+    std::unordered_map<std::string, NirBlockView> blocks;
+
+    NirFunctionView()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : uid()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , entry()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , block_order()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , blocks()
+    {}
+};
+
+struct FunctionInitResult
+{
+    NirFunctionView view;
+    std::unordered_map<std::string, InitStateMap> in_states;
+    std::unordered_map<std::string, InitStateMap> out_states;
+
+    FunctionInitResult()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : view()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , in_states()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , out_states()
+    {}
+};
+
+// NOLINTNEXTLINE(readability-function-size) - explicit JSON validation keeps determinism.
+[[nodiscard]] std::optional<NirFunctionView> build_function_view(const nlohmann::json& func)
+{
+    if (!func.is_object()) {
+        return std::nullopt;
+    }
+    if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+        return std::nullopt;
+    }
+    if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+        return std::nullopt;
+    }
+    const auto& cfg = func.at("cfg");
+    if (!cfg.contains("entry") || !cfg.at("entry").is_string()) {
+        return std::nullopt;
+    }
+    if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+        return std::nullopt;
+    }
+    if (!cfg.contains("edges") || !cfg.at("edges").is_array()) {
+        return std::nullopt;
+    }
+
+    NirFunctionView view;
+    view.uid = func.at("function_uid").get<std::string>();
+    view.entry = cfg.at("entry").get<std::string>();
+
+    for (const auto& block : cfg.at("blocks")) {
+        if (!block.is_object()) {
+            continue;
+        }
+        if (!block.contains("id") || !block.at("id").is_string()) {
+            continue;
+        }
+        if (!block.contains("insts") || !block.at("insts").is_array()) {
+            continue;
+        }
+        NirBlockView block_view;
+        block_view.id = block.at("id").get<std::string>();
+        for (const auto& inst : block.at("insts")) {
+            if (!inst.is_object()) {
+                continue;
+            }
+            if (!inst.contains("id") || !inst.at("id").is_string()) {
+                continue;
+            }
+            NirInstructionView inst_view{.id = inst.at("id").get<std::string>(), .inst = &inst};
+            block_view.insts.push_back(std::move(inst_view));
+        }
+        view.block_order.push_back(block_view.id);
+        view.blocks.emplace(block_view.id, std::move(block_view));
+    }
+
+    for (const auto& edge : cfg.at("edges")) {
+        if (!edge.is_object()) {
+            continue;
+        }
+        if (!edge.contains("from") || !edge.at("from").is_string() || !edge.contains("to")
+            || !edge.at("to").is_string()) {
+            continue;
+        }
+        std::string from = edge.at("from").get<std::string>();
+        std::string to = edge.at("to").get<std::string>();
+        auto from_it = view.blocks.find(from);
+        auto to_it = view.blocks.find(to);
+        if (from_it == view.blocks.end() || to_it == view.blocks.end()) {
+            continue;
+        }
+        from_it->second.succs.push_back(to);
+        to_it->second.preds.push_back(from);
+    }
+
+    for (auto& [block_id, block] : view.blocks) {
+        (void)block_id;
+        std::ranges::stable_sort(block.preds);
+        std::ranges::stable_sort(block.succs);
+    }
+
+    return view;
+}
+
+// NOLINTNEXTLINE(readability-function-size) - explicit transfer logic stays readable here.
+[[nodiscard]] std::optional<FunctionInitResult> compute_init_states(NirFunctionView view)
+{
+    if (view.blocks.empty()) {
+        return std::nullopt;
+    }
+    FunctionInitResult result;
+    result.view = std::move(view);
+    for (const auto& block_id : result.view.block_order) {
+        result.in_states.emplace(block_id, InitStateMap{});
+        result.out_states.emplace(block_id, InitStateMap{});
+    }
+
+    std::deque<std::string> worklist;
+    for (const auto& block_id : result.view.block_order) {
+        worklist.push_back(block_id);
+    }
+
+    while (!worklist.empty()) {
+        std::string block_id = std::move(worklist.front());
+        worklist.pop_front();
+        auto block_it = result.view.blocks.find(block_id);
+        if (block_it == result.view.blocks.end()) {
+            continue;
+        }
+        const auto& block = block_it->second;
+
+        InitStateMap in_state;
+        if (!block.preds.empty()) {
+            in_state = result.out_states.at(block.preds.front());
+            for (std::size_t i = 1; i < block.preds.size(); ++i) {
+                in_state = join_state_maps(in_state, result.out_states.at(block.preds.at(i)));
+            }
+        }
+
+        if (in_state != result.in_states.at(block_id)) {
+            result.in_states.at(block_id) = in_state;
+        }
+
+        InitStateMap out_state = in_state;
+        for (const auto& inst_view : block.insts) {
+            if (inst_view.inst != nullptr) {
+                apply_init_transfer(*inst_view.inst, out_state);
+            }
+        }
+
+        if (out_state != result.out_states.at(block_id)) {
+            result.out_states.at(block_id) = out_state;
+            for (const auto& succ : block.succs) {
+                worklist.push_back(succ);
+            }
+        }
+    }
+
+    return result;
+}
+
+[[nodiscard]] std::optional<InitState> init_state_at_anchor(const FunctionInitResult& result,
+                                                            const IrAnchor& anchor,
+                                                            const std::string& var_id)
+{
+    auto block_it = result.view.blocks.find(anchor.block_id);
+    if (block_it == result.view.blocks.end()) {
+        return std::nullopt;
+    }
+    auto in_it = result.in_states.find(anchor.block_id);
+    if (in_it == result.in_states.end()) {
+        return std::nullopt;
+    }
+    InitStateMap current = in_it->second;
+    bool found_anchor = false;
+    for (const auto& inst_view : block_it->second.insts) {
+        if (inst_view.id == anchor.inst_id) {
+            found_anchor = true;
+            break;
+        }
+        if (inst_view.inst != nullptr) {
+            apply_init_transfer(*inst_view.inst, current);
+        }
+    }
+    if (!found_anchor) {
+        return std::nullopt;
+    }
+    auto var_it = current.vars.find(var_id);
+    if (var_it == current.vars.end()) {
+        return std::nullopt;
+    }
+    return var_it->second;
+}
+
+[[nodiscard]] const FunctionInitResult* resolve_init_result(std::string_view function_uid,
+                                                            PoProcessingContext& context)
+{
+    if (context.function_index == nullptr || context.init_cache == nullptr) {
+        return nullptr;
+    }
+    auto cache_it = context.init_cache->find(std::string(function_uid));
+    if (cache_it != context.init_cache->end()) {
+        return &cache_it->second;
+    }
+    auto func_it = context.function_index->find(std::string(function_uid));
+    if (func_it == context.function_index->end()) {
+        return nullptr;
+    }
+    auto view = build_function_view(*func_it->second);
+    if (!view) {
+        return nullptr;
+    }
+    auto init_result = compute_init_states(std::move(*view));
+    if (!init_result) {
+        return nullptr;
+    }
+    auto [emplaced, _] =
+        context.init_cache->emplace(std::string(function_uid), std::move(*init_result));
+    return &emplaced->second;
+}
+
+[[nodiscard]] std::optional<std::string> extract_uninit_var_id(const nlohmann::json& predicate_expr)
+{
+    if (!predicate_expr.contains("args") || !predicate_expr.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = predicate_expr.at("args");
+    if (args.size() < 2 || !args.at(1).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(1).get<std::string>();
+}
+
+[[nodiscard]] sappp::Result<PoDecision> decide_uninit_read(const nlohmann::json& po,
+                                                           PoProcessingContext& context)
+{
+    PoDecision decision;
+    auto predicate_expr = extract_predicate_expr(po);
+    if (!predicate_expr) {
+        return std::unexpected(predicate_expr.error());
+    }
+    auto var_id = extract_uninit_var_id(*predicate_expr);
+    if (!var_id) {
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details("UninitRead");
+        return decision;
+    }
+
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+
+    const FunctionInitResult* init_result = resolve_init_result(*function_uid, context);
+    if (init_result == nullptr) {
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details("UninitRead");
+        return decision;
+    }
+
+    auto state = init_state_at_anchor(*init_result, *anchor, *var_id);
+    if (!state) {
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details("UninitRead");
+        return decision;
+    }
+
+    if (*state == InitState::kUninit) {
+        decision.is_bug = true;
+        return decision;
+    }
+    if (*state == InitState::kInit) {
+        decision.is_safe = true;
+        return decision;
+    }
+
+    decision.is_unknown = true;
+    decision.unknown_details = build_unknown_details("UninitRead");
+    return decision;
+}
+
 [[nodiscard]] sappp::Result<std::optional<bool>>
 extract_predicate_boolean(const nlohmann::json& predicate_expr)
 {
@@ -985,7 +1449,8 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
     return std::optional<bool>();
 }
 
-[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po)
+[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
+                                                  PoProcessingContext& context)
 {
     auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
     if (!po_kind) {
@@ -1003,6 +1468,10 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
     auto predicate_bool = extract_predicate_boolean(*predicate_expr);
     if (!predicate_bool) {
         return std::unexpected(predicate_bool.error());
+    }
+
+    if (*po_kind == "UninitRead") {
+        return decide_uninit_read(po, context);
     }
 
     if (op == "ub.check") {
@@ -1046,7 +1515,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
 [[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
                                                            PoProcessingContext& context)
 {
-    auto decision = decide_po(po);
+    auto decision = decide_po(po, context);
     if (!decision) {
         return std::unexpected(decision.error());
     }
@@ -1160,17 +1629,21 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
 
     sappp::certstore::CertStore cert_store(m_config.certstore_dir, m_config.schema_dir);
     const auto function_uid_map = build_function_uid_map(nir_json);
+    const auto function_index = build_function_index(nir_json);
     auto contract_index = build_contract_index(specdb_snapshot);
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
     std::unordered_map<std::string, std::string> contract_ref_cache;
+    std::unordered_map<std::string, FunctionInitResult> init_cache;
 
     std::vector<nlohmann::json> unknowns;
     unknowns.reserve(ordered_pos_value.size());
 
     PoProcessingContext context{.cert_store = &cert_store,
                                 .function_uid_map = &function_uid_map,
+                                .function_index = &function_index,
+                                .init_cache = &init_cache,
                                 .contract_index = &(*contract_index),
                                 .contract_ref_cache = &contract_ref_cache,
                                 .tu_id = *tu_id,

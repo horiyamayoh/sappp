@@ -109,7 +109,7 @@ private:
     std::ofstream out(source_path);
     out << R"(#include <cstddef>
 
-void sappp_sink(const char* kind);
+void sappp_sink(const char* kind, ...);
 void sappp_check(const char* kind, bool predicate);
 
 struct Guard {
@@ -151,7 +151,7 @@ int double_free() {
 
 int uninit_read() {
     int value;
-    sappp_sink("uninit_read");
+    sappp_sink("uninit_read", value);
     return value;
 }
 
