@@ -649,7 +649,8 @@ extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabil
 
 [[nodiscard]] bool is_unknown_label(std::string_view label)
 {
-    return label.empty() || label == "ref" || label == "expr";
+    return label.empty() || label == "ref" || label == "expr" || label == "unknown"
+           || label.starts_with("temporary");
 }
 
 [[nodiscard]] std::optional<bool> extract_init_flag(const nlohmann::json& arg)
@@ -667,6 +668,7 @@ extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabil
         }
     }
     return std::nullopt;
+}
 }
 
 void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
