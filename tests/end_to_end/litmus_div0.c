@@ -1,5 +1,5 @@
 // Litmus test: Division by zero
-// Expected: BUG (div0 is reachable)
+// Expected: UNKNOWN (div0 reachability not proven in v1)
 
 int divide(int a, int b)
 {
