@@ -634,7 +634,8 @@ TEST(AnalyzerContractTest, InvalidFreePoProducesBug)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"                                   },
+        .contract_scope = {            .abi = "", .library_version = "", .conditions = {}}
     });
 
     auto nir = make_nir_with_heap_invalid_free();
