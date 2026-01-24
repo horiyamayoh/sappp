@@ -65,11 +65,20 @@ std::string sink_marker_source()
            "  int a = 1;\n"
            "  int b = 0;\n"
            "  int c = a / b;\n"
+           "  int shift = a << b;\n"
+           "  int overflow = a + 1;\n"
            "  int* p = nullptr;\n"
            "  int d = *p;\n"
            "  int arr[1] = {0};\n"
            "  int e = arr[1];\n"
-           "  return c + d + e;\n"
+           "  int uninit;\n"
+           "  int f = uninit;\n"
+           "  int* heap = new int(42);\n"
+           "  delete heap;\n"
+           "  alignas(1) char buf[sizeof(int) + 1] = {};\n"
+           "  int* misaligned = reinterpret_cast<int*>(buf + 1);\n"
+           "  int g = *misaligned;\n"
+           "  return c + d + e + f + g + shift + overflow;\n"
            "}\n";
 }
 
@@ -379,8 +388,14 @@ TEST(FrontendClangTest, EmitsSinkMarkersForPotentialUb)
     std::unordered_set<std::string> sink_kinds = collect_sink_kinds(result->nir);
 
     EXPECT_NE(sink_kinds.find("div0"), sink_kinds.end());
+    EXPECT_NE(sink_kinds.find("shift"), sink_kinds.end());
+    EXPECT_NE(sink_kinds.find("signed_overflow"), sink_kinds.end());
     EXPECT_NE(sink_kinds.find("null"), sink_kinds.end());
     EXPECT_NE(sink_kinds.find("oob"), sink_kinds.end());
+    EXPECT_NE(sink_kinds.find("uninit_read"), sink_kinds.end());
+    EXPECT_NE(sink_kinds.find("double_free"), sink_kinds.end());
+    EXPECT_NE(sink_kinds.find("invalid_free"), sink_kinds.end());
+    EXPECT_NE(sink_kinds.find("misaligned"), sink_kinds.end());
 
     std::filesystem::remove_all(temp_dir);
 }

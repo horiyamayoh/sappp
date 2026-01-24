@@ -201,6 +201,24 @@ TEST(PoGeneratorTest, UbShiftKindMapsToPoKind)
     EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "ub.check");
 }
 
+TEST(PoGeneratorTest, UbSignedOverflowKindMapsToPoKind)
+{
+    std::filesystem::path source_path = write_temp_source("ub_signed_overflow");
+    nlohmann::json nir = build_minimal_nir(source_path,
+                                           "ub.check",
+                                           nlohmann::json::array({"signed_overflow", true}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "UB.SignedOverflow");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "ub.check");
+}
+
 TEST(PoGeneratorTest, SinkMarkerMapsUninitRead)
 {
     std::filesystem::path source_path = write_temp_source("uninit_read");
@@ -215,6 +233,57 @@ TEST(PoGeneratorTest, SinkMarkerMapsUninitRead)
     ASSERT_FALSE(po_list.at("pos").empty());
     const auto& po = po_list.at("pos").at(0);
     EXPECT_EQ(po.at("po_kind").get<std::string>(), "UninitRead");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "sink.marker");
+}
+
+TEST(PoGeneratorTest, SinkMarkerMapsMisaligned)
+{
+    std::filesystem::path source_path = write_temp_source("misaligned");
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "sink.marker", nlohmann::json::array({"misaligned", "p"}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "UB.Misaligned");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "sink.marker");
+}
+
+TEST(PoGeneratorTest, SinkMarkerMapsDoubleFree)
+{
+    std::filesystem::path source_path = write_temp_source("double_free");
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "sink.marker", nlohmann::json::array({"double_free", "p"}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "DoubleFree");
+    EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "sink.marker");
+}
+
+TEST(PoGeneratorTest, SinkMarkerMapsInvalidFree)
+{
+    std::filesystem::path source_path = write_temp_source("invalid_free");
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "sink.marker", nlohmann::json::array({"invalid_free", "p"}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    ASSERT_FALSE(po_list.at("pos").empty());
+    const auto& po = po_list.at("pos").at(0);
+    EXPECT_EQ(po.at("po_kind").get<std::string>(), "InvalidFree");
     EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "sink.marker");
 }
 
