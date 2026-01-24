@@ -1,7 +1,7 @@
 // Litmus test: Use-after-lifetime
 // Expected: BUG (UseAfterLifetime)
 
-void sappp_sink(const char* kind, const char* target);
+void sappp_sink(const char* kind, const void* target);
 
 int main()
 {

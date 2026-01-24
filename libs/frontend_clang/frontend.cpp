@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -362,6 +363,36 @@ std::optional<std::string> extract_decl_ref_name(const clang::Expr* expr)
         }
     }
     return std::nullopt;
+}
+
+std::string describe_heap_type_label(clang::QualType type)
+{
+    if (type.isNull()) {
+        return "heap";
+    }
+    if (type->isPointerType()) {
+        type = type->getPointeeType();
+    }
+    return std::string("heap:") + type.getAsString();
+}
+
+std::string describe_heap_target(const clang::Expr* expr)
+{
+    if (expr == nullptr) {
+        return "heap";
+    }
+    if (auto label = extract_decl_ref_name(expr)) {
+        return *label;
+    }
+    return describe_heap_type_label(expr->getType());
+}
+
+std::string describe_heap_alloc(const clang::CXXNewExpr* new_expr)
+{
+    if (new_expr == nullptr) {
+        return "heap";
+    }
+    return describe_heap_type_label(new_expr->getAllocatedType());
 }
 
 std::optional<std::string> extract_sink_target_label(const clang::Expr* expr)
@@ -839,6 +870,108 @@ void append_lifetime_begin_for_stmt(const clang::Stmt* stmt,
     });
 }
 
+void append_alloc_instructions_for_stmt(const clang::Stmt* stmt,
+                                        const BlockInstructionContext& context,
+                                        int& inst_index)
+{
+    if (stmt == nullptr) {
+        return;
+    }
+
+    std::unordered_set<const clang::CXXNewExpr*> handled_new_exprs;
+    if (const auto* decl_stmt = clang::dyn_cast<clang::DeclStmt>(stmt)) {
+        for (const auto* decl : decl_stmt->decls()) {
+            const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl);
+            if (var_decl == nullptr) {
+                continue;
+            }
+            const auto* init = strip_parens(var_decl->getInit());
+            const auto* new_expr = clang::dyn_cast_or_null<clang::CXXNewExpr>(init);
+            if (new_expr == nullptr) {
+                continue;
+            }
+            append_simple_instruction(context,
+                                      inst_index,
+                                      "alloc",
+                                      {nlohmann::json(describe_var(var_decl))},
+                                      make_location({.source_manager = context.source_manager,
+                                                     .loc = new_expr->getBeginLoc()}));
+            handled_new_exprs.insert(new_expr);
+        }
+    }
+
+    if (const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(stmt)) {
+        if (bin_op->isAssignmentOp()) {
+            const auto* rhs = strip_parens(bin_op->getRHS());
+            const auto* new_expr = clang::dyn_cast_or_null<clang::CXXNewExpr>(rhs);
+            if (new_expr != nullptr) {
+                std::string label = describe_heap_alloc(new_expr);
+                if (auto decl_label = extract_decl_ref_name(bin_op->getLHS())) {
+                    label = *decl_label;
+                }
+                append_simple_instruction(context,
+                                          inst_index,
+                                          "alloc",
+                                          {nlohmann::json(label)},
+                                          make_location({.source_manager = context.source_manager,
+                                                         .loc = new_expr->getBeginLoc()}));
+                handled_new_exprs.insert(new_expr);
+            }
+        }
+    }
+
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        const auto* new_expr = clang::dyn_cast<clang::CXXNewExpr>(node);
+        if (new_expr == nullptr || handled_new_exprs.contains(new_expr)) {
+            return;
+        }
+        append_simple_instruction(context,
+                                  inst_index,
+                                  "alloc",
+                                  {nlohmann::json(describe_heap_alloc(new_expr))},
+                                  make_location({.source_manager = context.source_manager,
+                                                 .loc = new_expr->getBeginLoc()}));
+    });
+}
+
+[[nodiscard]] bool delete_requires_dtor(const clang::CXXDeleteExpr* delete_expr)
+{
+    if (delete_expr == nullptr) {
+        return false;
+    }
+    const auto destroyed = delete_expr->getDestroyedType();
+    if (destroyed.isNull()) {
+        return false;
+    }
+    const auto* record_decl = destroyed->getAsCXXRecordDecl();
+    if (record_decl == nullptr) {
+        return false;
+    }
+    return !record_decl->hasTrivialDestructor();
+}
+
+void append_free_instructions_for_stmt(const clang::Stmt* stmt,
+                                       const BlockInstructionContext& context,
+                                       int& inst_index)
+{
+    if (stmt == nullptr) {
+        return;
+    }
+    traverse_stmt_preorder(stmt, [&](const clang::Stmt* node) {
+        const auto* delete_expr = clang::dyn_cast<clang::CXXDeleteExpr>(node);
+        if (delete_expr == nullptr || delete_requires_dtor(delete_expr)) {
+            return;
+        }
+        append_simple_instruction(
+            context,
+            inst_index,
+            "free",
+            {nlohmann::json(describe_heap_target(delete_expr->getArgument()))},
+            make_location(
+                {.source_manager = context.source_manager, .loc = delete_expr->getBeginLoc()}));
+    });
+}
+
 void append_ctor_instructions_for_stmt(const clang::Stmt* stmt,
                                        const BlockInstructionContext& context,
                                        int& inst_index)
@@ -904,6 +1037,8 @@ void append_cfg_stmt_element(const clang::CFGStmt& stmt_elem,
 {
     const clang::Stmt* stmt = stmt_elem.getStmt();
     append_lifetime_begin_for_stmt(stmt, context, inst_index);
+    append_alloc_instructions_for_stmt(stmt, context, inst_index);
+    append_free_instructions_for_stmt(stmt, context, inst_index);
     if (auto vcall_inst = build_vcall_instruction(stmt, context, inst_index)) {
         append_instruction(*context.nir_block,
                            *context.function_uid,
@@ -1044,9 +1179,9 @@ void append_delete_dtor_element(const clang::CFGDeleteDtor& delete_dtor,
                                 int& inst_index)
 {
     const auto* delete_expr = delete_dtor.getDeleteExpr();
-    std::string label = delete_dtor.getCXXRecordDecl() != nullptr
-                            ? delete_dtor.getCXXRecordDecl()->getQualifiedNameAsString()
-                            : "delete";
+    const clang::Expr* delete_arg = delete_expr != nullptr ? delete_expr->getArgument() : nullptr;
+    const auto* record_decl = delete_dtor.getCXXRecordDecl();
+    std::string label = record_decl != nullptr ? record_decl->getQualifiedNameAsString() : "delete";
     append_simple_instruction(
         context,
         inst_index,
@@ -1055,6 +1190,16 @@ void append_delete_dtor_element(const clang::CFGDeleteDtor& delete_dtor,
         make_location({.source_manager = context.source_manager,
                        .loc = delete_expr != nullptr ? delete_expr->getBeginLoc()
                                                      : clang::SourceLocation()}));
+    if (record_decl != nullptr && !record_decl->hasTrivialDestructor()) {
+        append_simple_instruction(
+            context,
+            inst_index,
+            "free",
+            {nlohmann::json(describe_heap_target(delete_arg))},
+            make_location({.source_manager = context.source_manager,
+                           .loc = delete_expr != nullptr ? delete_expr->getBeginLoc()
+                                                         : clang::SourceLocation()}));
+    }
 }
 
 void append_stmt_instructions(const clang::CFGBlock* block,

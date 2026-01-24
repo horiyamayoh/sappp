@@ -639,6 +639,318 @@ build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readabi
     return cache;
 }
 
+enum class HeapLifetimeValue {
+    kUnallocated,
+    kAllocated,
+    kFreed,
+    kMaybe,
+};
+
+struct HeapLifetimeState
+{
+    std::map<std::string, HeapLifetimeValue> values;
+
+    HeapLifetimeState()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : values()
+    {}
+};
+
+[[nodiscard]] HeapLifetimeValue merge_heap_value(HeapLifetimeValue a, HeapLifetimeValue b)
+{
+    if (a == b) {
+        return a;
+    }
+    return HeapLifetimeValue::kMaybe;
+}
+
+[[nodiscard]] HeapLifetimeState merge_heap_states(const HeapLifetimeState& a,
+                                                  const HeapLifetimeState& b)
+{
+    HeapLifetimeState result;
+    for (const auto& [key, value] : a.values) {
+        HeapLifetimeValue other = HeapLifetimeValue::kMaybe;
+        auto it = b.values.find(key);
+        if (it != b.values.end()) {
+            other = it->second;
+        }
+        result.values.emplace(key, merge_heap_value(value, other));
+    }
+    for (const auto& [key, value] : b.values) {
+        if (result.values.contains(key)) {
+            continue;
+        }
+        result.values.emplace(key, merge_heap_value(HeapLifetimeValue::kMaybe, value));
+    }
+    return result;
+}
+
+[[nodiscard]] HeapLifetimeState make_heap_state(const std::vector<std::string>& labels,
+                                                HeapLifetimeValue initial)
+{
+    HeapLifetimeState state;
+    for (const auto& label : labels) {
+        state.values.emplace(label, initial);
+    }
+    return state;
+}
+
+void apply_heap_lifetime_effect(const nlohmann::json& inst, HeapLifetimeState& state)
+{
+    if (!inst.contains("op") || !inst.at("op").is_string()) {
+        return;
+    }
+    const auto& op = inst.at("op").get_ref<const std::string&>();
+    auto label = extract_first_string_arg(inst);
+    if (!label.has_value()) {
+        return;
+    }
+    if (op == "alloc") {
+        state.values[*label] = HeapLifetimeValue::kAllocated;
+    } else if (op == "free") {
+        state.values[*label] = HeapLifetimeValue::kFreed;
+    }
+}
+
+struct FunctionHeapLifetimeAnalysis
+{
+    std::string function_uid;
+    std::string entry_block;
+    std::map<std::string, const nlohmann::json*> blocks;
+    std::vector<std::string> block_order;
+    std::map<std::string, std::vector<std::string>> predecessors;
+    std::map<std::string, HeapLifetimeState> in_states;
+    std::map<std::string, HeapLifetimeState> out_states;
+    HeapLifetimeState initial_state;
+
+    // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
+    FunctionHeapLifetimeAnalysis()
+        : function_uid()
+        , entry_block()
+        , blocks()
+        , block_order()
+        , predecessors()
+        , in_states()
+        , out_states()
+        , initial_state()
+    {}
+    // NOLINTEND(readability-redundant-member-init)
+};
+
+struct HeapLifetimeAnalysisCache
+{
+    std::map<std::string, FunctionHeapLifetimeAnalysis> functions;
+
+    HeapLifetimeAnalysisCache()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : functions()
+    {}
+};
+
+[[nodiscard]] std::vector<std::string> collect_heap_labels(const nlohmann::json& cfg)
+{
+    std::vector<std::string> labels;
+    if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+        return labels;
+    }
+    for (const auto& block : cfg.at("blocks")) {
+        if (!block.is_object() || !block.contains("insts") || !block.at("insts").is_array()) {
+            continue;
+        }
+        for (const auto& inst : block.at("insts")) {
+            if (!inst.contains("op") || !inst.at("op").is_string()) {
+                continue;
+            }
+            const auto& op = inst.at("op").get_ref<const std::string&>();
+            if (op != "alloc" && op != "free") {
+                continue;
+            }
+            auto label = extract_first_string_arg(inst);
+            if (label.has_value()) {
+                labels.push_back(*label);
+            }
+        }
+    }
+    std::ranges::stable_sort(labels);
+    auto unique_end = std::ranges::unique(labels);
+    labels.erase(unique_end.begin(), unique_end.end());
+    return labels;
+}
+
+[[nodiscard]] HeapLifetimeState
+merge_heap_predecessor_states(const FunctionHeapLifetimeAnalysis& analysis,
+                              std::string_view block_id)
+{
+    auto pred_it = analysis.predecessors.find(std::string(block_id));
+    if (pred_it == analysis.predecessors.end() || pred_it->second.empty()) {
+        return analysis.initial_state;
+    }
+
+    bool first = true;
+    HeapLifetimeState merged;
+    for (const auto& pred : pred_it->second) {
+        auto out_it = analysis.out_states.find(pred);
+        if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_heap_states(merged, out_it->second);
+    }
+
+    if (first) {
+        return analysis.initial_state;
+    }
+    return merged;
+}
+
+[[nodiscard]] HeapLifetimeState apply_heap_block_transfer(const HeapLifetimeState& in_state,
+                                                          const nlohmann::json& block)
+{
+    HeapLifetimeState state = in_state;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return state;
+    }
+    for (const auto& inst : block.at("insts")) {
+        apply_heap_lifetime_effect(inst, state);
+    }
+    return state;
+}
+
+void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis)
+{
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& block_id : analysis.block_order) {
+            HeapLifetimeState in_state = merge_heap_predecessor_states(analysis, block_id);
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
+                analysis.in_states[block_id] = in_state;
+                changed = true;
+            }
+
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            HeapLifetimeState out_state = apply_heap_block_transfer(in_state, *block_it->second);
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
+                analysis.out_states[block_id] = out_state;
+                changed = true;
+            }
+        }
+    }
+}
+
+[[nodiscard]] std::optional<HeapLifetimeState>
+heap_state_at_anchor(const FunctionHeapLifetimeAnalysis& analysis, const IrAnchor& anchor)
+{
+    auto block_it = analysis.blocks.find(anchor.block_id);
+    if (block_it == analysis.blocks.end()) {
+        return std::nullopt;
+    }
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    HeapLifetimeState state = analysis.initial_state;
+    if (in_it != analysis.in_states.end()) {
+        state = in_it->second;
+    }
+    const nlohmann::json& block = *block_it->second;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return std::nullopt;
+    }
+    for (const auto& inst : block.at("insts")) {
+        if (inst.contains("id") && inst.at("id").is_string()
+            && inst.at("id").get<std::string>() == anchor.inst_id) {
+            return state;
+        }
+        apply_heap_lifetime_effect(inst, state);
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] HeapLifetimeAnalysisCache
+build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
+{
+    HeapLifetimeAnalysisCache cache;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return cache;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        FunctionHeapLifetimeAnalysis analysis;
+        analysis.function_uid = func.at("function_uid").get<std::string>();
+        if (cfg.contains("entry") && cfg.at("entry").is_string()) {
+            analysis.entry_block = cfg.at("entry").get<std::string>();
+        }
+        auto labels = collect_heap_labels(cfg);
+        analysis.initial_state = make_heap_state(labels, HeapLifetimeValue::kUnallocated);
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()) {
+                continue;
+            }
+            std::string block_id = block.at("id").get<std::string>();
+            analysis.block_order.push_back(block_id);
+            analysis.blocks.emplace(block_id, &block);
+            analysis.in_states.emplace(block_id, analysis.initial_state);
+            analysis.out_states.emplace(block_id, analysis.initial_state);
+        }
+
+        if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+            for (const auto& edge : cfg.at("edges")) {
+                if (!edge.is_object()) {
+                    continue;
+                }
+                if (!edge.contains("from") || !edge.at("from").is_string()) {
+                    continue;
+                }
+                if (!edge.contains("to") || !edge.at("to").is_string()) {
+                    continue;
+                }
+                std::string from = edge.at("from").get<std::string>();
+                std::string to = edge.at("to").get<std::string>();
+                analysis.predecessors[to].push_back(std::move(from));
+            }
+        }
+
+        for (auto& [block_id, preds] : analysis.predecessors) {
+            (void)block_id;
+            std::ranges::stable_sort(preds);
+            auto unique_end = std::ranges::unique(preds);
+            preds.erase(unique_end.begin(), unique_end.end());
+        }
+
+        if (!analysis.block_order.empty()) {
+            if (analysis.entry_block.empty()) {
+                analysis.entry_block = analysis.block_order.front();
+            }
+            compute_heap_lifetime_fixpoint(analysis);
+            cache.functions.emplace(analysis.function_uid, std::move(analysis));
+        }
+    }
+
+    return cache;
+}
+
 [[nodiscard]] nlohmann::json
 make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const IrAnchor& anchor)
 {
@@ -960,6 +1272,16 @@ struct UnknownDetails
                           .refinement_domain = "lifetime"};
 }
 
+[[nodiscard]] UnknownDetails build_heap_lifetime_unknown_details(std::string_view notes)
+{
+    return UnknownDetails{.code = "LifetimeStateUnknown",
+                          .missing_notes = std::string(notes),
+                          .refinement_message =
+                              "Provide heap lifetime target context or refine heap tracking.",
+                          .refinement_action = "refine-lifetime",
+                          .refinement_domain = "lifetime"};
+}
+
 [[nodiscard]] sappp::Result<nlohmann::json>
 build_unknown_entry(const nlohmann::json& po,
                     std::string_view po_id,
@@ -1072,6 +1394,7 @@ struct PoProcessingContext
     const ContractIndex* contract_index = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
+    const HeapLifetimeAnalysisCache* heap_lifetime_cache = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
 };
@@ -1376,6 +1699,90 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     }
 }
 
+[[nodiscard]] sappp::Result<PoDecision>
+decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    const nlohmann::json& po,
+    const nlohmann::json& predicate_expr,
+    const PoProcessingContext& context,
+    std::string_view po_kind)
+{
+    PoDecision decision;
+    auto target = extract_lifetime_target(predicate_expr);
+    if (!target) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_heap_lifetime_unknown_details("Heap target is missing from the PO predicate.");
+        return decision;
+    }
+    if (context.heap_lifetime_cache == nullptr || context.function_uid_map == nullptr) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_heap_lifetime_unknown_details("Heap lifetime analysis context unavailable.");
+        return decision;
+    }
+
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+
+    auto analysis_it = context.heap_lifetime_cache->functions.find(*function_uid);
+    if (analysis_it == context.heap_lifetime_cache->functions.end()) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_heap_lifetime_unknown_details("Heap lifetime analysis missing for function.");
+        return decision;
+    }
+
+    auto state = heap_state_at_anchor(analysis_it->second, *anchor);
+    if (!state) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_heap_lifetime_unknown_details("Heap lifetime analysis missing at anchor.");
+        return decision;
+    }
+
+    auto state_it = state->values.find(*target);
+    if (state_it == state->values.end()) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_heap_lifetime_unknown_details("Heap target is not tracked at anchor.");
+        return decision;
+    }
+
+    switch (state_it->second) {
+        case HeapLifetimeValue::kAllocated:
+            decision.is_safe = true;
+            return decision;
+        case HeapLifetimeValue::kFreed:
+            decision.is_bug = true;
+            return decision;
+        case HeapLifetimeValue::kUnallocated:
+            if (po_kind == "InvalidFree") {
+                decision.is_bug = true;
+                return decision;
+            }
+            decision.is_unknown = true;
+            decision.unknown_details =
+                build_heap_lifetime_unknown_details("Heap target is unallocated at anchor.");
+            return decision;
+        case HeapLifetimeValue::kMaybe:
+            decision.is_unknown = true;
+            decision.unknown_details = build_heap_lifetime_unknown_details(
+                "Heap lifetime state is indeterminate at this point.");
+            return decision;
+        default:
+            decision.is_unknown = true;
+            decision.unknown_details =
+                build_heap_lifetime_unknown_details("Heap lifetime state is indeterminate.");
+            return decision;
+    }
+}
+
 [[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
                                                   const PoProcessingContext& context)
 {
@@ -1413,6 +1820,14 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
 
     if (*po_kind == "UseAfterLifetime") {
         auto decision = decide_use_after_lifetime(po, *predicate_expr, context);
+        if (!decision) {
+            return std::unexpected(decision.error());
+        }
+        return *decision;
+    }
+
+    if (*po_kind == "DoubleFree" || *po_kind == "InvalidFree") {
+        auto decision = decide_heap_free(po, *predicate_expr, context, *po_kind);
         if (!decision) {
             return std::unexpected(decision.error());
         }
@@ -1565,6 +1980,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
         return std::unexpected(contract_index.error());
     }
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json);
+    const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json);
     std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::vector<nlohmann::json> unknowns;
@@ -1575,6 +1991,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .contract_index = &(*contract_index),
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
+                                .heap_lifetime_cache = &heap_lifetime_cache,
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};
 

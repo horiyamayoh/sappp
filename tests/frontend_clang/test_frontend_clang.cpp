@@ -125,6 +125,15 @@ std::string vcall_source()
            "}\n";
 }
 
+std::string heap_source()
+{
+    return "int main() {\n"
+           "  int* ptr = new int(1);\n"
+           "  delete ptr;\n"
+           "  return 0;\n"
+           "}\n";
+}
+
 std::string manual_marker_source()
 {
     return "void sappp_sink(const char* kind);\n"
@@ -386,6 +395,31 @@ TEST(FrontendClangTest, EmitsLifetimeAndCtorEvents)
     EXPECT_NE(ops.find("ctor"), ops.end());
     EXPECT_NE(ops.find("dtor"), ops.end());
     EXPECT_NE(ops.find("move"), ops.end());
+
+    std::filesystem::remove_all(temp_dir);
+}
+
+TEST(FrontendClangTest, EmitsHeapAllocFreeEvents)
+{
+    auto unique_suffix = std::chrono::steady_clock::now().time_since_epoch().count();
+    std::filesystem::path temp_dir = std::filesystem::temp_directory_path()
+                                     / ("sappp_frontend_heap_" + std::to_string(unique_suffix));
+    std::filesystem::create_directories(temp_dir);
+
+    std::filesystem::path source_path = temp_dir / "sample.cpp";
+    write_source_file(source_path, heap_source());
+
+    nlohmann::json build_snapshot =
+        make_build_snapshot({.cwd = temp_dir.string(), .source_path = source_path.string()});
+
+    FrontendClang frontend(SAPPP_SCHEMA_DIR);
+    auto result = frontend.analyze(build_snapshot);
+    ASSERT_TRUE(result);
+
+    std::unordered_set<std::string> ops = collect_ops(result->nir);
+
+    EXPECT_NE(ops.find("alloc"), ops.end());
+    EXPECT_NE(ops.find("free"), ops.end());
 
     std::filesystem::remove_all(temp_dir);
 }
