@@ -783,27 +783,6 @@ void append_simple_instruction(const BlockInstructionContext& context,
                        *context.source_entries);
 }
 
-void append_entry_block_check(const clang::CFGBlock* block,
-                              const BlockInstructionContext& context,
-                              int& inst_index)
-{
-    if (block != context.entry_block) {
-        return;
-    }
-
-    ir::Instruction ub_check;
-    ub_check.id = "I" + std::to_string(inst_index++);
-    ub_check.op = "ub.check";
-    ub_check.args = {nlohmann::json("UB.DivZero"), nlohmann::json(true)};
-    ub_check.src = make_location(
-        {.source_manager = context.source_manager, .loc = context.func_decl->getBeginLoc()});
-    append_instruction(*context.nir_block,
-                       *context.function_uid,
-                       *context.block_id,
-                       std::move(ub_check),
-                       *context.source_entries);
-}
-
 void append_lifetime_begin_for_stmt(const clang::Stmt* stmt,
                                     const BlockInstructionContext& context,
                                     int& inst_index)
@@ -1116,7 +1095,6 @@ void append_terminator_instruction(const clang::CFGBlock* block,
 void append_block_instructions(const clang::CFGBlock* block, const BlockInstructionContext& context)
 {
     int inst_index = 0;
-    append_entry_block_check(block, context, inst_index);
     append_stmt_instructions(block, context, inst_index);
     append_terminator_instruction(block, context, inst_index);
 }
