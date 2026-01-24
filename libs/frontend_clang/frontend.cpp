@@ -924,7 +924,9 @@ std::optional<ClassifiedStmt> classify_assign_stmt(const clang::Stmt* stmt)
     std::vector<nlohmann::json> args;
     for (const auto* decl : decl_stmt->decls()) {
         if (const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl)) {
-            args.push_back(build_ref_from_decl(var_decl));
+            nlohmann::json ref = build_ref_from_decl(var_decl);
+            ref["has_init"] = var_decl->hasInit();
+            args.push_back(std::move(ref));
         }
     }
     if (args.empty()) {
