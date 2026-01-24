@@ -316,7 +316,7 @@ TEST(LitmusE2E, UseAfterLifetime)
         .name = "use_after_lifetime",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_use_after_lifetime.cpp",
         .expected_po_kinds = {"UseAfterLifetime"},
-        .expected_categories = {"UNKNOWN"},
+        .expected_categories = {"BUG"},
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,

@@ -20,6 +20,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <clang/AST/ASTConsumer.h>
@@ -357,6 +358,32 @@ std::optional<std::string> extract_string_literal(const clang::Expr* expr)
     return literal->getString().str();
 }
 
+std::optional<std::string> extract_decl_ref_name(const clang::Expr* expr)
+{
+    const auto* stripped = strip_parens(expr);
+    if (const auto* decl_ref = clang::dyn_cast_or_null<clang::DeclRefExpr>(stripped)) {
+        const auto* decl = decl_ref->getDecl();
+        if (decl != nullptr && !decl->getName().empty()) {
+            return decl->getName().str();
+        }
+    }
+    if (const auto* member = clang::dyn_cast_or_null<clang::MemberExpr>(stripped)) {
+        const auto* member_decl = member->getMemberDecl();
+        if (member_decl != nullptr && !member_decl->getName().empty()) {
+            return member_decl->getName().str();
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<std::string> extract_sink_target_label(const clang::Expr* expr)
+{
+    if (auto literal = extract_string_literal(expr)) {
+        return literal;
+    }
+    return extract_decl_ref_name(expr);
+}
+
 std::optional<bool> extract_bool_literal(const clang::Expr* expr)
 {
     const auto* stripped = strip_parens(expr);
@@ -394,6 +421,12 @@ struct ClassifiedStmt
 {
     std::string op;
     std::vector<nlohmann::json> args;
+};
+
+struct SinkMarker
+{
+    std::string kind;
+    std::optional<std::string> target;
 };
 
 std::optional<ClassifiedStmt> classify_return_stmt(const clang::Stmt* stmt)
@@ -521,9 +554,9 @@ ClassifiedStmt classify_stmt(const clang::Stmt* stmt)
  * this function is to provide a simple, conservative starting point rather
  * than a precise classification of UB.
  */
-std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
+std::vector<SinkMarker> detect_sink_markers(const clang::Stmt* stmt)
 {
-    std::vector<std::string> markers;
+    std::vector<SinkMarker> markers;
     if (stmt == nullptr) {
         return markers;
     }
@@ -538,23 +571,28 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
             const auto opcode = bin_op->getOpcode();
             if (opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
                 || opcode == clang::BO_RemAssign) {
-                markers.emplace_back("div0");
+                markers.push_back(SinkMarker{.kind = "div0", .target = std::nullopt});
             }
         } else if (const auto* call_expr = clang::dyn_cast<clang::CallExpr>(current)) {
             const auto* callee = call_expr->getDirectCallee();
             if (callee != nullptr && callee->getNameAsString() == "sappp_sink") {
                 if (call_expr->getNumArgs() > 0) {
                     if (auto kind = extract_string_literal(call_expr->getArg(0))) {
-                        markers.push_back(*kind);
+                        std::optional<std::string> target;
+                        if (call_expr->getNumArgs() > 1) {
+                            target = extract_sink_target_label(call_expr->getArg(1));
+                        }
+                        markers.push_back(
+                            SinkMarker{.kind = std::move(*kind), .target = std::move(target)});
                     }
                 }
             }
         } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
             if (unary_op->getOpcode() == clang::UO_Deref) {
-                markers.emplace_back("null");
+                markers.push_back(SinkMarker{.kind = "null", .target = std::nullopt});
             }
         } else if (clang::isa<clang::ArraySubscriptExpr>(current)) {
-            markers.emplace_back("oob");
+            markers.push_back(SinkMarker{.kind = "oob", .target = std::nullopt});
         }
 
         for (const auto* child : current->children()) {
@@ -564,8 +602,17 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
         }
     }
 
-    std::ranges::sort(markers);
-    auto unique_end = std::ranges::unique(markers);
+    std::ranges::sort(markers, [](const SinkMarker& a, const SinkMarker& b) {
+        if (a.kind != b.kind) {
+            return a.kind < b.kind;
+        }
+        const auto a_key = std::make_pair(a.target.has_value(), a.target.value_or(""));
+        const auto b_key = std::make_pair(b.target.has_value(), b.target.value_or(""));
+        return a_key < b_key;
+    });
+    auto unique_end = std::ranges::unique(markers, [](const SinkMarker& a, const SinkMarker& b) {
+        return a.kind == b.kind && a.target == b.target;
+    });
     markers.erase(unique_end.begin(), markers.end());
     return markers;
 }
@@ -954,11 +1001,14 @@ void append_cfg_stmt_element(const clang::CFGStmt& stmt_elem,
                            std::move(*vcall_inst),
                            *context.source_entries);
         append_ctor_instructions_for_stmt(stmt, context, inst_index);
-        for (const auto& sink_kind : detect_sink_markers(stmt)) {
+        for (const auto& marker : detect_sink_markers(stmt)) {
             ir::Instruction sink_inst;
             sink_inst.id = "I" + std::to_string(inst_index++);
             sink_inst.op = "sink.marker";
-            sink_inst.args = {nlohmann::json(sink_kind)};
+            sink_inst.args = {nlohmann::json(marker.kind)};
+            if (marker.target.has_value()) {
+                sink_inst.args.push_back(nlohmann::json(*marker.target));
+            }
             sink_inst.src = make_location(
                 {.source_manager = context.source_manager,
                  .loc = stmt != nullptr ? stmt->getBeginLoc() : clang::SourceLocation()});
@@ -983,11 +1033,14 @@ void append_cfg_stmt_element(const clang::CFGStmt& stmt_elem,
                        std::move(inst),
                        *context.source_entries);
     append_ctor_instructions_for_stmt(stmt, context, inst_index);
-    for (const auto& sink_kind : detect_sink_markers(stmt)) {
+    for (const auto& marker : detect_sink_markers(stmt)) {
         ir::Instruction sink_inst;
         sink_inst.id = "I" + std::to_string(inst_index++);
         sink_inst.op = "sink.marker";
-        sink_inst.args = {nlohmann::json(sink_kind)};
+        sink_inst.args = {nlohmann::json(marker.kind)};
+        if (marker.target.has_value()) {
+            sink_inst.args.push_back(nlohmann::json(*marker.target));
+        }
         sink_inst.src =
             make_location({.source_manager = context.source_manager, .loc = stmt->getBeginLoc()});
         append_instruction(*context.nir_block,
