@@ -18,6 +18,7 @@ set(CMAKE_GTEST_DISCOVER_TESTS_DISCOVERY_MODE POST_BUILD)
 # - determinism: 決定性テスト
 # - benchmark: ベンチマークテスト
 set(SAPPP_QUICK_LABELS
+    analyzer
     build_capture
     determinism
     po
@@ -55,6 +56,9 @@ add_subdirectory(build_capture)
 
 # Determinism tests
 add_subdirectory(determinism)
+
+# Analyzer tests
+add_subdirectory(analyzer)
 
 # Report tests
 add_subdirectory(report)

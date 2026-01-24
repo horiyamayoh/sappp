@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -25,6 +26,21 @@ namespace {
 
 constexpr std::string_view kSafetyDomain = "interval+null+lifetime+init";
 constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
+
+struct ContractInfo
+{
+    std::string contract_id;
+    std::string tier;
+    std::string target_usr;
+    nlohmann::json version_scope;
+    bool has_pre = false;
+    bool has_post = false;
+    bool has_frame = false;
+    bool has_ownership = false;
+    bool has_concurrency = false;
+};
+
+using ContractIndex = std::map<std::string, std::vector<ContractInfo>>;
 
 struct JsonFieldContext
 {
@@ -96,6 +112,96 @@ struct JsonFieldContext
     return &obj.at(key);
 }
 
+[[nodiscard]] sappp::Result<ContractInfo> parse_contract_entry(const nlohmann::json& contract)
+{
+    if (!contract.is_object()) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "Contract entry must be an object"));
+    }
+    auto contract_id = require_string(
+        JsonFieldContext{.obj = &contract, .key = "contract_id", .context = "contract"});
+    if (!contract_id) {
+        return std::unexpected(contract_id.error());
+    }
+    auto tier =
+        require_string(JsonFieldContext{.obj = &contract, .key = "tier", .context = "contract"});
+    if (!tier) {
+        return std::unexpected(tier.error());
+    }
+    auto target_obj =
+        require_object(JsonFieldContext{.obj = &contract, .key = "target", .context = "contract"});
+    if (!target_obj) {
+        return std::unexpected(target_obj.error());
+    }
+    auto target_usr = require_string(
+        JsonFieldContext{.obj = &(*target_obj), .key = "usr", .context = "contract.target"});
+    if (!target_usr) {
+        return std::unexpected(target_usr.error());
+    }
+
+    nlohmann::json version_scope = nlohmann::json::object();
+    if (contract.contains("version_scope") && contract.at("version_scope").is_object()) {
+        version_scope = contract.at("version_scope");
+    }
+
+    bool has_pre = false;
+    bool has_post = false;
+    bool has_frame = false;
+    bool has_ownership = false;
+    bool has_concurrency = false;
+    if (contract.contains("contract") && contract.at("contract").is_object()) {
+        const auto& body = contract.at("contract");
+        has_pre = body.contains("pre");
+        has_post = body.contains("post");
+        has_frame = body.contains("frame");
+        has_ownership = body.contains("ownership");
+        has_concurrency = body.contains("concurrency");
+    }
+
+    return ContractInfo{
+        .contract_id = std::move(*contract_id),
+        .tier = std::move(*tier),
+        .target_usr = std::move(*target_usr),
+        .version_scope = std::move(version_scope),
+        .has_pre = has_pre,
+        .has_post = has_post,
+        .has_frame = has_frame,
+        .has_ownership = has_ownership,
+        .has_concurrency = has_concurrency,
+    };
+}
+
+[[nodiscard]] sappp::Result<ContractIndex>
+build_contract_index(const nlohmann::json* specdb_snapshot)
+{
+    ContractIndex index;
+    if (specdb_snapshot == nullptr) {
+        return index;
+    }
+    auto contracts_array = require_array(
+        JsonFieldContext{.obj = specdb_snapshot, .key = "contracts", .context = "specdb_snapshot"});
+    if (!contracts_array) {
+        return std::unexpected(contracts_array.error());
+    }
+
+    for (const auto& entry : **contracts_array) {
+        auto contract_info = parse_contract_entry(entry);
+        if (!contract_info) {
+            return std::unexpected(contract_info.error());
+        }
+        index[contract_info->target_usr].push_back(std::move(*contract_info));
+    }
+
+    for (auto& [usr, contracts] : index) {
+        (void)usr;
+        std::ranges::stable_sort(contracts, [](const ContractInfo& a, const ContractInfo& b) {
+            return a.contract_id < b.contract_id;
+        });
+    }
+
+    return index;
+}
+
 [[nodiscard]] std::unordered_map<std::string, std::string>
 build_function_uid_map(const nlohmann::json& nir_json)
 {
@@ -144,6 +250,52 @@ resolve_function_uid(const std::unordered_map<std::string, std::string>& mapping
     }
 
     return *mangled;
+}
+
+struct ContractMatchSummary
+{
+    std::vector<const ContractInfo*> contracts;
+    bool has_pre = false;
+};
+
+[[nodiscard]] sappp::Result<ContractMatchSummary>
+match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_index)
+{
+    auto function_obj =
+        require_object(JsonFieldContext{.obj = &po, .key = "function", .context = "po"});
+    if (!function_obj) {
+        return std::unexpected(function_obj.error());
+    }
+    auto usr = require_string(
+        JsonFieldContext{.obj = &(*function_obj), .key = "usr", .context = "po.function"});
+    if (!usr) {
+        return std::unexpected(usr.error());
+    }
+
+    ContractMatchSummary summary;
+    auto it = contract_index.find(*usr);
+    if (it == contract_index.end()) {
+        return summary;
+    }
+    summary.contracts.reserve(it->second.size());
+    for (const auto& contract : it->second) {
+        summary.contracts.push_back(&contract);
+        summary.has_pre = summary.has_pre || contract.has_pre;
+    }
+    return summary;
+}
+
+[[nodiscard]] std::vector<std::string> collect_contract_ids(const ContractMatchSummary& summary)
+{
+    std::vector<std::string> ids;
+    ids.reserve(summary.contracts.size());
+    for (const auto* contract : summary.contracts) {
+        ids.push_back(contract->contract_id);
+    }
+    std::ranges::stable_sort(ids);
+    auto unique_ids = std::ranges::unique(ids);
+    ids.erase(unique_ids.begin(), unique_ids.end());
+    return ids;
 }
 
 struct IrAnchor
@@ -256,10 +408,29 @@ make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const
     };
 }
 
+[[nodiscard]] nlohmann::json make_contract_ref(const ContractInfo& contract)
+{
+    nlohmann::json contract_ref = {
+        {"schema_version",                                    "cert.v1"},
+        {          "kind",                                "ContractRef"},
+        {   "contract_id",                         contract.contract_id},
+        {          "tier",                                contract.tier},
+        {        "target", nlohmann::json{{"usr", contract.target_usr}}}
+    };
+
+    if (!contract.version_scope.empty()) {
+        contract_ref["version_scope"] = contract.version_scope;
+    }
+
+    return contract_ref;
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Proof root assembly lists explicit inputs.
 [[nodiscard]] nlohmann::json make_proof_root(const std::string& po_hash,
                                              const std::string& ir_hash,
                                              const std::string& evidence_hash,
                                              const std::optional<std::string>& depgraph_hash,
+                                             const std::vector<std::string>& contract_hashes,
                                              const std::string& result_kind,
                                              const sappp::VersionTriple& versions)
 {
@@ -268,6 +439,15 @@ make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const
         {"proof_system_version", versions.proof_system},
         {     "profile_version",      versions.profile}
     };
+    if (!contract_hashes.empty()) {
+        nlohmann::json contracts = nlohmann::json::array();
+        for (const auto& contract_hash : contract_hashes) {
+            contracts.push_back(nlohmann::json{
+                {"ref", contract_hash}
+            });
+        }
+        depends["contracts"] = std::move(contracts);
+    }
     if (depgraph_hash) {
         depends["assumptions"] =
             nlohmann::json::array({std::string("depgraph_ref=") + *depgraph_hash});
@@ -286,10 +466,16 @@ make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const
 
 [[nodiscard]] nlohmann::json make_dependency_graph(const std::string& po_hash,
                                                    const std::string& ir_hash,
-                                                   const std::string& evidence_hash)
+                                                   const std::string& evidence_hash,
+                                                   const std::vector<std::string>& contract_hashes)
 {
     std::vector<std::string> nodes = {po_hash, ir_hash, evidence_hash};
+    for (const auto& contract_hash : contract_hashes) {
+        nodes.push_back(contract_hash);
+    }
     std::ranges::sort(nodes);
+    auto unique_nodes = std::ranges::unique(nodes);
+    nodes.erase(unique_nodes.begin(), unique_nodes.end());
 
     std::vector<nlohmann::json> edges;
     edges.push_back(nlohmann::json{
@@ -302,6 +488,13 @@ make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const
         {  "to", evidence_hash},
         {"role",    "evidence"}
     });
+    for (const auto& contract_hash : contract_hashes) {
+        edges.push_back(nlohmann::json{
+            {"from",       po_hash},
+            {  "to", contract_hash},
+            {"role",    "contract"}
+        });
+    }
 
     std::ranges::stable_sort(edges, [](const nlohmann::json& a, const nlohmann::json& b) {
         const auto& a_from = a.at("from").get_ref<const std::string&>();
@@ -337,6 +530,7 @@ struct UnknownEntryInput
     std::string_view refinement_message;
     std::string_view refinement_action;
     std::string_view refinement_domain;
+    const std::vector<std::string>* contract_ids = nullptr;
 };
 
 [[nodiscard]] nlohmann::json make_unknown_entry(const UnknownEntryInput& input)
@@ -361,13 +555,21 @@ struct UnknownEntryInput
          {"domain", input.refinement_domain}}}}})                 }
     };
 
-    return nlohmann::json{
+    nlohmann::json entry = {
         {"unknown_stable_id", sappp::common::sha256_prefixed(input.po_id)},
         {            "po_id",                    std::string(input.po_id)},
         {     "unknown_code",             std::string(input.unknown_code)},
         {    "missing_lemma",                               missing_lemma},
         {  "refinement_plan",                             refinement_plan}
     };
+
+    if (input.contract_ids != nullptr && !input.contract_ids->empty()) {
+        entry["depends_on"] = nlohmann::json{
+            {"contracts", *input.contract_ids}
+        };
+    }
+
+    return entry;
 }
 
 struct UnknownDetails
@@ -378,6 +580,20 @@ struct UnknownDetails
     std::string refinement_action;
     std::string refinement_domain;
 };
+
+[[nodiscard]] UnknownDetails build_missing_contract_details(std::string_view clause)
+{
+    std::string code = std::string("MissingContract.") + std::string(clause);
+    std::string notes =
+        std::string("Missing contract ") + std::string(clause) + " clause for this function.";
+    std::string message =
+        std::string("Provide contract ") + std::string(clause) + " clause to discharge this PO.";
+    return UnknownDetails{.code = std::move(code),
+                          .missing_notes = std::move(notes),
+                          .refinement_message = std::move(message),
+                          .refinement_action = "add-contract",
+                          .refinement_domain = "contract"};
+}
 
 [[nodiscard]] bool is_kind_in(std::string_view kind, const std::array<std::string_view, 3>& set)
 {
@@ -447,7 +663,10 @@ struct UnknownDetails
 }
 
 [[nodiscard]] sappp::Result<nlohmann::json>
-build_unknown_entry(const nlohmann::json& po, std::string_view po_id, const UnknownDetails& details)
+build_unknown_entry(const nlohmann::json& po,
+                    std::string_view po_id,
+                    const UnknownDetails& details,
+                    const std::vector<std::string>& contracts)
 {
     auto predicate_expr = extract_predicate_expr(po);
     if (!predicate_expr) {
@@ -483,18 +702,9 @@ build_unknown_entry(const nlohmann::json& po, std::string_view po_id, const Unkn
         .refinement_message = details.refinement_message,
         .refinement_action = details.refinement_action,
         .refinement_domain = details.refinement_domain,
+        .contract_ids = &contracts,
     };
     return make_unknown_entry(input);
-}
-
-[[nodiscard]] sappp::Result<nlohmann::json> build_unknown_entry(const nlohmann::json& po,
-                                                                std::string_view po_id)
-{
-    auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
-    if (!po_kind) {
-        return std::unexpected(po_kind.error());
-    }
-    return build_unknown_entry(po, po_id, build_unknown_details(*po_kind));
 }
 
 [[nodiscard]] sappp::Result<std::vector<const nlohmann::json*>>
@@ -561,6 +771,8 @@ struct PoProcessingContext
 {
     sappp::certstore::CertStore* cert_store = nullptr;
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
+    const ContractIndex* contract_index = nullptr;
+    std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
 };
@@ -619,6 +831,26 @@ struct EvidenceInput
     return *cert_hash;
 }
 
+[[nodiscard]] sappp::Result<std::string> ensure_contract_ref(const ContractInfo& contract,
+                                                             PoProcessingContext& context)
+{
+    if (context.contract_ref_cache == nullptr) {
+        return std::unexpected(
+            sappp::Error::make("MissingContext", "Contract reference cache unavailable"));
+    }
+    auto it = context.contract_ref_cache->find(contract.contract_id);
+    if (it != context.contract_ref_cache->end()) {
+        return it->second;
+    }
+    nlohmann::json contract_ref = make_contract_ref(contract);
+    auto contract_hash = put_cert(*context.cert_store, contract_ref);
+    if (!contract_hash) {
+        return std::unexpected(contract_hash.error());
+    }
+    context.contract_ref_cache->emplace(contract.contract_id, *contract_hash);
+    return *contract_hash;
+}
+
 struct PoBaseData
 {
     std::string po_id;
@@ -630,8 +862,10 @@ struct PoBaseData
     bool is_safe = false;
 };
 
-[[nodiscard]] sappp::VoidResult
-store_po_proof(const nlohmann::json& po, const PoBaseData& base, const PoProcessingContext& context)
+[[nodiscard]] sappp::VoidResult store_po_proof(const nlohmann::json& po,
+                                               const PoBaseData& base,
+                                               const PoProcessingContext& context,
+                                               const std::vector<std::string>& contract_hashes)
 {
     auto po_hash = put_cert(*context.cert_store, base.po_def);
     if (!po_hash) {
@@ -660,7 +894,8 @@ store_po_proof(const nlohmann::json& po, const PoBaseData& base, const PoProcess
         return std::unexpected(evidence_hash.error());
     }
 
-    nlohmann::json depgraph = make_dependency_graph(*po_hash, *ir_hash, *evidence_hash);
+    nlohmann::json depgraph =
+        make_dependency_graph(*po_hash, *ir_hash, *evidence_hash, contract_hashes);
     auto depgraph_hash = put_cert(*context.cert_store, depgraph);
     if (!depgraph_hash) {
         return std::unexpected(depgraph_hash.error());
@@ -670,6 +905,7 @@ store_po_proof(const nlohmann::json& po, const PoBaseData& base, const PoProcess
                                           *ir_hash,
                                           *evidence_hash,
                                           std::optional<std::string>(*depgraph_hash),
+                                          contract_hashes,
                                           evidence_result->result_kind,
                                           *context.versions);
     auto root_hash = put_cert(*context.cert_store, root);
@@ -792,25 +1028,58 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
     return decision;
 }
 
+[[nodiscard]] sappp::Result<ContractMatchSummary>
+resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
+{
+    if (context.contract_index == nullptr) {
+        return ContractMatchSummary{};
+    }
+    return match_contracts_for_po(po, *context.contract_index);
+}
+
 [[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
-                                                           const PoProcessingContext& context)
+                                                           PoProcessingContext& context)
 {
     auto decision = decide_po(po);
     if (!decision) {
         return std::unexpected(decision.error());
     }
+    auto contract_match = resolve_contracts(po, context);
+    if (!contract_match) {
+        return std::unexpected(contract_match.error());
+    }
+    std::vector<std::string> contract_hashes;
+    if (context.contract_ref_cache != nullptr && context.contract_index != nullptr) {
+        contract_hashes.reserve(contract_match->contracts.size());
+        for (const auto* contract : contract_match->contracts) {
+            auto hash = ensure_contract_ref(*contract, context);
+            if (!hash) {
+                return std::unexpected(hash.error());
+            }
+            contract_hashes.push_back(std::move(*hash));
+        }
+        std::ranges::stable_sort(contract_hashes);
+        auto unique_hashes = std::ranges::unique(contract_hashes);
+        contract_hashes.erase(unique_hashes.begin(), unique_hashes.end());
+    }
+
     auto base = build_po_base(po, context, decision->is_bug, decision->is_safe);
     if (!base) {
         return std::unexpected(base.error());
     }
 
-    if (auto stored = store_po_proof(po, *base, context); !stored) {
+    if (auto stored = store_po_proof(po, *base, context, contract_hashes); !stored) {
         return std::unexpected(stored.error());
     }
 
     PoProcessingOutput output{.po_id = base->po_id};
     if (decision->is_unknown || (!base->is_bug && !base->is_safe)) {
-        auto unknown_entry = build_unknown_entry(po, base->po_id, decision->unknown_details);
+        UnknownDetails details = decision->unknown_details;
+        if (contract_match->contracts.empty() || !contract_match->has_pre) {
+            details = build_missing_contract_details("Pre");
+        }
+        auto contract_ids = collect_contract_ids(*contract_match);
+        auto unknown_entry = build_unknown_entry(po, base->po_id, details, contract_ids);
         if (!unknown_entry) {
             return std::unexpected(unknown_entry.error());
         }
@@ -823,7 +1092,8 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
 
 [[nodiscard]] sappp::VoidResult
 ensure_unknowns(std::vector<nlohmann::json>& unknowns,
-                const std::vector<const nlohmann::json*>& ordered_pos)
+                const std::vector<const nlohmann::json*>& ordered_pos,
+                const PoProcessingContext& context)
 {
     if (!unknowns.empty() || ordered_pos.empty()) {
         return {};
@@ -834,7 +1104,16 @@ ensure_unknowns(std::vector<nlohmann::json>& unknowns,
     if (!po_id) {
         return std::unexpected(po_id.error());
     }
-    auto unknown_entry = build_unknown_entry(po, *po_id);
+    auto contract_match = resolve_contracts(po, context);
+    if (!contract_match) {
+        return std::unexpected(contract_match.error());
+    }
+    UnknownDetails details = build_unknown_details("UB.Unknown");
+    if (contract_match->contracts.empty() || !contract_match->has_pre) {
+        details = build_missing_contract_details("Pre");
+    }
+    auto contract_ids = collect_contract_ids(*contract_match);
+    auto unknown_entry = build_unknown_entry(po, *po_id, details, contract_ids);
     if (!unknown_entry) {
         return std::unexpected(unknown_entry.error());
     }
@@ -849,7 +1128,8 @@ Analyzer::Analyzer(AnalyzerConfig config)
 {}
 
 sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
-                                               const nlohmann::json& po_list_json) const
+                                               const nlohmann::json& po_list_json,
+                                               const nlohmann::json* specdb_snapshot) const
 {
     auto tu_id =
         require_string(JsonFieldContext{.obj = &nir_json, .key = "tu_id", .context = "nir"});
@@ -874,12 +1154,19 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
 
     sappp::certstore::CertStore cert_store(m_config.certstore_dir, m_config.schema_dir);
     const auto function_uid_map = build_function_uid_map(nir_json);
+    auto contract_index = build_contract_index(specdb_snapshot);
+    if (!contract_index) {
+        return std::unexpected(contract_index.error());
+    }
+    std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::vector<nlohmann::json> unknowns;
     unknowns.reserve(ordered_pos_value.size());
 
     PoProcessingContext context{.cert_store = &cert_store,
                                 .function_uid_map = &function_uid_map,
+                                .contract_index = &(*contract_index),
+                                .contract_ref_cache = &contract_ref_cache,
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};
 
@@ -894,7 +1181,8 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
         }
     }
 
-    if (auto ensure_result = ensure_unknowns(unknowns, ordered_pos_value); !ensure_result) {
+    if (auto ensure_result = ensure_unknowns(unknowns, ordered_pos_value, context);
+        !ensure_result) {
         return std::unexpected(ensure_result.error());
     }
 
