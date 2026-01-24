@@ -109,7 +109,7 @@ private:
     std::ofstream out(source_path);
     out << R"(#include <cstddef>
 
-void sappp_sink(const char* kind);
+void sappp_sink(const char* kind, const char* target = nullptr);
 void sappp_check(const char* kind, bool predicate);
 
 struct Guard {
@@ -137,7 +137,7 @@ int use_after_lifetime() {
         int use_after_lifetime = 7;
         ptr = &use_after_lifetime;
     }
-    sappp_sink("use-after-lifetime");
+    sappp_sink("use-after-lifetime", "use_after_lifetime");
     return *ptr;
 }
 
