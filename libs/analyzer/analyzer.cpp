@@ -669,7 +669,6 @@ extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabil
     }
     return std::nullopt;
 }
-}
 
 void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
 {

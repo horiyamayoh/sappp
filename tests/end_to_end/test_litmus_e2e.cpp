@@ -306,6 +306,7 @@ TEST(LitmusE2E, Div0)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -319,6 +320,7 @@ TEST(LitmusE2E, NullDeref)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -332,6 +334,7 @@ TEST(LitmusE2E, OutOfBounds)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -345,6 +348,7 @@ TEST(LitmusE2E, UseAfterLifetime)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -358,6 +362,7 @@ TEST(LitmusE2E, DoubleFree)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -371,6 +376,7 @@ TEST(LitmusE2E, UninitRead)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -384,6 +390,7 @@ TEST(LitmusE2E, ExceptionRaii)
         .required_ops = {"invoke", "throw", "landingpad", "dtor"},
         .required_edge_kinds = {"exception"},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
