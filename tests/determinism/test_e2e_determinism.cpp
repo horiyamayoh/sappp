@@ -109,7 +109,7 @@ private:
     std::ofstream out(source_path);
     out << R"(#include <cstddef>
 
-void sappp_sink(const char* kind, const char* target = nullptr);
+void sappp_sink(const char* kind, const void* target = nullptr);
 void sappp_check(const char* kind, bool predicate);
 
 struct Guard {
@@ -144,7 +144,7 @@ int use_after_lifetime() {
 int double_free() {
     int* ptr = new int(1);
     delete ptr;
-    sappp_sink("double_free");
+    sappp_sink("double_free", ptr);
     delete ptr;
     return 0;
 }

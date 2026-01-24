@@ -306,6 +306,7 @@ TEST(LitmusE2E, Div0)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -319,6 +320,7 @@ TEST(LitmusE2E, NullDeref)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -332,6 +334,7 @@ TEST(LitmusE2E, OutOfBounds)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -345,6 +348,7 @@ TEST(LitmusE2E, UseAfterLifetime)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -354,10 +358,25 @@ TEST(LitmusE2E, DoubleFree)
         .name = "double_free",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_double_free.cpp",
         .expected_po_kinds = {"DoubleFree"},
-        .expected_categories = {"UNKNOWN"},
-        .required_ops = {},
+        .expected_categories = {"BUG"},
+        .required_ops = {"alloc", "free"},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
+    });
+}
+
+TEST(LitmusE2E, InvalidFree)
+{
+    run_litmus_case(LitmusCase{
+        .name = "invalid_free",
+        .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_invalid_free.cpp",
+        .expected_po_kinds = {"InvalidFree"},
+        .expected_categories = {"BUG"},
+        .required_ops = {"free"},
+        .required_edge_kinds = {},
+        .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -371,6 +390,7 @@ TEST(LitmusE2E, UninitRead)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -384,6 +404,7 @@ TEST(LitmusE2E, ExceptionRaii)
         .required_ops = {"invoke", "throw", "landingpad", "dtor"},
         .required_edge_kinds = {"exception"},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 

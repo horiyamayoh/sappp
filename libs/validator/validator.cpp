@@ -1434,11 +1434,11 @@ ValidationError rule_violation_error(const std::string& message)
 
 [[nodiscard]] bool is_supported_bug_trace_op(std::string_view op)
 {
-    constexpr std::array<std::string_view, 19> kSupportedOps{
+    constexpr std::array<std::string_view, 21> kSupportedOps{
         {
-         "assign",         "branch",       "call",  "ctor",     "dtor",  "invoke", "landingpad",
-         "lifetime.begin", "lifetime.end", "load",  "move",     "ret",   "resume", "sink.marker",
-         "stmt",           "store",        "throw", "ub.check", "vcall",
+         "alloc",  "assign",      "branch",         "call",         "ctor",  "dtor",     "free",
+         "invoke", "landingpad",  "lifetime.begin", "lifetime.end", "load",  "move",     "ret",
+         "resume", "sink.marker", "stmt",           "store",        "throw", "ub.check", "vcall",
          }
     };
     return std::ranges::find(kSupportedOps, op) != kSupportedOps.end();
