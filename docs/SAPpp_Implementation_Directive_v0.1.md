@@ -299,7 +299,8 @@ ProofRoot (root)
   - hash一致（certオブジェクトのハッシュ再計算）
   - 依存欠落は `MissingDependency`
 - BUG:
-  - BugTrace（単一関数、整数/NULL、分岐パス）を再生
+  - BugTrace（単一関数 + call/exception/unwind を含む ir_path.v1）を再生
+  - 例外経路は exception edge を検証し、RAII dtor を含むトレースを許容
   - 最終ステップでPO predicate が破れることを確認
 - SAFE:
   - v1では「単純ドメイン（interval/nullness）」の帰納性チェックのみ
