@@ -59,10 +59,25 @@ struct FunctionTables
     std::vector<VCallCandidateSet> vcall_candidates;
 };
 
+struct FunctionParam
+{
+    std::string name;
+    std::string type;
+};
+
+struct FunctionSignature
+{
+    std::string return_type;
+    std::vector<FunctionParam> params;
+    bool is_noexcept = false;
+    bool variadic = false;
+};
+
 struct FunctionDef
 {
     std::string function_uid;
     std::string mangled_name;
+    FunctionSignature signature;
     Cfg cfg;
     std::optional<FunctionTables> tables;
 };
@@ -144,11 +159,30 @@ inline void to_json(nlohmann::json& j, const FunctionTables& tables)
     };
 }
 
+inline void to_json(nlohmann::json& j, const FunctionParam& param)
+{
+    j = nlohmann::json{
+        {"name", param.name},
+        {"type", param.type}
+    };
+}
+
+inline void to_json(nlohmann::json& j, const FunctionSignature& signature)
+{
+    j = nlohmann::json{
+        {"return_type", signature.return_type},
+        {     "params",      signature.params},
+        {   "noexcept", signature.is_noexcept},
+        {   "variadic",    signature.variadic}
+    };
+}
+
 inline void to_json(nlohmann::json& j, const FunctionDef& func)
 {
     j = nlohmann::json{
         {"function_uid", func.function_uid},
         {"mangled_name", func.mangled_name},
+        {   "signature",    func.signature},
         {         "cfg",          func.cfg}
     };
     if (func.tables.has_value() && !func.tables->vcall_candidates.empty()) {
