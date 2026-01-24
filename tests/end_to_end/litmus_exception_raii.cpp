@@ -18,6 +18,11 @@ int main()
         sappp_check("shift", false);
         throw 1;
     } catch (...) {
-        return 0;
+        try {
+            Guard handler_guard;
+            throw;
+        } catch (...) {
+            return 0;
+        }
     }
 }
