@@ -194,9 +194,10 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
 
     for (auto& [usr, contracts] : index) {
         (void)usr;
-        std::ranges::stable_sort(contracts, [](const ContractInfo& a, const ContractInfo& b) {
-            return a.contract_id < b.contract_id;
-        });
+        std::ranges::stable_sort(contracts,
+                                 [](const ContractInfo& a, const ContractInfo& b) noexcept {
+                                     return a.contract_id < b.contract_id;
+                                 });
     }
 
     return index;
@@ -255,7 +256,14 @@ resolve_function_uid(const std::unordered_map<std::string, std::string>& mapping
 struct ContractMatchSummary
 {
     std::vector<const ContractInfo*> contracts;
-    bool has_pre = false;
+    bool has_pre;
+
+    ContractMatchSummary()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : contracts()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , has_pre(false)
+    {}
 };
 
 [[nodiscard]] sappp::Result<ContractMatchSummary>
