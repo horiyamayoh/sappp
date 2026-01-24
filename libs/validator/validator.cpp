@@ -63,12 +63,15 @@ struct NirFunction
 {
     std::unordered_map<std::string, NirBlock> blocks;
     std::unordered_map<std::string, std::vector<NirEdge>> edges;
+    std::string entry_block;
 
     NirFunction()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         : blocks()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         , edges()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , entry_block()
     {}
 };
 
@@ -398,6 +401,10 @@ build_nir_block_entry(const nlohmann::json& block_json)
 {
     NirFunction function_index;
     const auto& cfg = function_json.at("cfg");
+    if (!cfg.contains("entry") || !cfg.at("entry").is_string()) {
+        return std::unexpected(Error::make("NirInvalid", "Missing cfg.entry in NIR"));
+    }
+    function_index.entry_block = cfg.at("entry").get<std::string>();
     const auto& blocks = cfg.at("blocks");
     for (const auto& block_json : blocks) {
         auto block_entry = build_nir_block_entry(block_json);
@@ -410,6 +417,10 @@ build_nir_block_entry(const nlohmann::json& block_json)
                 Error::make("NirInvalid", "Duplicate block_id in NIR: " + block_id));
         }
         function_index.blocks.emplace(std::move(block_id), std::move(block_index));
+    }
+    if (!function_index.blocks.contains(function_index.entry_block)) {
+        return std::unexpected(
+            Error::make("NirInvalid", "cfg.entry does not match any block in NIR"));
     }
 
     if (auto edge_result = add_nir_edges(cfg, function_index); !edge_result) {
@@ -571,10 +582,13 @@ struct TraceStepInfo
                    // - required for -Weffc++.
     std::string function_uid;
     std::string block_id;
+    std::string inst_id;
+    std::string inst_op;
     std::size_t
         inst_index;  // NOLINT(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
                      // - required for -Weffc++.
     std::optional<std::string> edge_kind;
+    bool is_entry_block;
 
     // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
     TraceStepInfo()
@@ -583,9 +597,15 @@ struct TraceStepInfo
         , function_uid()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         , block_id()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , inst_id()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , inst_op()
         , inst_index(0)
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         , edge_kind()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , is_entry_block(false)
     {}
 
     TraceStepInfo(const TraceStepInfo&) = default;
@@ -598,8 +618,29 @@ struct TraceStepInfo
 struct TraceExpectations
 {
     std::string_view tu_id;
-    std::string_view function_uid;
 };
+
+struct CallFrame
+{
+    std::string function_uid;
+    std::string block_id;
+    std::size_t inst_index;
+};
+
+[[nodiscard]] bool is_call_transition_op(std::string_view op)
+{
+    return op == "call" || op == "invoke" || op == "vcall" || op == "ctor";
+}
+
+[[nodiscard]] bool is_return_transition_op(std::string_view op)
+{
+    return op == "ret";
+}
+
+[[nodiscard]] bool is_unwind_transition_op(std::string_view op)
+{
+    return op == "throw" || op == "resume";
+}
 
 [[nodiscard]] std::optional<ValidationError> resolve_nir_index(const ValidationContext& context,
                                                                const NirIndex*& nir_index)
@@ -629,9 +670,6 @@ build_trace_step_info(const NirIndex& nir_index,
         return rule_violation_error("BugTrace tu_id mismatch");
     }
     std::string function_uid = ir.at("function_uid").get<std::string>();
-    if (function_uid != expected.function_uid) {
-        return rule_violation_error("BugTrace function_uid mismatch");
-    }
 
     std::string block_id = ir.at("block_id").get<std::string>();
     std::string inst_id = ir.at("inst_id").get<std::string>();
@@ -660,28 +698,84 @@ build_trace_step_info(const NirIndex& nir_index,
     info.function = function;
     info.function_uid = std::move(function_uid);
     info.block_id = std::move(block_id);
+    info.inst_id = std::move(inst_id);
+    info.inst_op = inst->op;
     info.inst_index = inst->index;
     info.edge_kind = std::move(edge_kind);
+    info.is_entry_block = info.block_id == function->entry_block;
     return std::nullopt;
 }
 
 [[nodiscard]] std::optional<ValidationError>
-validate_trace_transition(const TraceStepInfo& previous, const TraceStepInfo& current)
+validate_trace_transition(const TraceStepInfo& previous,
+                          const TraceStepInfo& current,
+                          std::vector<CallFrame>& call_stack)
 {
-    if (current.function_uid != previous.function_uid) {
-        return unsupported_error("BugTrace crosses multiple functions");
-    }
-    if (current.block_id == previous.block_id) {
-        if (current.inst_index < previous.inst_index) {
-            return proof_failed_error("BugTrace instruction order is not monotonic");
+    if (current.function_uid == previous.function_uid) {
+        if (current.block_id == previous.block_id) {
+            if (current.inst_index < previous.inst_index) {
+                return proof_failed_error("BugTrace instruction order is not monotonic");
+            }
+            return std::nullopt;
+        }
+        EdgeLookup lookup{.from = previous.block_id, .to = current.block_id};
+        if (!has_cfg_edge(*current.function, lookup, current.edge_kind)) {
+            return proof_failed_error("BugTrace path is not connected in CFG");
         }
         return std::nullopt;
     }
-    EdgeLookup lookup{.from = previous.block_id, .to = current.block_id};
-    if (!has_cfg_edge(*current.function, lookup, current.edge_kind)) {
-        return proof_failed_error("BugTrace path is not connected in CFG");
+
+    if (is_call_transition_op(previous.inst_op)) {
+        if (!current.is_entry_block) {
+            return proof_failed_error("BugTrace call enters non-entry block");
+        }
+        call_stack.push_back(CallFrame{.function_uid = previous.function_uid,
+                                       .block_id = previous.block_id,
+                                       .inst_index = previous.inst_index});
+        return std::nullopt;
     }
-    return std::nullopt;
+
+    if (is_return_transition_op(previous.inst_op)) {
+        if (call_stack.empty()) {
+            return proof_failed_error("BugTrace return without call frame");
+        }
+        const CallFrame& frame = call_stack.back();
+        if (frame.function_uid != current.function_uid) {
+            return proof_failed_error("BugTrace return target mismatch");
+        }
+        if (current.block_id == frame.block_id && current.inst_index < frame.inst_index) {
+            return proof_failed_error("BugTrace return goes backwards in caller");
+        }
+        call_stack.pop_back();
+        return std::nullopt;
+    }
+
+    if (is_unwind_transition_op(previous.inst_op)) {
+        if (call_stack.empty()) {
+            return proof_failed_error("BugTrace unwind without call frame");
+        }
+        auto match_it =
+            std::find_if(call_stack.rbegin(), call_stack.rend(), [&](const CallFrame& frame) {
+                return frame.function_uid == current.function_uid;
+            });
+        if (match_it == call_stack.rend()) {
+            return proof_failed_error("BugTrace unwind target mismatch");
+        }
+        while (!call_stack.empty() && call_stack.back().function_uid != current.function_uid) {
+            call_stack.pop_back();
+        }
+        if (call_stack.empty()) {
+            return proof_failed_error("BugTrace unwind target missing");
+        }
+        if (current.block_id == call_stack.back().block_id
+            && current.inst_index < call_stack.back().inst_index) {
+            return proof_failed_error("BugTrace unwind goes backwards in caller");
+        }
+        call_stack.pop_back();
+        return std::nullopt;
+    }
+
+    return unsupported_error("BugTrace function transition op not supported");
 }
 
 [[nodiscard]] std::optional<ValidationError>
@@ -695,7 +789,6 @@ validate_bug_trace_path(const ValidationContext& context,
     }
 
     std::string expected_tu_id = ir_cert.at("tu_id").get<std::string>();
-    std::string expected_function_uid = ir_cert.at("function_uid").get<std::string>();
 
     if (nir_index->tu_id != expected_tu_id) {
         return rule_violation_error("NIR tu_id does not match IR reference");
@@ -705,7 +798,8 @@ validate_bug_trace_path(const ValidationContext& context,
         return rule_violation_error("BugTrace steps missing");
     }
 
-    TraceExpectations expected{.tu_id = expected_tu_id, .function_uid = expected_function_uid};
+    TraceExpectations expected{.tu_id = expected_tu_id};
+    std::vector<CallFrame> call_stack;
     std::optional<TraceStepInfo> previous;
     for (const auto& step : evidence.at("steps")) {
         TraceStepInfo current;
@@ -713,11 +807,15 @@ validate_bug_trace_path(const ValidationContext& context,
             return error;
         }
         if (previous) {
-            if (auto error = validate_trace_transition(*previous, current)) {
+            if (auto error = validate_trace_transition(*previous, current, call_stack)) {
                 return error;
             }
         }
         previous = std::move(current);
+    }
+
+    if (!previous) {
+        return rule_violation_error("BugTrace steps missing");
     }
 
     return std::nullopt;
