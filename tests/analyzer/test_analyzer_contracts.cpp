@@ -142,6 +142,40 @@ nlohmann::json make_nir_with_heap_invalid_free()
     };
 }
 
+nlohmann::json make_nir_with_vcall(std::string_view candidate_method)
+{
+    nlohmann::json block = {
+        {   "id",                                                           "B1"},
+        {"insts",
+         nlohmann::json::array(
+         {nlohmann::json{{"id", "I0"},
+         {"op", "vcall"},
+         {"args", nlohmann::json::array({"receiver", "CS0", "signature"})}}})   }
+    };
+
+    nlohmann::json func = {
+        {"function_uid",                          "usr::caller"                        },
+        {"mangled_name",                                                   "_Z6callerv"},
+        {         "cfg",
+         {{"entry", "B1"},
+         {"blocks", nlohmann::json::array({block})},
+         {"edges", nlohmann::json::array()}}                                           },
+        {      "tables",
+         {{"vcall_candidates",
+         nlohmann::json::array({nlohmann::json{
+         {"id", "CS0"},
+         {"methods", nlohmann::json::array({std::string(candidate_method)})}}})}}      }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                "nir.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {     "functions",                           nlohmann::json::array({func})}
+    };
+}
+
 nlohmann::json make_po_list(std::string_view po_kind)
 {
     nlohmann::json po = {
@@ -225,6 +259,39 @@ nlohmann::json make_invalid_free_po_list()
     };
 }
 
+nlohmann::json make_po_list_for_function(std::string_view function_usr,
+                                         std::string_view mangled_name,
+                                         std::string_view block_id,
+                                         std::string_view inst_id)
+{
+    nlohmann::json po = {
+        {               "po_id",               make_sha256('b')                                },
+        {             "po_kind",                                                   "UB.DivZero"},
+        {     "profile_version",                                               "safety.core.v1"},
+        {   "semantics_version",                                                       "sem.v1"},
+        {"proof_system_version",                                                     "proof.v1"},
+        {       "repo_identity",
+         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}        },
+        {            "function",
+         nlohmann::json{{"usr", std::string(function_usr)},
+         {"mangled", std::string(mangled_name)}}                                               },
+        {              "anchor",
+         nlohmann::json{{"block_id", std::string(block_id)}, {"inst_id", std::string(inst_id)}}},
+        {           "predicate",
+         nlohmann::json{
+         {"expr", nlohmann::json{{"op", "ub.check"}, {"args", nlohmann::json::array({true})}}},
+         {"pretty", "ub.check(true)"}}                                                         }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                 "po.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {           "pos",                             nlohmann::json::array({po})}
+    };
+}
+
 nlohmann::json make_use_after_lifetime_po_list()
 {
     nlohmann::json po = {
@@ -252,6 +319,33 @@ nlohmann::json make_use_after_lifetime_po_list()
         {  "generated_at",                                  "1970-01-01T00:00:00Z"},
         {         "tu_id",                                        make_sha256('a')},
         {           "pos",                             nlohmann::json::array({po})}
+    };
+}
+
+nlohmann::json make_contract_snapshot_for_target(std::string_view target_usr)
+{
+    nlohmann::json contracts = nlohmann::json::array();
+    contracts.push_back(nlohmann::json{
+        {"schema_version",                        "contract_ir.v1"                          },
+        {   "contract_id",                                                  make_sha256('d')},
+        {        "target",                  nlohmann::json{{"usr", std::string(target_usr)}}},
+        {          "tier",                                                           "Tier1"},
+        { "version_scope",
+         nlohmann::json{{"abi", "x86_64"},
+         {"library_version", "1.0.0"},
+         {"conditions", nlohmann::json::array()},
+         {"priority", 0}}                                                                   },
+        {      "contract",
+         nlohmann::json{
+         {"pre",
+         nlohmann::json{{"expr", nlohmann::json{{"op", "true"}}}, {"pretty", "true"}}}}     }
+    });
+
+    return nlohmann::json{
+        {"schema_version",                                    "specdb_snapshot.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {     "contracts",                                               contracts}
     };
 }
 
@@ -474,6 +568,31 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
     const auto& unknowns = output->unknown_ledger.at("unknowns");
     ASSERT_EQ(unknowns.size(), 1U);
     EXPECT_EQ(unknowns.at(0).at("unknown_code"), "DomainTooWeak.Memory");
+}
+
+TEST(AnalyzerContractTest, VCallMissingContractProducesUnknownCode)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    auto nir = make_nir_with_vcall("usr::vcall_target");
+    auto po_list = make_po_list_for_function("usr::caller", "_Z6callerv", "B1", "I0");
+    auto specdb_snapshot = make_contract_snapshot_for_target("usr::caller");
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "VirtualCall.MissingContract.Pre");
 }
 
 }  // namespace sappp::analyzer::test

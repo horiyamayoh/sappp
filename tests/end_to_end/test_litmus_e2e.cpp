@@ -90,6 +90,7 @@ struct LitmusCase
     std::vector<std::string> required_ops;
     std::vector<std::string> required_edge_kinds;
     bool require_vcall_candidates = false;
+    std::vector<std::string> expected_unknown_codes;
 };
 
 nlohmann::json load_json_file(const fs::path& path)
@@ -116,6 +117,24 @@ void expect_categories(const nlohmann::json& validated_results,
     for (const auto& category : expected_categories) {
         EXPECT_NE(categories.find(category), categories.end())
             << "Expected category " << category << " in validated_results";
+    }
+}
+
+void expect_unknown_codes(const nlohmann::json& unknown_ledger,
+                          const std::vector<std::string>& expected_unknown_codes)
+{
+    ASSERT_TRUE(unknown_ledger.contains("unknowns")) << "unknown_ledger missing unknowns";
+    ASSERT_TRUE(unknown_ledger.at("unknowns").is_array());
+
+    std::unordered_set<std::string> codes;
+    for (const auto& unknown : unknown_ledger.at("unknowns")) {
+        if (unknown.contains("unknown_code") && unknown.at("unknown_code").is_string()) {
+            codes.insert(unknown.at("unknown_code").get<std::string>());
+        }
+    }
+    for (const auto& code : expected_unknown_codes) {
+        EXPECT_NE(codes.find(code), codes.end())
+            << "Expected unknown_code " << code << " in unknown_ledger";
     }
 }
 
@@ -224,6 +243,12 @@ void run_litmus_case(const LitmusCase& test_case)
         expect_po_kinds(load_json_file(po_list), test_case.expected_po_kinds);
     }
 
+    if (!test_case.expected_unknown_codes.empty()) {
+        fs::path unknown_path = out_dir / "analyzer" / "unknown_ledger.json";
+        ASSERT_TRUE(fs::exists(unknown_path)) << unknown_path.string();
+        expect_unknown_codes(load_json_file(unknown_path), test_case.expected_unknown_codes);
+    }
+
     if (!test_case.required_ops.empty() || !test_case.required_edge_kinds.empty()
         || test_case.require_vcall_candidates) {
         fs::path nir_path = out_dir / "frontend" / "nir.json";
@@ -277,10 +302,11 @@ TEST(LitmusE2E, Div0)
         .name = "div0",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_div0.c",
         .expected_po_kinds = {"UB.DivZero"},
-        .expected_categories = {"BUG"},
+        .expected_categories = {"UNKNOWN"},
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -294,6 +320,7 @@ TEST(LitmusE2E, NullDeref)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -307,6 +334,7 @@ TEST(LitmusE2E, OutOfBounds)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -320,6 +348,7 @@ TEST(LitmusE2E, UseAfterLifetime)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -333,6 +362,7 @@ TEST(LitmusE2E, DoubleFree)
         .required_ops = {"alloc", "free"},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -346,6 +376,7 @@ TEST(LitmusE2E, InvalidFree)
         .required_ops = {"free"},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -359,6 +390,7 @@ TEST(LitmusE2E, UninitRead)
         .required_ops = {},
         .required_edge_kinds = {},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -372,6 +404,7 @@ TEST(LitmusE2E, ExceptionRaii)
         .required_ops = {"invoke", "throw", "landingpad", "dtor"},
         .required_edge_kinds = {"exception"},
         .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
     });
 }
 
@@ -381,9 +414,10 @@ TEST(LitmusE2E, VirtualCall)
         .name = "vcall",
         .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_vcall.cpp",
         .expected_po_kinds = {},
-        .expected_categories = {"BUG"},
+        .expected_categories = {"UNKNOWN"},
         .required_ops = {"vcall"},
         .required_edge_kinds = {},
         .require_vcall_candidates = true,
+        .expected_unknown_codes = {"VirtualCall.MissingContract.Pre"},
     });
 }
