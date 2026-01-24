@@ -394,6 +394,34 @@ TEST(LitmusE2E, UninitRead)
     });
 }
 
+TEST(LitmusE2E, SignedOverflow)
+{
+    run_litmus_case(LitmusCase{
+        .name = "signed_overflow",
+        .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_signed_overflow.c",
+        .expected_po_kinds = {"UB.SignedOverflow"},
+        .expected_categories = {"UNKNOWN"},
+        .required_ops = {},
+        .required_edge_kinds = {},
+        .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
+    });
+}
+
+TEST(LitmusE2E, Misaligned)
+{
+    run_litmus_case(LitmusCase{
+        .name = "misaligned",
+        .source_path = fs::path(SAPPP_REPO_ROOT) / "tests/end_to_end/litmus_misaligned.c",
+        .expected_po_kinds = {"UB.Misaligned"},
+        .expected_categories = {"UNKNOWN"},
+        .required_ops = {},
+        .required_edge_kinds = {},
+        .require_vcall_candidates = false,
+        .expected_unknown_codes = {},
+    });
+}
+
 TEST(LitmusE2E, ExceptionRaii)
 {
     run_litmus_case(LitmusCase{

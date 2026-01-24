@@ -496,6 +496,59 @@ std::optional<std::string> extract_decl_ref_name(const clang::Expr* expr)
     return std::nullopt;
 }
 
+[[nodiscard]] bool is_signed_integer_type(clang::QualType type)
+{
+    if (type.isNull()) {
+        return false;
+    }
+    if (type->isEnumeralType()) {
+        const auto* enum_type = type->getAs<clang::EnumType>();
+        if (enum_type != nullptr) {
+            return enum_type->getDecl()->getIntegerType()->isSignedIntegerType();
+        }
+    }
+    return type->isSignedIntegerType();
+}
+
+[[nodiscard]] std::optional<std::string> extract_pointer_target_label(const clang::Expr* expr)
+{
+    const auto* stripped = strip_parens(expr);
+    if (const auto* decl_ref = clang::dyn_cast_or_null<clang::DeclRefExpr>(stripped)) {
+        const auto* decl = decl_ref->getDecl();
+        if (decl != nullptr && !decl->getName().empty()) {
+            return decl->getName().str();
+        }
+        return std::nullopt;
+    }
+    if (const auto* member = clang::dyn_cast_or_null<clang::MemberExpr>(stripped)) {
+        if (member->isArrow()) {
+            return extract_pointer_target_label(member->getBase());
+        }
+        const auto* member_decl = member->getMemberDecl();
+        if (member_decl != nullptr && !member_decl->getName().empty()) {
+            return member_decl->getName().str();
+        }
+        return std::nullopt;
+    }
+    if (const auto* unary = clang::dyn_cast_or_null<clang::UnaryOperator>(stripped)) {
+        if (unary->getOpcode() == clang::UO_Deref) {
+            return extract_pointer_target_label(unary->getSubExpr());
+        }
+    }
+    if (const auto* cast_expr = clang::dyn_cast_or_null<clang::CastExpr>(stripped)) {
+        return extract_pointer_target_label(cast_expr->getSubExpr());
+    }
+    if (const auto* array_sub = clang::dyn_cast_or_null<clang::ArraySubscriptExpr>(stripped)) {
+        return extract_pointer_target_label(array_sub->getBase());
+    }
+    if (const auto* op_call = clang::dyn_cast_or_null<clang::CXXOperatorCallExpr>(stripped)) {
+        if (op_call->getOperator() == clang::OO_Subscript && op_call->getNumArgs() > 0) {
+            return extract_pointer_target_label(op_call->getArg(0));
+        }
+    }
+    return std::nullopt;
+}
+
 std::string describe_heap_type_label(clang::QualType type)
 {
     if (type.isNull()) {
@@ -705,6 +758,103 @@ struct SinkMarker
     std::optional<std::string> target;
 };
 
+[[nodiscard]] bool is_division_operator(clang::BinaryOperatorKind opcode)
+{
+    return opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
+           || opcode == clang::BO_RemAssign;
+}
+
+[[nodiscard]] bool is_shift_operator(clang::BinaryOperatorKind opcode)
+{
+    return opcode == clang::BO_Shl || opcode == clang::BO_Shr || opcode == clang::BO_ShlAssign
+           || opcode == clang::BO_ShrAssign;
+}
+
+[[nodiscard]] bool is_signed_overflow_operator(const clang::BinaryOperator* bin_op)
+{
+    if (bin_op == nullptr) {
+        return false;
+    }
+    if (!is_signed_integer_type(bin_op->getType())) {
+        return false;
+    }
+    const auto opcode = bin_op->getOpcode();
+    return opcode == clang::BO_Add || opcode == clang::BO_Sub || opcode == clang::BO_Mul
+           || opcode == clang::BO_AddAssign || opcode == clang::BO_SubAssign
+           || opcode == clang::BO_MulAssign;
+}
+
+[[nodiscard]] bool is_signed_overflow_operator(const clang::UnaryOperator* unary_op)
+{
+    if (unary_op == nullptr) {
+        return false;
+    }
+    if (!is_signed_integer_type(unary_op->getType())) {
+        return false;
+    }
+    const auto opcode = unary_op->getOpcode();
+    return opcode == clang::UO_PreInc || opcode == clang::UO_PreDec || opcode == clang::UO_PostInc
+           || opcode == clang::UO_PostDec || opcode == clang::UO_Minus;
+}
+
+[[nodiscard]] bool is_alignment_sensitive_pointer(clang::QualType type)
+{
+    if (type.isNull() || !type->isPointerType()) {
+        return false;
+    }
+    clang::QualType pointee = type->getPointeeType();
+    if (pointee.isNull()) {
+        return false;
+    }
+    if (pointee->isVoidType()) {
+        return false;
+    }
+    return !pointee->isAnyCharacterType();
+}
+
+[[nodiscard]] bool is_misaligned_cast(const clang::ExplicitCastExpr* cast_expr)
+{
+    if (cast_expr == nullptr) {
+        return false;
+    }
+    if (!is_alignment_sensitive_pointer(cast_expr->getType())) {
+        return false;
+    }
+    const auto kind = cast_expr->getCastKind();
+    return kind == clang::CK_BitCast || kind == clang::CK_LValueBitCast
+           || kind == clang::CK_IntegralToPointer;
+}
+
+[[nodiscard]] std::optional<std::string>
+extract_uninit_target_label(const clang::ImplicitCastExpr* cast_expr)
+{
+    if (cast_expr == nullptr) {
+        return std::nullopt;
+    }
+    if (cast_expr->getCastKind() != clang::CK_LValueToRValue) {
+        return std::nullopt;
+    }
+    const auto* sub_expr = strip_parens(cast_expr->getSubExpr());
+    const auto* decl_ref = clang::dyn_cast_or_null<clang::DeclRefExpr>(sub_expr);
+    if (decl_ref == nullptr) {
+        return std::nullopt;
+    }
+    const auto* var_decl = clang::dyn_cast<clang::VarDecl>(decl_ref->getDecl());
+    if (var_decl == nullptr) {
+        return std::nullopt;
+    }
+    if (llvm::isa<clang::ParmVarDecl>(var_decl) || var_decl->hasGlobalStorage()) {
+        return std::nullopt;
+    }
+    if (var_decl->hasInit() || var_decl->isImplicit()) {
+        return std::nullopt;
+    }
+    if (var_decl->getName().empty()) {
+        return std::nullopt;
+    }
+    return var_decl->getName().str();
+}
+
 std::optional<ClassifiedStmt> classify_return_stmt(const clang::Stmt* stmt)
 {
     if (clang::isa<clang::ReturnStmt>(stmt)) {
@@ -850,12 +1000,48 @@ std::vector<SinkMarker> detect_sink_markers(const clang::Stmt* stmt)
     while (!stack.empty()) {
         const clang::Stmt* current = stack.back();
         stack.pop_back();
+        if (const auto* implicit_cast = clang::dyn_cast<clang::ImplicitCastExpr>(current)) {
+            if (auto target = extract_uninit_target_label(implicit_cast)) {
+                markers.push_back(SinkMarker{.kind = "uninit_read", .target = std::move(*target)});
+            }
+        }
+
         if (const auto* bin_op = clang::dyn_cast<clang::BinaryOperator>(current)) {
             const auto opcode = bin_op->getOpcode();
-            if (opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
-                || opcode == clang::BO_RemAssign) {
+            if (is_division_operator(opcode)) {
                 markers.push_back(SinkMarker{.kind = "div0", .target = std::nullopt});
             }
+            if (is_shift_operator(opcode) && bin_op->getType()->isIntegerType()) {
+                markers.push_back(SinkMarker{.kind = "shift", .target = std::nullopt});
+            }
+            if (is_signed_overflow_operator(bin_op)) {
+                markers.push_back(SinkMarker{.kind = "signed_overflow", .target = std::nullopt});
+            }
+        } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
+            if (unary_op->getOpcode() == clang::UO_Deref) {
+                auto target = extract_pointer_target_label(unary_op->getSubExpr());
+                markers.push_back(SinkMarker{.kind = "null", .target = std::move(target)});
+            }
+            if (is_signed_overflow_operator(unary_op)) {
+                markers.push_back(SinkMarker{.kind = "signed_overflow", .target = std::nullopt});
+            }
+        } else if (const auto* member_expr = clang::dyn_cast<clang::MemberExpr>(current)) {
+            if (member_expr->isArrow()) {
+                auto target = extract_pointer_target_label(member_expr->getBase());
+                markers.push_back(SinkMarker{.kind = "null", .target = std::move(target)});
+            }
+        } else if (const auto* array_sub = clang::dyn_cast<clang::ArraySubscriptExpr>(current)) {
+            auto target = extract_pointer_target_label(array_sub->getBase());
+            markers.push_back(SinkMarker{.kind = "oob", .target = std::move(target)});
+        } else if (const auto* op_call = clang::dyn_cast<clang::CXXOperatorCallExpr>(current)) {
+            if (op_call->getOperator() == clang::OO_Subscript && op_call->getNumArgs() > 0) {
+                auto target = extract_pointer_target_label(op_call->getArg(0));
+                markers.push_back(SinkMarker{.kind = "oob", .target = std::move(target)});
+            }
+        } else if (const auto* delete_expr = clang::dyn_cast<clang::CXXDeleteExpr>(current)) {
+            std::string target = describe_heap_target(delete_expr->getArgument());
+            markers.push_back(SinkMarker{.kind = "double_free", .target = target});
+            markers.push_back(SinkMarker{.kind = "invalid_free", .target = std::move(target)});
         } else if (const auto* call_expr = clang::dyn_cast<clang::CallExpr>(current)) {
             const auto* callee = call_expr->getDirectCallee();
             if (callee != nullptr && callee->getNameAsString() == "sappp_sink") {
@@ -869,13 +1055,23 @@ std::vector<SinkMarker> detect_sink_markers(const clang::Stmt* stmt)
                             SinkMarker{.kind = std::move(*kind), .target = std::move(target)});
                     }
                 }
+            } else if (callee != nullptr) {
+                const auto name = callee->getQualifiedNameAsString();
+                if (name == "free" || name.ends_with("::free")) {
+                    std::string target = "heap";
+                    if (call_expr->getNumArgs() > 0) {
+                        target = describe_heap_target(call_expr->getArg(0));
+                    }
+                    markers.push_back(SinkMarker{.kind = "double_free", .target = target});
+                    markers.push_back(
+                        SinkMarker{.kind = "invalid_free", .target = std::move(target)});
+                }
             }
-        } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
-            if (unary_op->getOpcode() == clang::UO_Deref) {
-                markers.push_back(SinkMarker{.kind = "null", .target = std::nullopt});
+        } else if (const auto* cast_expr = clang::dyn_cast<clang::ExplicitCastExpr>(current)) {
+            if (is_misaligned_cast(cast_expr)) {
+                auto target = extract_pointer_target_label(cast_expr->getSubExpr());
+                markers.push_back(SinkMarker{.kind = "misaligned", .target = std::move(target)});
             }
-        } else if (clang::isa<clang::ArraySubscriptExpr>(current)) {
-            markers.push_back(SinkMarker{.kind = "oob", .target = std::nullopt});
         }
 
         for (const auto* child : current->children()) {
