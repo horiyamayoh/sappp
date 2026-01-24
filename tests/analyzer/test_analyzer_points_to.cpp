@@ -171,7 +171,9 @@ TEST(AnalyzerPointsToTest, PointsToSimpleResolvesNullDeref)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_points_to();

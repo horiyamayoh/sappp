@@ -503,7 +503,9 @@ TEST(AnalyzerContractTest, AddsContractRefsAndKeepsUnknownDetails)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir();
@@ -549,7 +551,9 @@ TEST(AnalyzerContractTest, MissingContractProducesUnknownCode)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir();
@@ -575,7 +579,9 @@ TEST(AnalyzerContractTest, UseAfterLifetimeProducesBug)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_lifetime();
@@ -606,7 +612,9 @@ TEST(AnalyzerContractTest, UseAfterLifetimeWithDtorProducesBug)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_lifetime_dtor();
@@ -637,7 +645,9 @@ TEST(AnalyzerContractTest, UseAfterLifetimeAfterMoveIsUnknown)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_lifetime_move();
@@ -662,7 +672,9 @@ TEST(AnalyzerContractTest, DoubleFreePoProducesBug)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_heap_double_free();
@@ -693,7 +705,9 @@ TEST(AnalyzerContractTest, InvalidFreePoProducesBug)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_heap_invalid_free();
@@ -724,7 +738,9 @@ TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir();
@@ -840,7 +856,9 @@ TEST(AnalyzerContractTest, VCallMissingContractProducesUnknownCode)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     auto nir = make_nir_with_vcall("usr::vcall_target");
