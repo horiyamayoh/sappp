@@ -357,6 +357,288 @@ struct IrAnchor
     return std::string("predicate");
 }
 
+enum class LifetimeValue {
+    kAlive,
+    kDead,
+    kMaybe,
+};
+
+struct LifetimeState
+{
+    std::map<std::string, LifetimeValue> values;
+
+    LifetimeState()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : values()
+    {}
+};
+
+[[nodiscard]] LifetimeValue merge_lifetime_value(LifetimeValue a, LifetimeValue b)
+{
+    if (a == b) {
+        return a;
+    }
+    return LifetimeValue::kMaybe;
+}
+
+[[nodiscard]] LifetimeState merge_lifetime_states(const LifetimeState& a, const LifetimeState& b)
+{
+    LifetimeState result;
+    for (const auto& [key, value] : a.values) {
+        LifetimeValue other = LifetimeValue::kMaybe;
+        auto it = b.values.find(key);
+        if (it != b.values.end()) {
+            other = it->second;
+        }
+        result.values.emplace(key, merge_lifetime_value(value, other));
+    }
+    for (const auto& [key, value] : b.values) {
+        if (result.values.contains(key)) {
+            continue;
+        }
+        result.values.emplace(key, merge_lifetime_value(LifetimeValue::kMaybe, value));
+    }
+    return result;
+}
+
+[[nodiscard]] std::optional<std::string>
+extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readability-function-size)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.empty()) {
+        return std::nullopt;
+    }
+    const auto& first = args.at(0);
+    if (!first.is_string()) {
+        return std::nullopt;
+    }
+    return first.get<std::string>();
+}
+
+void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
+{
+    if (!inst.contains("op") || !inst.at("op").is_string()) {
+        return;
+    }
+    const auto& op = inst.at("op").get_ref<const std::string&>();
+    auto label = extract_first_string_arg(inst);
+    if (!label.has_value()) {
+        return;
+    }
+    if (op == "lifetime.begin") {
+        state.values[*label] = LifetimeValue::kAlive;
+    } else if (op == "lifetime.end" || op == "dtor") {
+        state.values[*label] = LifetimeValue::kDead;
+    }
+}
+
+struct FunctionLifetimeAnalysis
+{
+    std::string function_uid;
+    std::string entry_block;
+    std::map<std::string, const nlohmann::json*> blocks;
+    std::vector<std::string> block_order;
+    std::map<std::string, std::vector<std::string>> predecessors;
+    std::map<std::string, LifetimeState> in_states;
+    std::map<std::string, LifetimeState> out_states;
+
+    // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
+    FunctionLifetimeAnalysis()
+        : function_uid()
+        , entry_block()
+        , blocks()
+        , block_order()
+        , predecessors()
+        , in_states()
+        , out_states()
+    {}
+    // NOLINTEND(readability-redundant-member-init)
+};
+
+struct LifetimeAnalysisCache
+{
+    std::map<std::string, FunctionLifetimeAnalysis> functions;
+
+    LifetimeAnalysisCache()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : functions()
+    {}
+};
+
+[[nodiscard]] LifetimeState merge_predecessor_states(const FunctionLifetimeAnalysis& analysis,
+                                                     std::string_view block_id)
+{
+    auto pred_it = analysis.predecessors.find(std::string(block_id));
+    if (pred_it == analysis.predecessors.end() || pred_it->second.empty()) {
+        return LifetimeState{};
+    }
+
+    bool first = true;
+    LifetimeState merged;
+    for (const auto& pred : pred_it->second) {
+        auto out_it = analysis.out_states.find(pred);
+        if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_lifetime_states(merged, out_it->second);
+    }
+
+    if (first) {
+        return LifetimeState{};
+    }
+    return merged;
+}
+
+[[nodiscard]] LifetimeState apply_block_transfer(const LifetimeState& in_state,
+                                                 const nlohmann::json& block)
+{
+    LifetimeState state = in_state;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return state;
+    }
+    for (const auto& inst : block.at("insts")) {
+        apply_lifetime_effect(inst, state);
+    }
+    return state;
+}
+
+void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
+{
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto& block_id : analysis.block_order) {
+            LifetimeState in_state = merge_predecessor_states(analysis, block_id);
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
+                analysis.in_states[block_id] = in_state;
+                changed = true;
+            }
+
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            LifetimeState out_state = apply_block_transfer(in_state, *block_it->second);
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
+                analysis.out_states[block_id] = out_state;
+                changed = true;
+            }
+        }
+    }
+}
+
+[[nodiscard]] std::optional<LifetimeState> state_at_anchor(const FunctionLifetimeAnalysis& analysis,
+                                                           const IrAnchor& anchor)
+{
+    auto block_it = analysis.blocks.find(anchor.block_id);
+    if (block_it == analysis.blocks.end()) {
+        return std::nullopt;
+    }
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    LifetimeState state;
+    if (in_it != analysis.in_states.end()) {
+        state = in_it->second;
+    }
+    const nlohmann::json& block = *block_it->second;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return std::nullopt;
+    }
+    for (const auto& inst : block.at("insts")) {
+        if (inst.contains("id") && inst.at("id").is_string()
+            && inst.at("id").get<std::string>() == anchor.inst_id) {
+            return state;
+        }
+        apply_lifetime_effect(inst, state);
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] LifetimeAnalysisCache
+build_lifetime_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readability-function-size)
+{
+    LifetimeAnalysisCache cache;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return cache;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        FunctionLifetimeAnalysis analysis;
+        analysis.function_uid = func.at("function_uid").get<std::string>();
+        if (cfg.contains("entry") && cfg.at("entry").is_string()) {
+            analysis.entry_block = cfg.at("entry").get<std::string>();
+        }
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()) {
+                continue;
+            }
+            std::string block_id = block.at("id").get<std::string>();
+            analysis.block_order.push_back(block_id);
+            analysis.blocks.emplace(block_id, &block);
+            analysis.in_states.emplace(block_id, LifetimeState{});
+            analysis.out_states.emplace(block_id, LifetimeState{});
+        }
+
+        if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+            for (const auto& edge : cfg.at("edges")) {
+                if (!edge.is_object()) {
+                    continue;
+                }
+                if (!edge.contains("from") || !edge.at("from").is_string()) {
+                    continue;
+                }
+                if (!edge.contains("to") || !edge.at("to").is_string()) {
+                    continue;
+                }
+                std::string from = edge.at("from").get<std::string>();
+                std::string to = edge.at("to").get<std::string>();
+                analysis.predecessors[to].push_back(std::move(from));
+            }
+        }
+
+        for (auto& [block_id, preds] : analysis.predecessors) {
+            (void)block_id;
+            std::ranges::stable_sort(preds);
+            auto unique_end = std::ranges::unique(preds);
+            preds.erase(unique_end.begin(), unique_end.end());
+        }
+
+        if (!analysis.block_order.empty()) {
+            if (analysis.entry_block.empty()) {
+                analysis.entry_block = analysis.block_order.front();
+            }
+            compute_lifetime_fixpoint(analysis);
+            cache.functions.emplace(analysis.function_uid, std::move(analysis));
+        }
+    }
+
+    return cache;
+}
+
 [[nodiscard]] nlohmann::json
 make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const IrAnchor& anchor)
 {
@@ -668,6 +950,16 @@ struct UnknownDetails
                           .refinement_domain = "unknown"};
 }
 
+[[nodiscard]] UnknownDetails build_use_after_lifetime_unknown_details(std::string_view notes)
+{
+    return UnknownDetails{.code = "LifetimeStateUnknown",
+                          .missing_notes = std::string(notes),
+                          .refinement_message =
+                              "Provide lifetime target context or refine lifetime tracking.",
+                          .refinement_action = "refine-lifetime",
+                          .refinement_domain = "lifetime"};
+}
+
 [[nodiscard]] sappp::Result<nlohmann::json>
 build_unknown_entry(const nlohmann::json& po,
                     std::string_view po_id,
@@ -779,6 +1071,7 @@ struct PoProcessingContext
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
     const ContractIndex* contract_index = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
+    const LifetimeAnalysisCache* lifetime_cache = nullptr;
     std::string_view tu_id;
     const sappp::VersionTriple* versions = nullptr;
 };
@@ -985,7 +1278,106 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
     return std::optional<bool>();
 }
 
-[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po)
+[[nodiscard]] std::optional<std::string>
+extract_lifetime_target(const nlohmann::json& predicate_expr)
+{
+    if (!predicate_expr.contains("op") || !predicate_expr.at("op").is_string()) {
+        return std::nullopt;
+    }
+    if (!predicate_expr.contains("args") || !predicate_expr.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = predicate_expr.at("args");
+    const auto& op = predicate_expr.at("op").get_ref<const std::string&>();
+    if (op == "sink.marker") {
+        if (args.size() >= 2 && args.at(1).is_string()) {
+            return args.at(1).get<std::string>();
+        }
+        return std::nullopt;
+    }
+    if ((op == "lifetime.begin" || op == "lifetime.end") && args.size() == 1
+        && args.at(0).is_string()) {
+        return args.at(0).get<std::string>();
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] sappp::Result<PoDecision>
+decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    const nlohmann::json& po,
+    const nlohmann::json& predicate_expr,
+    const PoProcessingContext& context)
+{
+    PoDecision decision;
+    auto target = extract_lifetime_target(predicate_expr);
+    if (!target) {
+        decision.is_unknown = true;
+        decision.unknown_details = build_use_after_lifetime_unknown_details(
+            "Lifetime target is missing from the PO predicate.");
+        return decision;
+    }
+    if (context.lifetime_cache == nullptr || context.function_uid_map == nullptr) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_use_after_lifetime_unknown_details("Lifetime analysis context unavailable.");
+        return decision;
+    }
+
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+
+    auto analysis_it = context.lifetime_cache->functions.find(*function_uid);
+    if (analysis_it == context.lifetime_cache->functions.end()) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_use_after_lifetime_unknown_details("Lifetime analysis missing for function.");
+        return decision;
+    }
+
+    auto state = state_at_anchor(analysis_it->second, *anchor);
+    if (!state) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_use_after_lifetime_unknown_details("Lifetime analysis missing at anchor.");
+        return decision;
+    }
+
+    auto state_it = state->values.find(*target);
+    if (state_it == state->values.end()) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_use_after_lifetime_unknown_details("Lifetime target is not tracked at anchor.");
+        return decision;
+    }
+
+    switch (state_it->second) {
+        case LifetimeValue::kDead:
+            decision.is_bug = true;
+            return decision;
+        case LifetimeValue::kAlive:
+            decision.is_safe = true;
+            return decision;
+        case LifetimeValue::kMaybe:
+            decision.is_unknown = true;
+            decision.unknown_details = build_use_after_lifetime_unknown_details(
+                "Lifetime state is indeterminate at this point.");
+            return decision;
+        default:
+            decision.is_unknown = true;
+            decision.unknown_details =
+                build_use_after_lifetime_unknown_details("Lifetime state is indeterminate.");
+            return decision;
+    }
+}
+
+[[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
+                                                  const PoProcessingContext& context)
 {
     auto po_kind = require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
     if (!po_kind) {
@@ -1019,6 +1411,14 @@ extract_predicate_boolean(const nlohmann::json& predicate_expr)
         return decision;
     }
 
+    if (*po_kind == "UseAfterLifetime") {
+        auto decision = decide_use_after_lifetime(po, *predicate_expr, context);
+        if (!decision) {
+            return std::unexpected(decision.error());
+        }
+        return *decision;
+    }
+
     if (op == "sink.marker") {
         if (*po_kind == "UB.OutOfBounds" || *po_kind == "UB.NullDeref") {
             PoDecision decision;
@@ -1046,7 +1446,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
 [[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
                                                            PoProcessingContext& context)
 {
-    auto decision = decide_po(po);
+    auto decision = decide_po(po, context);
     if (!decision) {
         return std::unexpected(decision.error());
     }
@@ -1164,6 +1564,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!contract_index) {
         return std::unexpected(contract_index.error());
     }
+    const auto lifetime_cache = build_lifetime_analysis_cache(nir_json);
     std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::vector<nlohmann::json> unknowns;
@@ -1173,6 +1574,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .function_uid_map = &function_uid_map,
                                 .contract_index = &(*contract_index),
                                 .contract_ref_cache = &contract_ref_cache,
+                                .lifetime_cache = &lifetime_cache,
                                 .tu_id = *tu_id,
                                 .versions = &m_config.versions};
 

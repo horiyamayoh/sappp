@@ -1,7 +1,7 @@
 // Litmus test: Use-after-lifetime
-// Expected: UNKNOWN (UseAfterLifetime)
+// Expected: BUG (UseAfterLifetime)
 
-void sappp_sink(const char* kind);
+void sappp_sink(const char* kind, const char* target);
 
 int main()
 {
@@ -10,6 +10,6 @@ int main()
         int use_after_lifetime = 42;
         ptr = &use_after_lifetime;
     }
-    sappp_sink("use-after-lifetime");
+    sappp_sink("use-after-lifetime", "use_after_lifetime");
     return *ptr;
 }
