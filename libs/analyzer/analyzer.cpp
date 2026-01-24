@@ -441,6 +441,7 @@ struct ContractMatchSummary
 {
     std::vector<const ContractInfo*> contracts;
     bool has_pre = false;
+    bool has_concurrency = false;
 
     ContractMatchSummary()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
@@ -471,6 +472,7 @@ match_contracts_for_po(const nlohmann::json& po, const ContractIndex& contract_i
     for (const auto& contract : it->second) {
         summary.contracts.push_back(&contract);
         summary.has_pre = summary.has_pre || contract.has_pre;
+        summary.has_concurrency = summary.has_concurrency || contract.has_concurrency;
     }
     return summary;
 }
@@ -685,6 +687,17 @@ struct LifetimeAnalysisCache
         : functions()
     {}
 };
+
+struct FunctionFeatureFlags
+{
+    bool has_exception_flow = false;
+    bool has_vcall = false;
+    bool has_atomic = false;
+    bool has_thread = false;
+    bool has_sync = false;
+};
+
+using FunctionFeatureCache = std::map<std::string, FunctionFeatureFlags>;
 
 [[nodiscard]] LifetimeState merge_predecessor_states(const FunctionLifetimeAnalysis& analysis,
                                                      std::string_view block_id)
@@ -1230,6 +1243,109 @@ build_points_to_analysis_cache(const nlohmann::json& nir_json)  // NOLINT(readab
     return cache;
 }
 
+[[nodiscard]] bool is_exception_op(std::string_view op)
+{
+    constexpr std::array<std::string_view, 4> kExceptionOps{
+        {"invoke", "throw", "landingpad", "resume"}
+    };
+    return std::ranges::find(kExceptionOps, op) != kExceptionOps.end();
+}
+
+[[nodiscard]] bool is_thread_op(std::string_view op)
+{
+    constexpr std::array<std::string_view, 2> kThreadOps{
+        {"thread.spawn", "thread.join"}
+    };
+    return std::ranges::find(kThreadOps, op) != kThreadOps.end();
+}
+
+[[nodiscard]] bool is_atomic_op(std::string_view op)
+{
+    return op == "fence" || op.starts_with("atomic.");
+}
+
+void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
+{
+    if (is_exception_op(op)) {
+        flags.has_exception_flow = true;
+    }
+    if (op == "vcall") {
+        flags.has_vcall = true;
+    }
+    if (is_atomic_op(op)) {
+        flags.has_atomic = true;
+    }
+    if (is_thread_op(op)) {
+        flags.has_thread = true;
+    }
+    if (op == "sync.event") {
+        flags.has_sync = true;
+    }
+}
+
+[[nodiscard]] FunctionFeatureCache build_function_feature_cache(const nlohmann::json& nir_json)
+{
+    FunctionFeatureCache cache;
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return cache;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        const std::string function_uid = func.at("function_uid").get<std::string>();
+        FunctionFeatureFlags flags;
+
+        if (func.contains("tables") && func.at("tables").is_object()) {
+            const auto& tables = func.at("tables");
+            if (tables.contains("vcall_candidates") && tables.at("vcall_candidates").is_array()
+                && !tables.at("vcall_candidates").empty()) {
+                flags.has_vcall = true;
+            }
+        }
+
+        if (func.contains("cfg") && func.at("cfg").is_object()) {
+            const auto& cfg = func.at("cfg");
+            if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+                for (const auto& edge : cfg.at("edges")) {
+                    if (!edge.is_object() || !edge.contains("kind")
+                        || !edge.at("kind").is_string()) {
+                        continue;
+                    }
+                    const auto& kind = edge.at("kind").get_ref<const std::string&>();
+                    if (kind == "exception") {
+                        flags.has_exception_flow = true;
+                    }
+                }
+            }
+            if (cfg.contains("blocks") && cfg.at("blocks").is_array()) {
+                for (const auto& block : cfg.at("blocks")) {
+                    if (!block.is_object() || !block.contains("insts")
+                        || !block.at("insts").is_array()) {
+                        continue;
+                    }
+                    for (const auto& inst : block.at("insts")) {
+                        if (!inst.is_object() || !inst.contains("op")
+                            || !inst.at("op").is_string()) {
+                            continue;
+                        }
+                        const auto& op = inst.at("op").get_ref<const std::string&>();
+                        update_feature_flags(op, flags);
+                    }
+                }
+            }
+        }
+
+        cache.emplace(function_uid, flags);
+    }
+
+    return cache;
+}
+
 [[nodiscard]] nlohmann::json
 make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const IrAnchor& anchor)
 {
@@ -1478,6 +1594,19 @@ struct UnknownDetails
     return joined;
 }
 
+[[nodiscard]] UnknownDetails make_unknown_details(std::string_view code,
+                                                  std::string_view missing_notes,
+                                                  std::string_view refinement_message,
+                                                  std::string_view refinement_action,
+                                                  std::string_view refinement_domain)
+{
+    return UnknownDetails{.code = std::string(code),
+                          .missing_notes = std::string(missing_notes),
+                          .refinement_message = std::string(refinement_message),
+                          .refinement_action = std::string(refinement_action),
+                          .refinement_domain = std::string(refinement_domain)};
+}
+
 [[nodiscard]] UnknownDetails build_missing_contract_details(std::string_view clause)
 {
     std::string code = std::string("MissingContract.") + std::string(clause);
@@ -1490,6 +1619,51 @@ struct UnknownDetails
                           .refinement_message = std::move(message),
                           .refinement_action = "add-contract",
                           .refinement_domain = "contract"};
+}
+
+[[nodiscard]] UnknownDetails build_exception_flow_unknown_details()
+{
+    return make_unknown_details("ExceptionFlowConservative",
+                                "Exception flow detected; analysis does not model exceptions.",
+                                "Model exception flow to discharge this PO.",
+                                "refine-exception",
+                                "exception");
+}
+
+[[nodiscard]] UnknownDetails build_virtual_dispatch_unknown_details()
+{
+    return make_unknown_details("VirtualDispatchUnknown",
+                                "Virtual call requires dispatch resolution.",
+                                "Resolve virtual dispatch targets for this PO.",
+                                "resolve-vcall",
+                                "dispatch");
+}
+
+[[nodiscard]] UnknownDetails build_atomic_order_unknown_details()
+{
+    return make_unknown_details("AtomicOrderUnknown",
+                                "Atomic ordering is not modeled.",
+                                "Model atomic order and happens-before relations.",
+                                "refine-atomic-order",
+                                "concurrency");
+}
+
+[[nodiscard]] UnknownDetails build_sync_contract_missing_unknown_details()
+{
+    return make_unknown_details("SyncContractMissing",
+                                "Synchronization event lacks a concurrency contract.",
+                                "Add concurrency contract for the synchronization primitive.",
+                                "add-contract",
+                                "concurrency");
+}
+
+[[nodiscard]] UnknownDetails build_concurrency_unsupported_unknown_details()
+{
+    return make_unknown_details("ConcurrencyUnsupported",
+                                "Concurrency events detected; analysis is not implemented.",
+                                "Implement concurrency analysis for this PO.",
+                                "refine-concurrency",
+                                "concurrency");
 }
 
 [[nodiscard]] UnknownDetails
@@ -1597,6 +1771,42 @@ build_vcall_missing_contract_details(const std::vector<std::string>& missing_met
                           .refinement_message = "Extend analyzer support for this PO kind.",
                           .refinement_action = "extend-analyzer",
                           .refinement_domain = "unknown"};
+}
+
+[[nodiscard]] std::optional<UnknownDetails>
+build_feature_unknown_details(const FunctionFeatureFlags& features,
+                              const ContractMatchSummary& contract_match)
+{
+    if (features.has_sync && !contract_match.has_concurrency) {
+        return build_sync_contract_missing_unknown_details();
+    }
+    if (features.has_atomic) {
+        return build_atomic_order_unknown_details();
+    }
+    if (features.has_thread || features.has_sync) {
+        return build_concurrency_unsupported_unknown_details();
+    }
+    if (features.has_exception_flow) {
+        return build_exception_flow_unknown_details();
+    }
+    if (features.has_vcall) {
+        return build_virtual_dispatch_unknown_details();
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool allow_feature_override(std::string_view unknown_code)
+{
+    if (unknown_code.starts_with("Lifetime")) {
+        return false;
+    }
+    if (unknown_code.starts_with("MissingContract.")) {
+        return false;
+    }
+    if (unknown_code.starts_with("VirtualCall.")) {
+        return false;
+    }
+    return true;
 }
 
 [[nodiscard]] UnknownDetails build_use_after_lifetime_unknown_details(std::string_view notes)
@@ -1718,6 +1928,7 @@ struct PoProcessingContext
 {
     sappp::certstore::CertStore* cert_store = nullptr;
     const std::unordered_map<std::string, std::string>* function_uid_map = nullptr;
+    const FunctionFeatureCache* feature_cache = nullptr;
     const ContractIndex* contract_index = nullptr;
     const VCallSummaryMap* vcall_summaries = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
@@ -2353,6 +2564,15 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     PoProcessingOutput output{.po_id = base->po_id};
     if (decision->is_unknown || (!base->is_bug && !base->is_safe)) {
         UnknownDetails details = decision->unknown_details;
+        if (context.feature_cache != nullptr && allow_feature_override(details.code)) {
+            auto it = context.feature_cache->find(base->function_uid);
+            if (it != context.feature_cache->end()) {
+                if (auto feature_details =
+                        build_feature_unknown_details(it->second, *contract_match)) {
+                    details = std::move(*feature_details);
+                }
+            }
+        }
         if ((contract_match->contracts.empty() || !contract_match->has_pre)
             && !details.code.starts_with("VirtualCall.")) {
             details = build_missing_contract_details("Pre");
@@ -2443,6 +2663,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!points_to_cache) {
         return std::unexpected(points_to_cache.error());
     }
+    const auto feature_cache = build_function_feature_cache(nir_json);
     std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::vector<nlohmann::json> unknowns;
@@ -2450,6 +2671,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
 
     PoProcessingContext context{.cert_store = &cert_store,
                                 .function_uid_map = &function_uid_map,
+                                .feature_cache = &feature_cache,
                                 .contract_index = &(*contract_index),
                                 .vcall_summaries = &vcall_summaries,
                                 .contract_ref_cache = &contract_ref_cache,
