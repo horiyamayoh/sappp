@@ -534,6 +534,22 @@ std::optional<std::string> extract_sink_target_label(const clang::Expr* expr)
     return extract_decl_ref_name(expr);
 }
 
+std::optional<std::string> extract_lifetime_label(const clang::Expr* expr)
+{
+    if (auto label = extract_decl_ref_name(expr)) {
+        return label;
+    }
+    const auto* stripped = strip_parens(expr);
+    if (const auto* materialized =
+            clang::dyn_cast_or_null<clang::MaterializeTemporaryExpr>(stripped)) {
+        return describe_temporary(materialized->getSubExpr());
+    }
+    if (const auto* bind_temp = clang::dyn_cast_or_null<clang::CXXBindTemporaryExpr>(stripped)) {
+        return describe_temporary(bind_temp->getSubExpr());
+    }
+    return std::nullopt;
+}
+
 std::optional<bool> extract_bool_literal(const clang::Expr* expr)
 {
     const auto* stripped = strip_parens(expr);
@@ -1213,10 +1229,17 @@ void append_ctor_instructions_for_stmt(const clang::Stmt* stmt,
         }
         const auto* ctor_decl = ctor_expr->getConstructor();
         const bool is_move = ctor_decl != nullptr && ctor_decl->isMoveConstructor();
+        std::vector<nlohmann::json> args;
+        args.push_back(nlohmann::json(describe_ctor(ctor_decl)));
+        if (is_move && ctor_expr->getNumArgs() > 0) {
+            if (auto label = extract_lifetime_label(ctor_expr->getArg(0))) {
+                args.push_back(nlohmann::json(*label));
+            }
+        }
         append_simple_instruction(context,
                                   inst_index,
                                   is_move ? "move" : "ctor",
-                                  {nlohmann::json(describe_ctor(ctor_decl))},
+                                  std::move(args),
                                   make_location({.source_manager = context.source_manager,
                                                  .loc = ctor_expr->getBeginLoc()}));
     });

@@ -588,7 +588,7 @@ struct TraceStepInfo
         inst_index;  // NOLINT(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
                      // - required for -Weffc++.
     std::optional<std::string> edge_kind;
-    bool is_entry_block;
+    bool is_entry_block = false;
 
     // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
     TraceStepInfo()
@@ -604,8 +604,6 @@ struct TraceStepInfo
         , inst_index(0)
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         , edge_kind()
-        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
-        , is_entry_block(false)
     {}
 
     TraceStepInfo(const TraceStepInfo&) = default;
@@ -707,6 +705,7 @@ build_trace_step_info(const NirIndex& nir_index,
 }
 
 [[nodiscard]] std::optional<ValidationError>
+// NOLINTNEXTLINE(readability-function-size) - Trace transition validation.
 validate_trace_transition(const TraceStepInfo& previous,
                           const TraceStepInfo& current,
                           std::vector<CallFrame>& call_stack)

@@ -3,13 +3,19 @@
 
 void sappp_sink(const char* kind, const void* target);
 
+struct Widget
+{
+    int value = 0;
+    ~Widget() {}
+};
+
 int main()
 {
-    int* ptr = nullptr;
+    Widget* ptr = nullptr;
     {
-        int use_after_lifetime = 42;
+        Widget use_after_lifetime{42};
         ptr = &use_after_lifetime;
     }
     sappp_sink("use-after-lifetime", "use_after_lifetime");
-    return *ptr;
+    return ptr->value;
 }

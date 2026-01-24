@@ -75,6 +75,79 @@ nlohmann::json make_nir_with_lifetime()
     };
 }
 
+nlohmann::json make_nir_with_lifetime_dtor()
+{
+    nlohmann::json block = {
+        {   "id",                                                    "B1"       },
+        {"insts",
+         nlohmann::json::array(
+         {nlohmann::json{{"id", "I0"},
+         {"op", "lifetime.begin"},
+         {"args", nlohmann::json::array({"use_after_lifetime"})}},
+         nlohmann::json{{"id", "I1"},
+         {"op", "dtor"},
+         {"args", nlohmann::json::array({"use_after_lifetime"})}},
+         nlohmann::json{
+         {"id", "I2"},
+         {"op", "sink.marker"},
+         {"args",
+         nlohmann::json::array({"use-after-lifetime", "use_after_lifetime"})}}})}
+    };
+
+    nlohmann::json func = {
+        {"function_uid","usr::foo"                        },
+        {"mangled_name",            "_Z3foov"},
+        {         "cfg",
+         {{"entry", "B1"},
+         {"blocks", nlohmann::json::array({block})},
+         {"edges", nlohmann::json::array()}} }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                "nir.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {     "functions",                           nlohmann::json::array({func})}
+    };
+}
+
+nlohmann::json make_nir_with_lifetime_move()
+{
+    nlohmann::json block = {
+        {   "id",                                                    "B1"        },
+        {"insts",
+         nlohmann::json::array(
+         {nlohmann::json{{"id", "I0"},
+         {"op", "lifetime.begin"},
+         {"args", nlohmann::json::array({"moved_from"})}},
+         nlohmann::json{{"id", "I1"},
+         {"op", "move"},
+         {"args", nlohmann::json::array({"Widget::Widget", "moved_from"})}},
+         nlohmann::json{
+         {"id", "I2"},
+         {"op", "sink.marker"},
+         {"args", nlohmann::json::array({"use-after-lifetime", "moved_from"})}}})}
+    };
+
+    nlohmann::json func = {
+        {"function_uid","usr::foo"                        },
+        {"mangled_name",            "_Z3foov"},
+        {         "cfg",
+         {{"entry", "B1"},
+         {"blocks", nlohmann::json::array({block})},
+         {"edges", nlohmann::json::array()}} }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                "nir.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {     "functions",                           nlohmann::json::array({func})}
+    };
+}
+
 nlohmann::json make_nir_with_heap_double_free()
 {
     nlohmann::json block = {
@@ -292,25 +365,26 @@ nlohmann::json make_po_list_for_function(std::string_view function_usr,
     };
 }
 
-nlohmann::json make_use_after_lifetime_po_list()
+nlohmann::json make_use_after_lifetime_po_list_for_target(std::string_view target,
+                                                          std::string_view inst_id)
 {
     nlohmann::json po = {
-        {               "po_id",            make_sha256('b')                                },
-        {             "po_kind",                                          "UseAfterLifetime"},
-        {     "profile_version",                                            "safety.core.v1"},
-        {   "semantics_version",                                                    "sem.v1"},
-        {"proof_system_version",                                                  "proof.v1"},
+        {               "po_id",                      make_sha256('b')                                },
+        {             "po_kind",                                                    "UseAfterLifetime"},
+        {     "profile_version",                                                      "safety.core.v1"},
+        {   "semantics_version",                                                              "sem.v1"},
+        {"proof_system_version",                                                            "proof.v1"},
         {       "repo_identity",
-         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}     },
-        {            "function", nlohmann::json{{"usr", "usr::foo"}, {"mangled", "_Z3foov"}}},
-        {              "anchor",       nlohmann::json{{"block_id", "B1"}, {"inst_id", "I2"}}},
+         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}               },
+        {            "function",           nlohmann::json{{"usr", "usr::foo"}, {"mangled", "_Z3foov"}}},
+        {              "anchor", nlohmann::json{{"block_id", "B1"}, {"inst_id", std::string(inst_id)}}},
         {           "predicate",
          nlohmann::json{
          {"expr",
          nlohmann::json{
          {"op", "sink.marker"},
-         {"args", nlohmann::json::array({"UseAfterLifetime", "use_after_lifetime"})}}},
-         {"pretty", "use_after_lifetime"}}                                                  }
+         {"args", nlohmann::json::array({"UseAfterLifetime", std::string(target)})}}},
+         {"pretty", "use_after_lifetime"}}                                                            }
     };
 
     return nlohmann::json{
@@ -320,6 +394,11 @@ nlohmann::json make_use_after_lifetime_po_list()
         {         "tu_id",                                        make_sha256('a')},
         {           "pos",                             nlohmann::json::array({po})}
     };
+}
+
+nlohmann::json make_use_after_lifetime_po_list()
+{
+    return make_use_after_lifetime_po_list_for_target("use_after_lifetime", "I2");
 }
 
 nlohmann::json make_contract_snapshot_for_target(std::string_view target_usr)
@@ -481,6 +560,62 @@ TEST(AnalyzerContractTest, UseAfterLifetimeProducesBug)
     auto root_cert = cert_store.get(root_hash);
     ASSERT_TRUE(root_cert);
     EXPECT_EQ(root_cert->at("result"), "BUG");
+}
+
+TEST(AnalyzerContractTest, UseAfterLifetimeWithDtorProducesBug)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_lifetime_dtor_bug");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    auto nir = make_nir_with_lifetime_dtor();
+    auto po_list = make_use_after_lifetime_po_list();
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
+    std::ifstream index_file(cert_dir / "index" / (make_sha256('b') + ".json"));
+    ASSERT_TRUE(index_file.is_open());
+    nlohmann::json index_json = nlohmann::json::parse(index_file);
+    std::string root_hash = index_json.at("root").get<std::string>();
+
+    auto root_cert = cert_store.get(root_hash);
+    ASSERT_TRUE(root_cert);
+    EXPECT_EQ(root_cert->at("result"), "BUG");
+}
+
+TEST(AnalyzerContractTest, UseAfterLifetimeAfterMoveIsUnknown)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_lifetime_move_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    auto nir = make_nir_with_lifetime_move();
+    auto po_list = make_use_after_lifetime_po_list_for_target("moved_from", "I2");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "LifetimeStateUnknown");
 }
 
 TEST(AnalyzerContractTest, DoubleFreePoProducesBug)
