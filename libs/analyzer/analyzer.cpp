@@ -256,13 +256,11 @@ resolve_function_uid(const std::unordered_map<std::string, std::string>& mapping
 struct ContractMatchSummary
 {
     std::vector<const ContractInfo*> contracts;
-    bool has_pre;
+    bool has_pre = false;
 
     ContractMatchSummary()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         : contracts()
-        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
-        , has_pre(false)
     {}
 };
 
