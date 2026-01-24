@@ -32,7 +32,8 @@ public:
     explicit Analyzer(AnalyzerConfig config);
 
     [[nodiscard]] sappp::Result<AnalyzeOutput> analyze(const nlohmann::json& nir_json,
-                                                       const nlohmann::json& po_list_json) const;
+                                                       const nlohmann::json& po_list_json,
+                                                       const nlohmann::json* specdb_snapshot) const;
 
 private:
     AnalyzerConfig m_config;

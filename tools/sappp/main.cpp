@@ -1557,6 +1557,7 @@ load_specdb_snapshot(const AnalyzeOptions& options,
     return static_cast<int>(ExitCode::kOk);
 }
 
+// NOLINTNEXTLINE(readability-function-size) - CLI orchestration keeps the flow together.
 [[nodiscard]] int run_analyze(const AnalyzeOptions& options)
 {
 #if !defined(SAPPP_HAS_CLANG_FRONTEND)
@@ -1627,10 +1628,17 @@ load_specdb_snapshot(const AnalyzeOptions& options,
         std::println(stderr, "Error: specdb snapshot failed: {}", write_result.error().message);
         return exit_code_for_error(write_result.error());
     }
+    auto specdb_snapshot_json = read_json_file(paths->specdb_snapshot_path);
+    if (!specdb_snapshot_json) {
+        std::println(stderr,
+                     "Error: specdb snapshot read failed: {}",
+                     specdb_snapshot_json.error().message);
+        return exit_code_for_error(specdb_snapshot_json.error());
+    }
     sappp::analyzer::Analyzer analyzer({.schema_dir = options.schema_dir,
                                         .certstore_dir = paths->certstore_dir.string(),
                                         .versions = options.versions});
-    auto analyzer_output = analyzer.analyze(result->nir, *po_list_result);
+    auto analyzer_output = analyzer.analyze(result->nir, *po_list_result, &*specdb_snapshot_json);
     if (!analyzer_output) {
         std::println(stderr, "Error: analyzer failed: {}", analyzer_output.error().message);
         return exit_code_for_error(analyzer_output.error());
