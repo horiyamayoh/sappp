@@ -221,9 +221,10 @@ TEST(PoGeneratorTest, SinkMarkerMapsUninitRead)
 TEST(PoGeneratorTest, LifetimeOpWithKindGeneratesPo)
 {
     std::filesystem::path source_path = write_temp_source("lifetime_use_after");
-    nlohmann::json nir = build_minimal_nir(source_path,
-                                           "lifetime.end",
-                                           nlohmann::json::array({"use-after-lifetime"}));
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "lifetime.end", nlohmann::json::array({"target"}));
+    nir.at("functions").at(0).at("cfg").at("blocks").at(0).at("insts").at(0)["kind"] =
+        "use-after-lifetime";
 
     PoGenerator generator;
     auto po_list_result = generator.generate(nir);
@@ -234,6 +235,24 @@ TEST(PoGeneratorTest, LifetimeOpWithKindGeneratesPo)
     const auto& po = po_list.at("pos").at(0);
     EXPECT_EQ(po.at("po_kind").get<std::string>(), "UseAfterLifetime");
     EXPECT_EQ(po.at("predicate").at("expr").at("op").get<std::string>(), "lifetime.end");
+    const auto& args = po.at("predicate").at("expr").at("args");
+    ASSERT_TRUE(args.is_array());
+    ASSERT_EQ(args.size(), 1U);
+    EXPECT_EQ(args.at(0).get<std::string>(), "target");
+}
+
+TEST(PoGeneratorTest, LifetimeOpWithoutKindIsIgnored)
+{
+    std::filesystem::path source_path = write_temp_source("lifetime_no_kind");
+    nlohmann::json nir =
+        build_minimal_nir(source_path, "lifetime.begin", nlohmann::json::array({"label"}));
+
+    PoGenerator generator;
+    auto po_list_result = generator.generate(nir);
+    ASSERT_TRUE(po_list_result);
+    const auto& po_list = *po_list_result;
+
+    EXPECT_TRUE(po_list.at("pos").empty());
 }
 
 }  // namespace sappp::po::tests

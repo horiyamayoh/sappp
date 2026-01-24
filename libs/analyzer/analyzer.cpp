@@ -60,14 +60,20 @@ struct VCallSummary
     std::vector<std::string> missing_contract_targets;
 
     VCallSummary()
-        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
-        : has_vcall(false)
-        , missing_candidate_set(false)
-        , empty_candidate_set(false)
-        , missing_candidate_ids()
-        , candidate_methods()
-        , candidate_contracts()
-        , missing_contract_targets()
+        // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
+        : has_vcall(false)  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
+        , missing_candidate_set(false)  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
+        , empty_candidate_set(false)  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , missing_candidate_ids()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , candidate_methods()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , candidate_contracts()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , missing_contract_targets()  // Weffc++ explicit init.
     {}
 };
 
@@ -248,6 +254,7 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
     return args.at(1).get<std::string>();
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Parse vcall candidate tables.
 [[nodiscard]] VCallCandidateSetMap collect_vcall_candidate_sets(const nlohmann::json& func)
 {
     VCallCandidateSetMap sets;
@@ -266,7 +273,7 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
         if (entry.contains("methods") && entry.at("methods").is_array()) {
             for (const auto& method : entry.at("methods")) {
                 if (method.is_string()) {
-                    methods.push_back(method.get<std::string>());
+                    methods.emplace_back(method.get<std::string>());
                 }
             }
         }
@@ -278,6 +285,7 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
     return sets;
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Summarize vcall candidates.
 [[nodiscard]] VCallSummaryMap build_vcall_summary_map(const nlohmann::json& nir_json,
                                                       const ContractIndex& contract_index)
 {
@@ -321,13 +329,13 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
                 auto candidate_id = extract_vcall_candidate_id(inst);
                 if (!candidate_id) {
                     summary.missing_candidate_set = true;
-                    summary.missing_candidate_ids.push_back("unknown");
+                    summary.missing_candidate_ids.emplace_back("unknown");
                     continue;
                 }
                 auto candidate_it = candidate_sets.find(*candidate_id);
                 if (candidate_it == candidate_sets.end()) {
                     summary.missing_candidate_set = true;
-                    summary.missing_candidate_ids.push_back(*candidate_id);
+                    summary.missing_candidate_ids.emplace_back(*candidate_id);
                     continue;
                 }
                 if (candidate_it->second.empty()) {
@@ -644,6 +652,23 @@ extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabil
     return first.get<std::string>();
 }
 
+[[nodiscard]] std::optional<std::string>
+extract_second_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readability-function-size)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.size() < 2) {
+        return std::nullopt;
+    }
+    const auto& second = args.at(1);
+    if (!second.is_string()) {
+        return std::nullopt;
+    }
+    return second.get<std::string>();
+}
+
 void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
 {
     if (!inst.contains("op") || !inst.at("op").is_string()) {
@@ -658,6 +683,11 @@ void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
         state.values[*label] = LifetimeValue::kAlive;
     } else if (op == "lifetime.end" || op == "dtor") {
         state.values[*label] = LifetimeValue::kDead;
+    } else if (op == "move") {
+        auto source_label = extract_second_string_arg(inst);
+        if (source_label.has_value()) {
+            state.values[*source_label] = LifetimeValue::kMaybe;
+        }
     }
 }
 
@@ -842,6 +872,7 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis)
     }
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Lifetime anchor scan.
 [[nodiscard]] std::optional<LifetimeState> state_at_anchor(const FunctionLifetimeAnalysis& analysis,
                                                            const IrAnchor& anchor)
 {
@@ -1003,10 +1034,11 @@ struct PointsToSet
     bool is_unknown = false;
     std::vector<std::string> targets;
 
-    // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
     PointsToSet()
-        : is_unknown(false)
-        , targets()
+        // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
+        : is_unknown(false)  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , targets()  // Weffc++ explicit init.
     {}
 
     PointsToSet(bool unknown, std::vector<std::string> targets_in)
@@ -1022,8 +1054,8 @@ struct PointsToState
     std::map<std::string, PointsToSet> values;
 
     PointsToState()
-        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
-        : values()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        : values()  // Weffc++ explicit init.
     {}
 
     bool operator==(const PointsToState&) const = default;
@@ -1034,10 +1066,11 @@ struct PointsToEffect
     std::string ptr;
     std::vector<std::string> targets;
 
-    // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
     PointsToEffect()
-        : ptr()
-        , targets()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        : ptr()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , targets()  // Weffc++ explicit init.
     {}
 };
 
@@ -1048,16 +1081,16 @@ struct PointsToEffect
     targets.erase(unique_end.begin(), targets.end());
 
     if (targets.size() > kMaxPointsToTargets) {
-        return PointsToSet(true, {});
+        return {true, {}};
     }
 
-    return PointsToSet(false, std::move(targets));
+    return {false, std::move(targets)};
 }
 
 [[nodiscard]] PointsToSet merge_points_to_sets(const PointsToSet& a, const PointsToSet& b)
 {
     if (a.is_unknown || b.is_unknown) {
-        return PointsToSet(true, {});
+        return {true, {}};
     }
 
     std::vector<std::string> merged = a.targets;
@@ -1070,7 +1103,7 @@ struct PointsToEffect
     PointsToState result;
 
     for (const auto& [ptr, set] : a.values) {
-        PointsToSet other = PointsToSet(true, {});
+        PointsToSet other{true, {}};
         auto it = b.values.find(ptr);
         if (it != b.values.end()) {
             other = it->second;
@@ -1082,7 +1115,7 @@ struct PointsToEffect
         if (result.values.contains(ptr)) {
             continue;
         }
-        PointsToSet other = PointsToSet(true, {});
+        PointsToSet other{true, {}};
         auto it = a.values.find(ptr);
         if (it != a.values.end()) {
             other = it->second;
@@ -1606,6 +1639,7 @@ heap_state_at_anchor(const FunctionHeapLifetimeAnalysis& analysis, const IrAncho
 }
 
 [[nodiscard]] HeapLifetimeAnalysisCache
+// NOLINTNEXTLINE(readability-function-size) - Cache heap lifetimes.
 build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json)
 {
     HeapLifetimeAnalysisCache cache;
@@ -1723,6 +1757,7 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
     }
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Collect feature flags.
 [[nodiscard]] FunctionFeatureCache build_function_feature_cache(const nlohmann::json& nir_json)
 {
     FunctionFeatureCache cache;
@@ -1836,6 +1871,7 @@ struct TracePathNode
 }
 
 [[nodiscard]] std::optional<std::vector<TracePathNode>>
+// NOLINTNEXTLINE(readability-function-size, bugprone-easily-swappable-parameters) - BFS path.
 build_block_path(const nlohmann::json& cfg, std::string_view entry_block, std::string_view target)
 {
     std::map<std::string, std::vector<TraceEdge>> edges;
@@ -1874,7 +1910,7 @@ build_block_path(const nlohmann::json& cfg, std::string_view entry_block, std::s
     };
     std::unordered_map<std::string, PrevEntry> prev;
 
-    queue.push_back(std::string(entry_block));
+    queue.emplace_back(entry_block);
     visited.emplace(std::string(entry_block), true);
 
     while (!queue.empty()) {
@@ -1893,7 +1929,7 @@ build_block_path(const nlohmann::json& cfg, std::string_view entry_block, std::s
             }
             visited.emplace(edge.to, true);
             prev.emplace(edge.to, PrevEntry{.from = current, .edge_kind = edge.kind});
-            queue.push_back(edge.to);
+            queue.emplace_back(edge.to);
         }
     }
 
@@ -1916,8 +1952,8 @@ build_block_path(const nlohmann::json& cfg, std::string_view entry_block, std::s
         TracePathNode{.block_id = std::string(entry_block), .edge_kind = std::nullopt});
     std::vector<TracePathNode> path;
     path.reserve(reversed.size());
-    for (auto it = reversed.rbegin(); it != reversed.rend(); ++it) {
-        path.push_back(*it);
+    for (const auto& node : std::views::reverse(reversed)) {
+        path.push_back(node);
     }
     return path;
 }
@@ -1941,6 +1977,7 @@ build_block_path(const nlohmann::json& cfg, std::string_view entry_block, std::s
 }
 
 [[nodiscard]] std::optional<std::vector<nlohmann::json>>
+// NOLINTNEXTLINE(readability-function-size) - Trace steps.
 build_bug_trace_steps(const nlohmann::json& nir_json,
                       std::string_view tu_id,
                       std::string_view function_uid,
@@ -2457,16 +2494,8 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
 
 [[nodiscard]] bool allow_feature_override(std::string_view unknown_code)
 {
-    if (unknown_code.starts_with("Lifetime")) {
-        return false;
-    }
-    if (unknown_code.starts_with("MissingContract.")) {
-        return false;
-    }
-    if (unknown_code.starts_with("VirtualCall.")) {
-        return false;
-    }
-    return true;
+    return !(unknown_code.starts_with("Lifetime") || unknown_code.starts_with("MissingContract.")
+             || unknown_code.starts_with("VirtualCall."));
 }
 
 [[nodiscard]] UnknownDetails build_use_after_lifetime_unknown_details(std::string_view notes)
@@ -2479,12 +2508,31 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
                           .refinement_domain = "lifetime"};
 }
 
+[[nodiscard]] UnknownDetails build_lifetime_unmodeled_details(std::string_view notes)
+{
+    return UnknownDetails{.code = "LifetimeUnmodeled",
+                          .missing_notes = std::string(notes),
+                          .refinement_message = "Model lifetime events to prove or refute this PO.",
+                          .refinement_action = "refine-lifetime",
+                          .refinement_domain = "lifetime"};
+}
+
 [[nodiscard]] UnknownDetails build_heap_lifetime_unknown_details(std::string_view notes)
 {
     return UnknownDetails{.code = "LifetimeStateUnknown",
                           .missing_notes = std::string(notes),
                           .refinement_message =
                               "Provide heap lifetime target context or refine heap tracking.",
+                          .refinement_action = "refine-lifetime",
+                          .refinement_domain = "lifetime"};
+}
+
+[[nodiscard]] UnknownDetails build_heap_lifetime_unmodeled_details(std::string_view notes)
+{
+    return UnknownDetails{.code = "LifetimeUnmodeled",
+                          .missing_notes = std::string(notes),
+                          .refinement_message =
+                              "Model heap lifetime events to prove or refute this PO.",
                           .refinement_action = "refine-lifetime",
                           .refinement_domain = "lifetime"};
 }
@@ -2894,6 +2942,7 @@ extract_points_to_pointer(const nlohmann::json& predicate_expr)
 }
 
 [[nodiscard]] sappp::Result<std::optional<PoDecision>>
+// NOLINTNEXTLINE(readability-function-size, bugprone-easily-swappable-parameters) - PO+predicate.
 decide_points_to(const nlohmann::json& po,
                  const nlohmann::json& predicate_expr,
                  std::string_view po_kind,
@@ -2926,12 +2975,14 @@ decide_points_to(const nlohmann::json& po,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& state_opt = *state;
+    if (!state_opt.has_value()) {
         return std::optional<PoDecision>();
     }
 
-    auto set_it = state->value().values.find(*pointer);
-    if (set_it == state->value().values.end()) {
+    const auto& points_state = *state_opt;
+    auto set_it = points_state.values.find(*pointer);
+    if (set_it == points_state.values.end()) {
         return std::optional<PoDecision>();
     }
 
@@ -3004,14 +3055,14 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     auto target = extract_lifetime_target(predicate_expr);
     if (!target) {
         decision.is_unknown = true;
-        decision.unknown_details = build_use_after_lifetime_unknown_details(
-            "Lifetime target is missing from the PO predicate.");
+        decision.unknown_details =
+            build_lifetime_unmodeled_details("Lifetime target is missing from the PO predicate.");
         return decision;
     }
     if (context.lifetime_cache == nullptr || context.function_uid_map == nullptr) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_use_after_lifetime_unknown_details("Lifetime analysis context unavailable.");
+            build_lifetime_unmodeled_details("Lifetime analysis context unavailable.");
         return decision;
     }
 
@@ -3028,7 +3079,7 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     if (analysis_it == context.lifetime_cache->functions.end()) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_use_after_lifetime_unknown_details("Lifetime analysis missing for function.");
+            build_lifetime_unmodeled_details("Lifetime analysis missing for function.");
         return decision;
     }
 
@@ -3036,7 +3087,7 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     if (!state) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_use_after_lifetime_unknown_details("Lifetime analysis missing at anchor.");
+            build_lifetime_unmodeled_details("Lifetime analysis missing at anchor.");
         return decision;
     }
 
@@ -3044,7 +3095,7 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
     if (state_it == state->values.end()) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_use_after_lifetime_unknown_details("Lifetime target is not tracked at anchor.");
+            build_lifetime_unmodeled_details("Lifetime target is not tracked at anchor.");
         return decision;
     }
 
@@ -3069,6 +3120,7 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
 }
 
 [[nodiscard]] sappp::Result<PoDecision>
+// NOLINTNEXTLINE(readability-function-size) - Mirror lifetime cases.
 decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     const nlohmann::json& po,
     const nlohmann::json& predicate_expr,
@@ -3080,13 +3132,13 @@ decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     if (!target) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_heap_lifetime_unknown_details("Heap target is missing from the PO predicate.");
+            build_heap_lifetime_unmodeled_details("Heap target is missing from the PO predicate.");
         return decision;
     }
     if (context.heap_lifetime_cache == nullptr || context.function_uid_map == nullptr) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_heap_lifetime_unknown_details("Heap lifetime analysis context unavailable.");
+            build_heap_lifetime_unmodeled_details("Heap lifetime analysis context unavailable.");
         return decision;
     }
 
@@ -3103,7 +3155,7 @@ decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     if (analysis_it == context.heap_lifetime_cache->functions.end()) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_heap_lifetime_unknown_details("Heap lifetime analysis missing for function.");
+            build_heap_lifetime_unmodeled_details("Heap lifetime analysis missing for function.");
         return decision;
     }
 
@@ -3111,7 +3163,7 @@ decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     if (!state) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_heap_lifetime_unknown_details("Heap lifetime analysis missing at anchor.");
+            build_heap_lifetime_unmodeled_details("Heap lifetime analysis missing at anchor.");
         return decision;
     }
 
@@ -3119,7 +3171,7 @@ decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     if (state_it == state->values.end()) {
         decision.is_unknown = true;
         decision.unknown_details =
-            build_heap_lifetime_unknown_details("Heap target is not tracked at anchor.");
+            build_heap_lifetime_unmodeled_details("Heap target is not tracked at anchor.");
         return decision;
     }
 
@@ -3194,6 +3246,7 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
     return std::optional<UnknownDetails>();
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Central PO dispatch.
 [[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
                                                   const PoProcessingContext& context)
 {
@@ -3201,10 +3254,11 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
     if (!vcall_unknown) {
         return std::unexpected(vcall_unknown.error());
     }
-    if (vcall_unknown->has_value()) {
+    auto vcall_details_opt = std::move(*vcall_unknown);
+    if (vcall_details_opt.has_value()) {
         PoDecision decision;
         decision.is_unknown = true;
-        decision.unknown_details = std::move(vcall_unknown->value());
+        decision.unknown_details = std::move(*vcall_details_opt);
         return decision;
     }
 
@@ -3261,8 +3315,9 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
         if (!points_to_decision) {
             return std::unexpected(points_to_decision.error());
         }
-        if (points_to_decision->has_value()) {
-            return points_to_decision->value();
+        const auto& points_opt = *points_to_decision;
+        if (points_opt.has_value()) {
+            return *points_opt;
         }
     }
 
@@ -3290,6 +3345,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     return match_contracts_for_po(po, *context.contract_index);
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Aggregates PO artifacts.
 [[nodiscard]] sappp::Result<PoProcessingOutput> process_po(const nlohmann::json& po,
                                                            PoProcessingContext& context)
 {
@@ -3407,6 +3463,7 @@ Analyzer::Analyzer(AnalyzerConfig config)
     : m_config(std::move(config))
 {}
 
+// NOLINTNEXTLINE(readability-function-size) - Top-level analysis.
 sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                                const nlohmann::json& po_list_json,
                                                const nlohmann::json* specdb_snapshot) const

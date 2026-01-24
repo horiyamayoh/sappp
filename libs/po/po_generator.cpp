@@ -119,6 +119,20 @@ bool is_lifetime_op(std::string_view op)
 
 std::optional<std::string> resolve_po_kind(const nlohmann::json& inst, std::string_view op)
 {
+    if (is_lifetime_op(op)) {
+        if (inst.contains("kind") && inst.at("kind").is_string()) {
+            std::string token = inst.at("kind").get<std::string>();
+            std::string mapped = map_po_kind(token);
+            if (!mapped.empty()) {
+                return mapped;
+            }
+            if (!token.empty()) {
+                return token;
+            }
+        }
+        return std::nullopt;
+    }
+
     std::string token = extract_kind_token(inst);
     std::string mapped = map_po_kind(token);
     if (!mapped.empty()) {
@@ -129,9 +143,6 @@ std::optional<std::string> resolve_po_kind(const nlohmann::json& inst, std::stri
     }
     if (op == "ub.check" || op == "sink.marker") {
         return "UB.Unknown";
-    }
-    if (is_lifetime_op(op)) {
-        return std::nullopt;
     }
     return "UB.Unknown";
 }
@@ -176,8 +187,16 @@ nlohmann::json build_anchor_id(const std::string& block_id, const std::string& i
     };
 }
 
-nlohmann::json build_predicate_args(const nlohmann::json& inst, const std::string& po_kind)
+// Lifetime ops carry semantic labels in args; do not rewrite.
+nlohmann::json
+build_predicate_args(std::string_view op, const nlohmann::json& inst, const std::string& po_kind)
 {
+    if (is_lifetime_op(op)) {
+        if (inst.contains("args") && inst.at("args").is_array()) {
+            return inst.at("args");
+        }
+        return nlohmann::json::array();
+    }
     nlohmann::json args = nlohmann::json::array();
     if (inst.contains("args") && inst.at("args").is_array()) {
         const auto& inst_args = inst.at("args");
@@ -250,7 +269,7 @@ build_predicate(const std::string& op,  // NOLINT(bugprone-easily-swappable-para
                 const std::string& po_kind,
                 const nlohmann::json& inst)
 {
-    nlohmann::json args = build_predicate_args(inst, po_kind);
+    nlohmann::json args = build_predicate_args(op, inst, po_kind);
     nlohmann::json expr = {
         {  "op",   op},
         {"args", args}
@@ -357,11 +376,6 @@ sappp::Result<nlohmann::json> PoGenerator::generate(const nlohmann::json& nir_js
                 pos.push_back(std::move(po_entry));
             }
         }
-    }
-
-    if (pos.empty()) {
-        return std::unexpected(
-            Error::make("PoGenerationFailed", "No sink instructions found for PO generation"));
     }
 
     std::ranges::stable_sort(pos, [](const nlohmann::json& a, const nlohmann::json& b) {

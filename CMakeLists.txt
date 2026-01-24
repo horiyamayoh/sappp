@@ -169,6 +169,9 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     
     # Clang-specific warnings
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Ensure std::expected is visible in libstdc++ with Clang.
+        add_compile_options(-Wno-builtin-macro-redefined)
+        add_compile_definitions(__cpp_concepts=202002L)
         list(APPEND SAPPP_CXX_FLAGS
             -Wmost                          # Most warnings
             
