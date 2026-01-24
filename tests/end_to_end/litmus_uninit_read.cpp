@@ -1,5 +1,5 @@
 // Litmus test: Uninitialized read
-// Expected: UNKNOWN (UninitRead)
+// Expected: BUG (UninitRead)
 
 void sappp_sink(const char* kind);
 

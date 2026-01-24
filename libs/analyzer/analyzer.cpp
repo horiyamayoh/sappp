@@ -768,6 +768,28 @@ extract_second_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabi
     return second.get<std::string>();
 }
 
+[[nodiscard]] std::optional<std::string> extract_ref_name(const nlohmann::json& arg)
+{
+    if (!arg.is_object()) {
+        return std::nullopt;
+    }
+    if (!arg.contains("name") || !arg.at("name").is_string()) {
+        return std::nullopt;
+    }
+    return arg.at("name").get<std::string>();
+}
+
+[[nodiscard]] std::optional<bool> extract_ref_has_init(const nlohmann::json& arg)
+{
+    if (!arg.is_object()) {
+        return std::nullopt;
+    }
+    if (!arg.contains("has_init") || !arg.at("has_init").is_boolean()) {
+        return std::nullopt;
+    }
+    return arg.at("has_init").get<bool>();
+}
+
 void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
 {
     if (!inst.contains("op") || !inst.at("op").is_string()) {
@@ -910,11 +932,13 @@ apply_lifetime_block_transfer_with_exception(const LifetimeState& in_state,
 
     for (const auto& inst : block.at("insts")) {
         std::string_view op;
+        bool has_op = false;
         if (inst.contains("op") && inst.at("op").is_string()) {
             op = inst.at("op").get_ref<const std::string&>();
+            has_op = true;
         }
-        const bool is_invoke = op == "invoke";
-        const bool is_throw = op == "throw" || op == "resume";
+        const bool is_invoke = has_op && op == "invoke";
+        const bool is_throw = has_op && (op == "throw" || op == "resume");
         if (is_invoke || is_throw) {
             apply_lifetime_effect(inst, normal_state);
             has_exception_op = true;
@@ -1214,6 +1238,413 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
     return cache;
 }
 
+enum class InitValue {
+    kInit,
+    kUninit,
+    kMaybe,
+};
+
+struct InitState
+{
+    std::map<std::string, InitValue> values;
+
+    InitState()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : values()
+    {}
+};
+
+[[nodiscard]] InitValue merge_init_value(InitValue a, InitValue b)
+{
+    if (a == b) {
+        return a;
+    }
+    return InitValue::kMaybe;
+}
+
+[[nodiscard]] InitState merge_init_states(const InitState& a, const InitState& b)
+{
+    InitState result;
+    for (const auto& [key, value] : a.values) {
+        InitValue other = InitValue::kMaybe;
+        auto it = b.values.find(key);
+        if (it != b.values.end()) {
+            other = it->second;
+        }
+        result.values.emplace(key, merge_init_value(value, other));
+    }
+    for (const auto& [key, value] : b.values) {
+        if (result.values.contains(key)) {
+            continue;
+        }
+        result.values.emplace(key, merge_init_value(InitValue::kMaybe, value));
+    }
+    return result;
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Op-driven init state updates.
+void apply_init_effect(const nlohmann::json& inst, InitState& state)
+{
+    if (!inst.contains("op") || !inst.at("op").is_string()) {
+        return;
+    }
+    const auto& op = inst.at("op").get_ref<const std::string&>();
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return;
+    }
+    const auto& args = inst.at("args");
+    if (op == "assign") {
+        for (const auto& arg : args) {
+            auto label = extract_ref_name(arg);
+            if (!label.has_value()) {
+                continue;
+            }
+            if (auto has_init = extract_ref_has_init(arg); has_init.has_value()) {
+                state.values[*label] = *has_init ? InitValue::kInit : InitValue::kUninit;
+            } else {
+                state.values[*label] = InitValue::kMaybe;
+            }
+        }
+        return;
+    }
+    if (op == "store") {
+        if (!args.empty()) {
+            if (auto label = extract_ref_name(args.at(0)); label.has_value()) {
+                state.values[*label] = InitValue::kInit;
+            }
+        }
+        return;
+    }
+    if (op == "move") {
+        if (args.size() >= 2U && args.at(1).is_string()) {
+            state.values[args.at(1).get<std::string>()] = InitValue::kMaybe;
+        }
+        return;
+    }
+}
+
+struct FunctionInitAnalysis
+{
+    std::string function_uid;
+    std::string entry_block;
+    std::map<std::string, const nlohmann::json*> blocks;
+    std::vector<std::string> block_order;
+    std::map<std::string, FlowPredecessors> predecessors;
+    std::map<std::string, bool> has_exception_successor;
+    std::map<std::string, InitState> in_states;
+    std::map<std::string, InitState> out_states;
+    std::map<std::string, InitState> exception_out_states;
+
+    // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
+    FunctionInitAnalysis()
+        : function_uid()
+        , entry_block()
+        , blocks()
+        , block_order()
+        , predecessors()
+        , has_exception_successor()
+        , in_states()
+        , out_states()
+        , exception_out_states()
+    {}
+    // NOLINTEND(readability-redundant-member-init)
+};
+
+struct InitAnalysisCache
+{
+    std::map<std::string, FunctionInitAnalysis> functions;
+
+    InitAnalysisCache()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : functions()
+    {}
+};
+
+[[nodiscard]] InitState merge_init_predecessor_states(const FunctionInitAnalysis& analysis,
+                                                      std::string_view block_id)
+{
+    auto pred_it = analysis.predecessors.find(std::string(block_id));
+    if (pred_it == analysis.predecessors.end()) {
+        return InitState{};
+    }
+
+    bool first = true;
+    InitState merged;
+    for (const auto& pred : pred_it->second.normal) {
+        auto out_it = analysis.out_states.find(pred);
+        if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_init_states(merged, out_it->second);
+    }
+
+    for (const auto& pred : pred_it->second.exception) {
+        auto out_it = analysis.exception_out_states.find(pred);
+        if (out_it == analysis.exception_out_states.end()) {
+            continue;
+        }
+        if (first) {
+            merged = out_it->second;
+            first = false;
+            continue;
+        }
+        merged = merge_init_states(merged, out_it->second);
+    }
+
+    if (first) {
+        return InitState{};
+    }
+    return merged;
+}
+
+struct InitTransferResult
+{
+    InitState normal_out;
+    std::optional<InitState> exception_out;
+    bool has_exception_op = false;
+};
+
+[[nodiscard]] InitTransferResult
+apply_init_block_transfer_with_exception(const InitState& in_state, const nlohmann::json& block)
+{
+    InitState normal_state = in_state;
+    std::optional<InitState> exception_state;
+    bool has_exception_op = false;
+
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return InitTransferResult{.normal_out = normal_state,
+                                  .exception_out = std::move(exception_state),
+                                  .has_exception_op = has_exception_op};
+    }
+
+    for (const auto& inst : block.at("insts")) {
+        std::string_view op;
+        bool has_op = false;
+        if (inst.contains("op") && inst.at("op").is_string()) {
+            op = inst.at("op").get_ref<const std::string&>();
+            has_op = true;
+        }
+        const bool is_invoke = has_op && op == "invoke";
+        const bool is_throw = has_op && (op == "throw" || op == "resume");
+        if (is_invoke || is_throw) {
+            apply_init_effect(inst, normal_state);
+            has_exception_op = true;
+            if (exception_state.has_value()) {
+                exception_state = merge_init_states(*exception_state, normal_state);
+            } else {
+                exception_state = normal_state;
+            }
+            if (is_throw) {
+                return InitTransferResult{.normal_out = normal_state,
+                                          .exception_out = std::move(exception_state),
+                                          .has_exception_op = has_exception_op};
+            }
+            continue;
+        }
+        apply_init_effect(inst, normal_state);
+    }
+
+    return InitTransferResult{.normal_out = normal_state,
+                              .exception_out = std::move(exception_state),
+                              .has_exception_op = has_exception_op};
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
+void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget)
+{
+    bool changed = true;
+    while (changed) {
+        if (budget != nullptr && budget->exceeded()) {
+            return;
+        }
+        changed = false;
+        for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return;
+            }
+            InitState in_state = merge_init_predecessor_states(analysis, block_id);
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
+                analysis.in_states[block_id] = in_state;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                    return;
+                }
+            }
+
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            auto transfer = apply_init_block_transfer_with_exception(in_state, *block_it->second);
+            InitState out_state = std::move(transfer.normal_out);
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
+                analysis.out_states[block_id] = out_state;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(out_state.values.size())) {
+                    return;
+                }
+            }
+
+            InitState exception_out = in_state;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                if (transfer.exception_out.has_value()) {
+                    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guarded above.
+                    exception_out = std::move(*transfer.exception_out);
+                } else {
+                    exception_out = merge_init_states(in_state, out_state);
+                }
+            }
+            auto exception_out_it = analysis.exception_out_states.find(block_id);
+            if (exception_out_it == analysis.exception_out_states.end()
+                || exception_out_it->second.values != exception_out.values) {
+                analysis.exception_out_states[block_id] = std::move(exception_out);
+                changed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(
+                        analysis.exception_out_states.at(block_id).values.size())) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+[[nodiscard]] std::optional<InitState> init_state_at_anchor(const FunctionInitAnalysis& analysis,
+                                                            const IrAnchor& anchor)
+{
+    auto block_it = analysis.blocks.find(anchor.block_id);
+    if (block_it == analysis.blocks.end()) {
+        return std::nullopt;
+    }
+    InitState state;
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    if (in_it != analysis.in_states.end()) {
+        state = in_it->second;
+    }
+    const nlohmann::json& block = *block_it->second;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return std::nullopt;
+    }
+    for (const auto& inst : block.at("insts")) {
+        if (inst.contains("id") && inst.at("id").is_string()
+            && inst.at("id").get<std::string>() == anchor.inst_id) {
+            return state;
+        }
+        apply_init_effect(inst, state);
+    }
+    return std::nullopt;
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Cache assembly reads structured JSON in one pass.
+[[nodiscard]] InitAnalysisCache build_init_analysis_cache(const nlohmann::json& nir_json,
+                                                          BudgetTracker* budget)
+{
+    InitAnalysisCache cache;
+    if (budget != nullptr && budget->exceeded()) {
+        return cache;
+    }
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return cache;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        FunctionInitAnalysis analysis;
+        analysis.function_uid = func.at("function_uid").get<std::string>();
+        if (cfg.contains("entry") && cfg.at("entry").is_string()) {
+            analysis.entry_block = cfg.at("entry").get<std::string>();
+        }
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()) {
+                continue;
+            }
+            std::string block_id = block.at("id").get<std::string>();
+            analysis.block_order.push_back(block_id);
+            analysis.blocks.emplace(block_id, &block);
+            analysis.in_states.emplace(block_id, InitState{});
+            analysis.out_states.emplace(block_id, InitState{});
+            analysis.exception_out_states.emplace(block_id, InitState{});
+            analysis.has_exception_successor.emplace(block_id, false);
+        }
+
+        if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+            for (const auto& edge : cfg.at("edges")) {
+                if (!edge.is_object()) {
+                    continue;
+                }
+                if (!edge.contains("from") || !edge.at("from").is_string()) {
+                    continue;
+                }
+                if (!edge.contains("to") || !edge.at("to").is_string()) {
+                    continue;
+                }
+                std::string from = edge.at("from").get<std::string>();
+                std::string to = edge.at("to").get<std::string>();
+                std::string kind;
+                if (edge.contains("kind") && edge.at("kind").is_string()) {
+                    kind = edge.at("kind").get<std::string>();
+                }
+                auto& preds = analysis.predecessors[to];
+                if (kind == "exception") {
+                    preds.exception.push_back(from);
+                    analysis.has_exception_successor[from] = true;
+                } else {
+                    preds.normal.push_back(from);
+                }
+            }
+        }
+
+        for (auto& [block_id, preds] : analysis.predecessors) {
+            (void)block_id;
+            std::ranges::stable_sort(preds.normal);
+            auto normal_unique = std::ranges::unique(preds.normal);
+            preds.normal.erase(normal_unique.begin(), normal_unique.end());
+            std::ranges::stable_sort(preds.exception);
+            auto exception_unique = std::ranges::unique(preds.exception);
+            preds.exception.erase(exception_unique.begin(), exception_unique.end());
+        }
+
+        if (!analysis.block_order.empty()) {
+            if (analysis.entry_block.empty()) {
+                analysis.entry_block = analysis.block_order.front();
+            }
+            if (budget != nullptr && !budget->consume_summary_node(analysis.function_uid)) {
+                return cache;
+            }
+            compute_init_fixpoint(analysis, budget);
+            if (budget != nullptr && budget->exceeded()) {
+                return cache;
+            }
+            cache.functions.emplace(analysis.function_uid, std::move(analysis));
+        }
+    }
+
+    return cache;
+}
+
 struct PointsToSet
 {
     bool is_unknown = false;
@@ -1477,11 +1908,13 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
 
     for (const auto& inst : block.at("insts")) {
         std::string_view op;
+        bool has_op = false;
         if (inst.contains("op") && inst.at("op").is_string()) {
             op = inst.at("op").get_ref<const std::string&>();
+            has_op = true;
         }
-        const bool is_invoke = op == "invoke";
-        const bool is_throw = op == "throw" || op == "resume";
+        const bool is_invoke = has_op && op == "invoke";
+        const bool is_throw = has_op && (op == "throw" || op == "resume");
         if (is_invoke || is_throw) {
             if (auto applied = apply_points_to_effects(inst, normal_state); !applied) {
                 return std::unexpected(applied.error());
@@ -1556,9 +1989,9 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                auto exception_state = std::move(transfer->exception_out);
-                if (exception_state.has_value()) {
-                    exception_out = std::move(*exception_state);
+                if (transfer->exception_out.has_value()) {
+                    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guarded above.
+                    exception_out = std::move(*transfer->exception_out);
                 } else {
                     exception_out = merge_points_to_states(in_state, transfer->normal_out);
                 }
@@ -1919,11 +2352,13 @@ apply_heap_block_transfer_with_exception(const HeapLifetimeState& in_state,
 
     for (const auto& inst : block.at("insts")) {
         std::string_view op;
+        bool has_op = false;
         if (inst.contains("op") && inst.at("op").is_string()) {
             op = inst.at("op").get_ref<const std::string&>();
+            has_op = true;
         }
-        const bool is_invoke = op == "invoke";
-        const bool is_throw = op == "throw" || op == "resume";
+        const bool is_invoke = has_op && op == "invoke";
+        const bool is_throw = has_op && (op == "throw" || op == "resume");
         if (is_invoke || is_throw) {
             apply_heap_lifetime_effect(inst, normal_state);
             has_exception_op = true;
@@ -3014,6 +3449,15 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
                           .refinement_domain = "lifetime"};
 }
 
+[[nodiscard]] UnknownDetails build_init_unknown_details(std::string_view notes)
+{
+    return UnknownDetails{.code = "DomainTooWeak.Memory",
+                          .missing_notes = std::string(notes),
+                          .refinement_message = "Track initialization states to discharge this PO.",
+                          .refinement_action = "refine-init",
+                          .refinement_domain = "init"};
+}
+
 [[nodiscard]] sappp::Result<nlohmann::json>
 build_unknown_entry(const nlohmann::json& po,
                     std::string_view po_id,
@@ -3129,6 +3573,7 @@ struct PoProcessingContext
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
     const HeapLifetimeAnalysisCache* heap_lifetime_cache = nullptr;
+    const InitAnalysisCache* init_cache = nullptr;
     const nlohmann::json* nir_json = nullptr;
     const PointsToAnalysisCache* points_to_cache = nullptr;
     std::string_view tu_id;
@@ -3392,6 +3837,22 @@ extract_lifetime_target(const nlohmann::json& predicate_expr)
     return std::nullopt;
 }
 
+[[nodiscard]] std::optional<std::string> extract_init_target(const nlohmann::json& predicate_expr)
+{
+    if (!predicate_expr.contains("args") || !predicate_expr.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = predicate_expr.at("args");
+    if (args.size() < 2) {
+        return std::nullopt;
+    }
+    const auto& candidate = args.at(1);
+    if (candidate.is_string()) {
+        return candidate.get<std::string>();
+    }
+    return extract_ref_name(candidate);
+}
+
 [[nodiscard]] std::optional<std::string>
 extract_points_to_pointer(const nlohmann::json& predicate_expr)
 {
@@ -3599,6 +4060,77 @@ decide_use_after_lifetime(  // NOLINTNEXTLINE(bugprone-easily-swappable-paramete
 }
 
 [[nodiscard]] sappp::Result<PoDecision>
+decide_uninit_read(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
+    const nlohmann::json& po,
+    const nlohmann::json& predicate_expr,
+    const PoProcessingContext& context)
+{
+    PoDecision decision;
+    auto target = extract_init_target(predicate_expr);
+    if (!target) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_init_unknown_details("Init target is missing from the PO predicate.");
+        return decision;
+    }
+    if (context.init_cache == nullptr || context.function_uid_map == nullptr) {
+        decision.is_unknown = true;
+        decision.unknown_details = build_init_unknown_details("Init analysis context unavailable.");
+        return decision;
+    }
+
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+
+    auto analysis_it = context.init_cache->functions.find(*function_uid);
+    if (analysis_it == context.init_cache->functions.end()) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_init_unknown_details("Init analysis missing for function.");
+        return decision;
+    }
+
+    auto state = init_state_at_anchor(analysis_it->second, *anchor);
+    if (!state) {
+        decision.is_unknown = true;
+        decision.unknown_details = build_init_unknown_details("Init analysis missing at anchor.");
+        return decision;
+    }
+
+    auto state_it = state->values.find(*target);
+    if (state_it == state->values.end()) {
+        decision.is_unknown = true;
+        decision.unknown_details =
+            build_init_unknown_details("Init target is not tracked at anchor.");
+        return decision;
+    }
+
+    switch (state_it->second) {
+        case InitValue::kInit:
+            decision.is_safe = true;
+            return decision;
+        case InitValue::kUninit:
+            decision.is_bug = true;
+            return decision;
+        case InitValue::kMaybe:
+            decision.is_unknown = true;
+            decision.unknown_details =
+                build_init_unknown_details("Init state is indeterminate at this point.");
+            return decision;
+        default:
+            decision.is_unknown = true;
+            decision.unknown_details = build_init_unknown_details("Init state is indeterminate.");
+            return decision;
+    }
+}
+
+[[nodiscard]] sappp::Result<PoDecision>
 // NOLINTNEXTLINE(readability-function-size) - Mirror lifetime cases.
 decide_heap_free(  // NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
     const nlohmann::json& po,
@@ -3783,6 +4315,14 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
 
     if (*po_kind == "UseAfterLifetime") {
         auto decision = decide_use_after_lifetime(po, *predicate_expr, context);
+        if (!decision) {
+            return std::unexpected(decision.error());
+        }
+        return *decision;
+    }
+
+    if (*po_kind == "UninitRead") {
+        auto decision = decide_uninit_read(po, *predicate_expr, context);
         if (!decision) {
             return std::unexpected(decision.error());
         }
@@ -3990,6 +4530,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     const auto vcall_summaries = build_vcall_summary_map(nir_json, *contract_index);
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json, &budget_tracker);
+    const auto init_cache = build_init_analysis_cache(nir_json, &budget_tracker);
     auto points_to_cache = build_points_to_analysis_cache(nir_json, &budget_tracker);
     if (!points_to_cache) {
         return std::unexpected(points_to_cache.error());
@@ -4017,6 +4558,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
                                 .heap_lifetime_cache = &heap_lifetime_cache,
+                                .init_cache = &init_cache,
                                 .nir_json = &nir_json,
                                 .points_to_cache = &(*points_to_cache),
                                 .tu_id = *tu_id,
