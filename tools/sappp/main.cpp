@@ -44,6 +44,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -801,6 +802,30 @@ load_specdb_snapshot(const AnalyzeOptions& options,
                                                .generated_at = resolved_generated_at,
                                                .tool = tool_metadata_json()};
     return sappp::specdb::build_snapshot(specdb_options);
+}
+
+[[nodiscard]] sappp::analyzer::ContractMatchContext
+build_contract_match_context(const nlohmann::json& build_snapshot)
+{
+    sappp::analyzer::ContractMatchContext context;
+    if (!build_snapshot.contains("compile_units")
+        || !build_snapshot.at("compile_units").is_array()) {
+        return context;
+    }
+    std::unordered_set<std::string> abis;
+    for (const auto& unit : build_snapshot.at("compile_units")) {
+        if (!unit.is_object() || !unit.contains("target") || !unit.at("target").is_object()) {
+            continue;
+        }
+        const auto& target = unit.at("target");
+        if (target.contains("abi") && target.at("abi").is_string()) {
+            abis.insert(target.at("abi").get<std::string>());
+        }
+    }
+    if (abis.size() == 1U) {
+        context.abi = *abis.begin();
+    }
+    return context;
 }
 
 [[nodiscard]] sappp::VoidResult write_analysis_config_output(const AnalyzePaths& paths,
@@ -1638,7 +1663,9 @@ load_specdb_snapshot(const AnalyzeOptions& options,
     sappp::analyzer::Analyzer analyzer({.schema_dir = options.schema_dir,
                                         .certstore_dir = paths->certstore_dir.string(),
                                         .versions = options.versions});
-    auto analyzer_output = analyzer.analyze(result->nir, *po_list_result, &*specdb_snapshot_json);
+    auto match_context = build_contract_match_context(*snapshot_json);
+    auto analyzer_output =
+        analyzer.analyze(result->nir, *po_list_result, &*specdb_snapshot_json, match_context);
     if (!analyzer_output) {
         std::println(stderr, "Error: analyzer failed: {}", analyzer_output.error().message);
         return exit_code_for_error(analyzer_output.error());

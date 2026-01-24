@@ -661,6 +661,7 @@ pack/
 3. `conditions`（フラグ、マクロ、OS等）評価
 
 同率の場合は `priority`（数値）で決定、未指定は 0。
+それでも複数残る場合は `contract_id` で安定ソートし、全てを適用候補として扱う。
 
 #### 5.5.5 Tier 運用
 
@@ -883,4 +884,3 @@ Validator が行うチェック:
 3. IR 正規化のさらなる微小編集耐性（アンカー強化）
 4. 証拠の hash_scope の厳密化（pretty/notes の扱い）
 5. Concurrency/Exception の v1 保守的 UNKNOWN 条件の細分化
-

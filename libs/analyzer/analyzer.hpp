@@ -9,6 +9,7 @@
 #include "sappp/version.hpp"
 
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -26,14 +27,23 @@ struct AnalyzeOutput
     nlohmann::json unknown_ledger;
 };
 
+struct ContractMatchContext
+{
+    std::string abi{};
+    std::string library_version{};
+    std::vector<std::string> conditions{};
+};
+
 class Analyzer
 {
 public:
     explicit Analyzer(AnalyzerConfig config);
 
-    [[nodiscard]] sappp::Result<AnalyzeOutput> analyze(const nlohmann::json& nir_json,
-                                                       const nlohmann::json& po_list_json,
-                                                       const nlohmann::json* specdb_snapshot) const;
+    [[nodiscard]] sappp::Result<AnalyzeOutput>
+    analyze(const nlohmann::json& nir_json,
+            const nlohmann::json& po_list_json,
+            const nlohmann::json* specdb_snapshot,
+            const ContractMatchContext& match_context = ContractMatchContext{}) const;
 
 private:
     AnalyzerConfig m_config;
