@@ -330,6 +330,54 @@ bool ctor_can_throw(const clang::CXXConstructExpr* ctor_expr)
     return !is_nothrow_function_type(proto);
 }
 
+const clang::Expr* strip_parens(const clang::Expr* expr)
+{
+    return expr != nullptr ? expr->IgnoreParenImpCasts() : nullptr;
+}
+
+std::optional<std::string> extract_string_literal(const clang::Expr* expr)
+{
+    const auto* stripped = strip_parens(expr);
+    const auto* literal = clang::dyn_cast_or_null<clang::StringLiteral>(stripped);
+    if (literal == nullptr) {
+        return std::nullopt;
+    }
+    return literal->getString().str();
+}
+
+std::optional<bool> extract_bool_literal(const clang::Expr* expr)
+{
+    const auto* stripped = strip_parens(expr);
+    if (const auto* bool_lit = clang::dyn_cast_or_null<clang::CXXBoolLiteralExpr>(stripped)) {
+        return bool_lit->getValue();
+    }
+    if (const auto* int_lit = clang::dyn_cast_or_null<clang::IntegerLiteral>(stripped)) {
+        return !int_lit->getValue().isZero();
+    }
+    return std::nullopt;
+}
+
+std::optional<std::vector<nlohmann::json>>
+extract_sappp_check_args(const clang::CallExpr* call_expr)
+{
+    if (call_expr == nullptr || call_expr->getNumArgs() < 2) {
+        return std::nullopt;
+    }
+    auto kind = extract_string_literal(call_expr->getArg(0));
+    if (!kind) {
+        return std::nullopt;
+    }
+    auto predicate = extract_bool_literal(call_expr->getArg(1));
+    if (!predicate) {
+        return std::nullopt;
+    }
+    std::vector<nlohmann::json> args;
+    args.reserve(2);
+    args.push_back(*kind);
+    args.push_back(*predicate);
+    return args;
+}
+
 struct ClassifiedStmt
 {
     std::string op;
@@ -371,6 +419,12 @@ std::optional<ClassifiedStmt> classify_catch_stmt(const clang::Stmt* stmt)
 std::optional<ClassifiedStmt> classify_call_stmt(const clang::Stmt* stmt)
 {
     if (const auto* call_expr = clang::dyn_cast<clang::CallExpr>(stmt)) {
+        const auto* callee = call_expr->getDirectCallee();
+        if (callee != nullptr && callee->getNameAsString() == "sappp_check") {
+            if (auto args = extract_sappp_check_args(call_expr)) {
+                return ClassifiedStmt{.op = "ub.check", .args = std::move(*args)};
+            }
+        }
         return ClassifiedStmt{.op = call_can_throw(call_expr) ? "invoke" : "call", .args = {}};
     }
     if (const auto* ctor_expr = clang::dyn_cast<clang::CXXConstructExpr>(stmt)) {
@@ -473,6 +527,15 @@ std::vector<std::string> detect_sink_markers(const clang::Stmt* stmt)
             if (opcode == clang::BO_Div || opcode == clang::BO_Rem || opcode == clang::BO_DivAssign
                 || opcode == clang::BO_RemAssign) {
                 markers.emplace_back("div0");
+            }
+        } else if (const auto* call_expr = clang::dyn_cast<clang::CallExpr>(current)) {
+            const auto* callee = call_expr->getDirectCallee();
+            if (callee != nullptr && callee->getNameAsString() == "sappp_sink") {
+                if (call_expr->getNumArgs() > 0) {
+                    if (auto kind = extract_string_literal(call_expr->getArg(0))) {
+                        markers.push_back(*kind);
+                    }
+                }
             }
         } else if (const auto* unary_op = clang::dyn_cast<clang::UnaryOperator>(current)) {
             if (unary_op->getOpcode() == clang::UO_Deref) {

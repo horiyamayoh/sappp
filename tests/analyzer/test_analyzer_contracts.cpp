@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
@@ -37,11 +38,11 @@ nlohmann::json make_nir()
     };
 }
 
-nlohmann::json make_po_list()
+nlohmann::json make_po_list(std::string_view po_kind)
 {
     nlohmann::json po = {
         {               "po_id",            make_sha256('b')                                },
-        {             "po_kind",                                                "UB.DivZero"},
+        {             "po_kind",                                        std::string(po_kind)},
         {     "profile_version",                                            "safety.core.v1"},
         {   "semantics_version",                                                    "sem.v1"},
         {"proof_system_version",                                                  "proof.v1"},
@@ -109,7 +110,7 @@ TEST(AnalyzerContractTest, AddsContractRefsAndKeepsUnknownDetails)
     });
 
     auto nir = make_nir();
-    auto po_list = make_po_list();
+    auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot(true);
 
     auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
@@ -155,7 +156,7 @@ TEST(AnalyzerContractTest, MissingContractProducesUnknownCode)
     });
 
     auto nir = make_nir();
-    auto po_list = make_po_list();
+    auto po_list = make_po_list("UB.DivZero");
     auto specdb_snapshot = make_contract_snapshot(false);
 
     auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
@@ -165,6 +166,81 @@ TEST(AnalyzerContractTest, MissingContractProducesUnknownCode)
     ASSERT_EQ(unknowns.size(), 1U);
     EXPECT_EQ(unknowns.at(0).at("unknown_code"), "MissingContract.Pre");
     EXPECT_FALSE(unknowns.at(0).contains("depends_on"));
+}
+
+TEST(AnalyzerContractTest, LifetimePoProducesLifetimeUnknown)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_lifetime_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UseAfterLifetime");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "LifetimeUnmodeled");
+}
+
+TEST(AnalyzerContractTest, DoubleFreePoProducesLifetimeUnknown)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_double_free_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("DoubleFree");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "LifetimeUnmodeled");
+}
+
+TEST(AnalyzerContractTest, UninitReadPoProducesInitUnknown)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_uninit_unknown");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"}
+    });
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UninitRead");
+    auto specdb_snapshot = make_contract_snapshot(true);
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot);
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "DomainTooWeak.Memory");
 }
 
 }  // namespace sappp::analyzer::test
