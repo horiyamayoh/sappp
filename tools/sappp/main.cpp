@@ -1949,7 +1949,17 @@ write_analysis_config_output(const AnalyzePaths& paths,
         std::println(stderr, "Error: {}", result.error().message);
         return exit_code_for_error(result.error());
     }
-    {
+    const std::filesystem::path semantics_source =
+        std::filesystem::current_path() / "docs" / "sem.v1.md";
+    if (std::filesystem::exists(semantics_source)) {
+        if (auto copied = copy_file_checked(semantics_source, semantics_path); !copied) {
+            std::println(stderr, "Error: {}", copied.error().message);
+            return exit_code_for_error(copied.error());
+        }
+    } else {
+        std::println(stderr,
+                     "Warning: semantics document not found at {}; writing placeholder",
+                     semantics_source.string());
         std::ofstream out(semantics_path);
         if (!out) {
             std::println(stderr, "Error: failed to write semantics stub");

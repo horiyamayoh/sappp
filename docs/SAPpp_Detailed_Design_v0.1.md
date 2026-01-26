@@ -403,7 +403,7 @@ pack/
   specdb/
     snapshot.json
   semantics/
-    sem.v1.md  # 参照用（将来はlitmus含む）
+    sem.v1.md  # 基準規格・逸脱点・litmus一覧を含む意味論ドキュメント
   results/
     validated_results.json
   config/

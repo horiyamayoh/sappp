@@ -753,11 +753,11 @@ validate_trace_transition(const TraceStepInfo& previous,
         if (call_stack.empty()) {
             return proof_failed_error("BugTrace unwind without call frame");
         }
-        auto match_it =
-            std::find_if(call_stack.rbegin(), call_stack.rend(), [&](const CallFrame& frame) {
-                return frame.function_uid == current.function_uid;
-            });
-        if (match_it == call_stack.rend()) {
+        auto reversed_call_stack = call_stack | std::views::reverse;
+        auto match_it = std::ranges::find_if(reversed_call_stack, [&](const CallFrame& frame) {
+            return frame.function_uid == current.function_uid;
+        });
+        if (match_it == std::ranges::end(reversed_call_stack)) {
             return proof_failed_error("BugTrace unwind target mismatch");
         }
         while (!call_stack.empty() && call_stack.back().function_uid != current.function_uid) {
