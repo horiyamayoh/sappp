@@ -921,7 +921,9 @@ TEST(AnalyzerContractTest, MatchContractsRespectsConditionsSpecificity)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     nlohmann::json contracts = nlohmann::json::array();
@@ -963,6 +965,46 @@ TEST(AnalyzerContractTest, MatchContractsRespectsConditionsSpecificity)
     EXPECT_EQ(matched_contracts.at(0).get<std::string>(), make_sha256('d'));
 }
 
+TEST(AnalyzerContractTest, MatchContractsPrefersLibraryVersionAfterAbi)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_contract_match_library");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
+    });
+
+    nlohmann::json contracts = nlohmann::json::array();
+    contracts.push_back(
+        make_contract_entry(make_sha256('j'), "usr::foo", "x86_64", "1.0.0", {}, 0));
+    contracts.push_back(make_contract_entry(make_sha256('k'), "usr::foo", "x86_64", "", {}, 0));
+
+    nlohmann::json specdb_snapshot = {
+        {"schema_version",                                    "specdb_snapshot.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {     "contracts",                                               contracts}
+    };
+
+    auto nir = make_nir();
+    auto po_list = make_po_list("UB.DivZero");
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U);
+    const auto& depends = unknowns.at(0).at("depends_on");
+    const auto& matched_contracts = depends.at("contracts");
+    ASSERT_EQ(matched_contracts.size(), 1U);
+    EXPECT_EQ(matched_contracts.at(0).get<std::string>(), make_sha256('j'));
+}
+
 TEST(AnalyzerContractTest, MatchContractsUsesPriorityAfterScope)
 {
     auto temp_dir = ensure_temp_dir("sappp_analyzer_contract_match_priority");
@@ -973,7 +1015,9 @@ TEST(AnalyzerContractTest, MatchContractsUsesPriorityAfterScope)
         .certstore_dir = cert_dir.string(),
         .versions = {.semantics = "sem.v1",
                      .proof_system = "proof.v1",
-                     .profile = "safety.core.v1"}
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
     });
 
     nlohmann::json contracts = nlohmann::json::array();

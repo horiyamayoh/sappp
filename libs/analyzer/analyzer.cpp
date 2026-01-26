@@ -295,6 +295,9 @@ struct BudgetTracker
                 sappp::Error::make("InvalidFieldType", "version_scope.priority must be integer"));
         }
         scope.priority = scope_obj.at("priority").get<int>();
+        normalized_scope["priority"] = scope.priority;
+    } else {
+        normalized_scope["priority"] = 0;
     }
     if (scope_obj.contains("conditions")) {
         if (!scope_obj.at("conditions").is_array()) {
@@ -313,6 +316,8 @@ struct BudgetTracker
         auto unique_end = std::ranges::unique(scope.conditions);
         scope.conditions.erase(unique_end.begin(), unique_end.end());
         normalized_scope["conditions"] = scope.conditions;
+    } else {
+        normalized_scope["conditions"] = nlohmann::json::array();
     }
     return scope;
 }

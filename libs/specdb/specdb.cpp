@@ -158,6 +158,8 @@ struct AnnotationFileSpec
         conditions.push_back(item.get<std::string>());
     }
     std::ranges::stable_sort(conditions);
+    auto unique_end = std::ranges::unique(conditions);
+    conditions.erase(unique_end.begin(), unique_end.end());
     scope["conditions"] = conditions;
     return scope;
 }
