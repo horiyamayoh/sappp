@@ -47,7 +47,7 @@ void write_text_file(const std::filesystem::path& path, const std::string& conte
 
 TEST(SpecdbTest, NormalizeContractAssignsIdAndSortsConditions)
 {
-    auto contract = make_contract("usr::normalize", "x86_64", {"Z", "A"}, 0);
+    auto contract = make_contract("usr::normalize", "x86_64", {"Z", "A", "A"}, 0);
     auto normalized =
         sappp::specdb::normalize_contract_ir(contract, std::filesystem::path(SAPPP_SCHEMA_DIR));
 

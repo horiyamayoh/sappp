@@ -11,6 +11,7 @@
 - 契約対象は clang USR を主キーとして一意に解決する。
 - Tier0/1/2/Disabled を実装し、Tier2 は SAFE 根拠として使用禁止（Validatorが混入を検査）。
 - version_scope の評価順を固定する（abi → library_version → conditions）。
+- version_scope で同率の場合は priority を優先し、さらに同率なら contract_id で安定ソートする。
 
 ## Consequences
 - 導入初期から第三者コードに契約適用できる。

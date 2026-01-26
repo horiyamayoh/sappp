@@ -29,6 +29,8 @@
 #if defined(SAPPP_HAS_CLANG_FRONTEND)
     #include "frontend_clang/frontend.hpp"
 #endif
+#include "sappp/print.hpp"
+
 #include <charconv>
 #include <chrono>
 #include <cstdint>
@@ -38,7 +40,6 @@
 #include <format>
 #include <fstream>
 #include <optional>
-#include <print>
 #include <ranges>
 #include <span>
 #include <string>
