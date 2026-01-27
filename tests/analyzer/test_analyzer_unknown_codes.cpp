@@ -48,6 +48,9 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
             {"id", "I" + std::to_string(inst_index)},
             {"op",                  std::string(op)}
         };
+        if (op == "fence" || op.starts_with("atomic.")) {
+            inst["memory_order"] = std::string(op == "atomic.r" ? "relaxed" : "seq_cst");
+        }
         if (op == "vcall" && vcall_config.candidate_id.has_value()) {
             inst["args"] =
                 nlohmann::json::array({"receiver", std::string(*vcall_config.candidate_id)});
