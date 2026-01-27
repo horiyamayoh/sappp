@@ -132,13 +132,13 @@ nlohmann::json make_po_list_with_points_to()
     };
 }
 
-nlohmann::json make_contract_snapshot_for_safe()
+nlohmann::json make_contract_snapshot_for_target(std::string_view target_usr)
 {
     nlohmann::json contracts = nlohmann::json::array();
     contracts.push_back(nlohmann::json{
         {"schema_version",                        "contract_ir.v1"                          },
         {   "contract_id",                                                  make_sha256('d')},
-        {        "target",                              nlohmann::json{{"usr", "usr::safe"}}},
+        {        "target",                  nlohmann::json{{"usr", std::string(target_usr)}}},
         {          "tier",                                                           "Tier1"},
         { "version_scope",
          nlohmann::json{{"abi", "x86_64"},
@@ -156,6 +156,82 @@ nlohmann::json make_contract_snapshot_for_safe()
         {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
         {  "generated_at",                                  "1970-01-01T00:00:00Z"},
         {     "contracts",                                               contracts}
+    };
+}
+
+nlohmann::json make_contract_snapshot_for_safe()
+{
+    return make_contract_snapshot_for_target("usr::safe");
+}
+
+nlohmann::json make_nir_with_exception_points_to()
+{
+    nlohmann::json invoke_inst = {
+        {     "id",                                        "I0"                   },
+        {     "op",                                                       "invoke"},
+        {"effects",
+         nlohmann::json{{"points_to",
+         nlohmann::json::array({nlohmann::json{
+         {"ptr", "p"},
+         {"targets", nlohmann::json::array({"inbounds"})}}})}}                    }
+    };
+
+    nlohmann::json exception_block = {
+        {   "id",                                 "B0"},
+        {"insts", nlohmann::json::array({invoke_inst})}
+    };
+
+    nlohmann::json anchor_block = {
+        {   "id",                                                                        "B1"},
+        {"insts", nlohmann::json::array({nlohmann::json{{"id", "I0"}, {"op", "custom.ptr"}}})}
+    };
+
+    nlohmann::json func = {
+        {"function_uid",                          "usr::exception"                        },
+        {"mangled_name",                                                   "_Z9exceptionv"},
+        {         "cfg",
+         nlohmann::json{
+         {"entry", "B0"},
+         {"blocks", nlohmann::json::array({exception_block, anchor_block})},
+         {"edges",
+         nlohmann::json::array(
+         {nlohmann::json{{"from", "B0"}, {"to", "B1"}, {"kind", "exception"}}})}}         }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                "nir.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {     "functions",                           nlohmann::json::array({func})}
+    };
+}
+
+nlohmann::json make_po_list_for_exception_points_to()
+{
+    nlohmann::json po = {
+        {               "po_id",                        make_sha256('f')                                },
+        {             "po_kind",                                                          "UB.NullDeref"},
+        {     "profile_version",                                                        "safety.core.v1"},
+        {   "semantics_version",                                                                "sem.v1"},
+        {"proof_system_version",                                                              "proof.v1"},
+        {       "repo_identity",
+         nlohmann::json{{"path", "src/exception.cpp"}, {"content_sha256", make_sha256('e')}}            },
+        {            "function", nlohmann::json{{"usr", "usr::exception"}, {"mangled", "_Z9exceptionv"}}},
+        {              "anchor",                   nlohmann::json{{"block_id", "B1"}, {"inst_id", "I0"}}},
+        {           "predicate",
+         nlohmann::json{{"expr",
+         nlohmann::json{{"op", "custom.ptr"},
+         {"args", nlohmann::json::array({"UB.NullDeref", "p"})}}},
+         {"pretty", "custom.ptr"}}                                                                      }
+    };
+
+    return nlohmann::json{
+        {"schema_version",                                                 "po.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {           "pos",                             nlohmann::json::array({po})}
     };
 }
 
@@ -215,6 +291,58 @@ TEST(AnalyzerPointsToTest, PointsToSimpleResolvesNullDeref)
     const auto& targets = points_to.at(0).at("targets");
     ASSERT_EQ(targets.size(), 1U);
     EXPECT_EQ(targets.at(0), "alloc1");
+}
+
+TEST(AnalyzerPointsToTest, PointsToExceptionPathPropagatesState)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_points_to_exception");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
+    });
+
+    auto nir = make_nir_with_exception_points_to();
+    auto po_list = make_po_list_for_exception_points_to();
+    auto specdb_snapshot = make_contract_snapshot_for_target("usr::exception");
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output) << output.error().code << ": " << output.error().message;
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    ASSERT_EQ(unknowns.size(), 1U) << unknowns.dump(2);
+    EXPECT_EQ(unknowns.at(0).at("unknown_code"), "DomainTooWeak.Numeric");
+
+    sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
+    std::ifstream index_file(cert_dir / "index" / (make_sha256('f') + ".json"));
+    ASSERT_TRUE(index_file.is_open());
+    nlohmann::json index_json = nlohmann::json::parse(index_file);
+    std::string root_hash = index_json.at("root").get<std::string>();
+
+    auto root_cert = cert_store.get(root_hash);
+    ASSERT_TRUE(root_cert);
+    EXPECT_EQ(root_cert->at("result"), "SAFE");
+
+    std::string evidence_hash = root_cert->at("evidence").at("ref").get<std::string>();
+    auto evidence_cert = cert_store.get(evidence_hash);
+    ASSERT_TRUE(evidence_cert);
+    EXPECT_EQ(evidence_cert->at("kind"), "SafetyProof");
+    const auto& points = evidence_cert->at("points");
+    ASSERT_EQ(points.size(), 1U);
+    const auto& state = points.at(0).at("state");
+    ASSERT_TRUE(state.contains("points_to"));
+    const auto& points_to = state.at("points_to");
+    ASSERT_EQ(points_to.size(), 1U);
+    EXPECT_EQ(points_to.at(0).at("ptr"), "p");
+    const auto& targets = points_to.at(0).at("targets");
+    ASSERT_EQ(targets.size(), 1U);
+    EXPECT_EQ(targets.at(0), "inbounds");
 }
 
 }  // namespace sappp::analyzer::test

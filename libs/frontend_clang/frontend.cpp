@@ -1240,10 +1240,11 @@ ExceptionFlowKind classify_exception_flow(const clang::CFGBlock* block)
     for (const auto& element : *block) {
         if (const auto stmt_elem = element.getAs<clang::CFGStmt>()) {
             const clang::Stmt* stmt = stmt_elem->getStmt();
-            if (!has_throw && stmt_has_throw(stmt)) {
+            const auto classified = classify_stmt(stmt);
+            if (!has_throw && (classified.op == "throw" || classified.op == "resume")) {
                 has_throw = true;
             }
-            if (!has_invoke && stmt_has_throwing_call(stmt)) {
+            if (!has_invoke && classified.op == "invoke") {
                 has_invoke = true;
             }
         }
