@@ -1054,6 +1054,7 @@ struct AbstractStateCheckResult
     return std::nullopt;
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Validation branches are explicit for clarity.
 [[nodiscard]] std::optional<std::string> check_points_to_entries(const nlohmann::json& state)
 {
     if (!state.contains("points_to")) {
@@ -1062,7 +1063,22 @@ struct AbstractStateCheckResult
     if (!state.at("points_to").is_array()) {
         return std::string("points_to must be an array");
     }
-    std::unordered_map<std::string, std::vector<std::string>> seen;
+    struct PointsToTarget
+    {
+        std::string alloc_site;
+        std::string field;
+
+        bool operator==(const PointsToTarget&) const = default;
+    };
+
+    auto target_less = [](const PointsToTarget& a, const PointsToTarget& b) {
+        if (a.alloc_site != b.alloc_site) {
+            return a.alloc_site < b.alloc_site;
+        }
+        return a.field < b.field;
+    };
+
+    std::unordered_map<std::string, std::vector<PointsToTarget>> seen;
     for (const auto& entry : state.at("points_to")) {
         if (!entry.contains("ptr") || !entry.contains("targets")) {
             return std::string("points_to entry missing required fields");
@@ -1071,14 +1087,21 @@ struct AbstractStateCheckResult
             return std::string("points_to entry has invalid field types");
         }
         std::string ptr = entry.at("ptr").get<std::string>();
-        std::vector<std::string> targets;
+        std::vector<PointsToTarget> targets;
         for (const auto& target : entry.at("targets")) {
-            if (!target.is_string()) {
-                return std::string("points_to targets must be strings");
+            if (!target.is_object() || !target.contains("alloc_site")
+                || !target.contains("field")) {
+                return std::string("points_to targets must include alloc_site and field");
             }
-            targets.push_back(target.get<std::string>());
+            if (!target.at("alloc_site").is_string() || !target.at("field").is_string()) {
+                return std::string("points_to targets must include string alloc_site/field");
+            }
+            targets.push_back(PointsToTarget{
+                .alloc_site = target.at("alloc_site").get<std::string>(),
+                .field = target.at("field").get<std::string>(),
+            });
         }
-        std::ranges::sort(targets);
+        std::ranges::sort(targets, target_less);
         auto unique_end = std::ranges::unique(targets);
         targets.erase(unique_end.begin(), targets.end());
 

@@ -137,6 +137,7 @@ make_trace_step(const std::string& tu_id,
     return step;
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters) - Test helper signature is stable.
 [[nodiscard]] nlohmann::json make_bug_trace(const std::string& po_id,
                                             [[maybe_unused]] const std::string& tu_id,
                                             const std::vector<nlohmann::json>& steps)
@@ -912,8 +913,14 @@ TEST(ValidatorTest, DowngradesOnConflictingPointsToState)
     nlohmann::json state = {
         {"predicates",             nlohmann::json::array({predicate_expr})},
         { "points_to",
-         nlohmann::json::array({{{"ptr", "p"}, {"targets", nlohmann::json::array({"alloc1"})}},
-         {{"ptr", "p"}, {"targets", nlohmann::json::array({"alloc2"})}}}) }
+         nlohmann::json::array({{{"ptr", "p"},
+         {"targets",
+         nlohmann::json::array({nlohmann::json{{"alloc_site", "alloc1"},
+         {"field", "root"}}})}},
+         {{"ptr", "p"},
+         {"targets",
+         nlohmann::json::array({nlohmann::json{{"alloc_site", "alloc2"},
+         {"field", "root"}}})}}})                                         }
     };
     nlohmann::json safety_proof =
         make_safety_proof(state, "interval+null+lifetime+init+points-to.simple");

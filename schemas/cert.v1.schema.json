@@ -113,8 +113,22 @@
               },
               "targets": {
                 "items": {
-                  "minLength": 1,
-                  "type": "string"
+                  "additionalProperties": false,
+                  "properties": {
+                    "alloc_site": {
+                      "minLength": 1,
+                      "type": "string"
+                    },
+                    "field": {
+                      "minLength": 1,
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "alloc_site",
+                    "field"
+                  ],
+                  "type": "object"
                 },
                 "type": "array"
               }

@@ -36,6 +36,9 @@ constexpr std::string_view kPointsToDomainContext = "interval+null+lifetime+init
 constexpr std::string_view kPointsToNullTarget = "null";
 constexpr std::string_view kPointsToInBoundsTarget = "inbounds";
 constexpr std::string_view kPointsToOutOfBoundsTarget = "oob";
+constexpr std::string_view kPointsToRootField = "root";
+constexpr std::string_view kPointsToSummaryAllocSite = "heap_any";
+constexpr std::string_view kPointsToSummaryField = "any";
 constexpr std::size_t kMaxPointsToTargets = 4;
 constexpr std::string_view kDeterministicGeneratedAt = "1970-01-01T00:00:00Z";
 
@@ -1889,10 +1892,31 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
     return cache;
 }
 
+struct PointsToTarget
+{
+    std::string alloc_site;
+    std::string field;
+
+    bool operator==(const PointsToTarget&) const = default;
+};
+
+[[nodiscard]] bool points_to_target_less(const PointsToTarget& a, const PointsToTarget& b)
+{
+    if (a.alloc_site != b.alloc_site) {
+        return a.alloc_site < b.alloc_site;
+    }
+    return a.field < b.field;
+}
+
+[[nodiscard]] bool is_summary_target(const PointsToTarget& target)
+{
+    return target.alloc_site == kPointsToSummaryAllocSite && target.field == kPointsToSummaryField;
+}
+
 struct PointsToSet
 {
     bool is_unknown = false;
-    std::vector<std::string> targets;
+    std::vector<PointsToTarget> targets;
 
     PointsToSet()
         // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
@@ -1901,7 +1925,7 @@ struct PointsToSet
         , targets()  // Weffc++ explicit init.
     {}
 
-    PointsToSet(bool unknown, std::vector<std::string> targets_in)
+    PointsToSet(bool unknown, std::vector<PointsToTarget> targets_in)
         : is_unknown(unknown)
         , targets(std::move(targets_in))
     {}
@@ -1924,7 +1948,7 @@ struct PointsToState
 struct PointsToEffect
 {
     std::string ptr;
-    std::vector<std::string> targets;
+    std::vector<PointsToTarget> targets;
 
     PointsToEffect()
         // NOLINTNEXTLINE(readability-redundant-member-init)
@@ -1934,14 +1958,16 @@ struct PointsToEffect
     {}
 };
 
-[[nodiscard]] PointsToSet make_points_to_set(std::vector<std::string> targets)
+[[nodiscard]] PointsToSet make_points_to_set(std::vector<PointsToTarget> targets)
 {
-    std::ranges::stable_sort(targets);
+    std::ranges::stable_sort(targets, points_to_target_less);
     auto unique_end = std::ranges::unique(targets);
     targets.erase(unique_end.begin(), targets.end());
 
     if (targets.size() > kMaxPointsToTargets) {
-        return {true, {}};
+        return {false,
+                {PointsToTarget{.alloc_site = std::string(kPointsToSummaryAllocSite),
+                                .field = std::string(kPointsToSummaryField)}}};
     }
 
     return {false, std::move(targets)};
@@ -1953,7 +1979,7 @@ struct PointsToEffect
         return {true, {}};
     }
 
-    std::vector<std::string> merged = a.targets;
+    std::vector<PointsToTarget> merged = a.targets;
     merged.insert(merged.end(), b.targets.begin(), b.targets.end());
     return make_points_to_set(std::move(merged));
 }
@@ -1986,6 +2012,7 @@ struct PointsToEffect
     return result;
 }
 
+// NOLINTBEGIN(readability-function-size) - JSON validation covers multiple branches.
 [[nodiscard]] sappp::Result<std::vector<PointsToEffect>>
 extract_points_to_effects(const nlohmann::json& inst)
 {
@@ -2023,18 +2050,35 @@ extract_points_to_effects(const nlohmann::json& inst)
         PointsToEffect effect;
         effect.ptr = entry.at("ptr").get<std::string>();
         for (const auto& target : entry.at("targets")) {
-            if (!target.is_string()) {
+            if (target.is_string()) {
+                effect.targets.push_back(PointsToTarget{
+                    .alloc_site = target.get<std::string>(),
+                    .field = std::string(kPointsToRootField),
+                });
+                continue;
+            }
+            if (!target.is_object() || !target.contains("alloc_site")
+                || !target.contains("field")) {
                 return std::unexpected(
                     sappp::Error::make("InvalidFieldType",
-                                       "points_to targets must be strings in nir"));
+                                       "points_to targets must include alloc_site and field"));
             }
-            effect.targets.push_back(target.get<std::string>());
+            if (!target.at("alloc_site").is_string() || !target.at("field").is_string()) {
+                return std::unexpected(
+                    sappp::Error::make("InvalidFieldType",
+                                       "points_to targets must include string alloc_site/field"));
+            }
+            effect.targets.push_back(PointsToTarget{
+                .alloc_site = target.at("alloc_site").get<std::string>(),
+                .field = target.at("field").get<std::string>(),
+            });
         }
         output.push_back(std::move(effect));
     }
 
     return output;
 }
+// NOLINTEND(readability-function-size)
 
 [[nodiscard]] sappp::VoidResult apply_points_to_effects(const nlohmann::json& inst,
                                                         PointsToState& state)
@@ -2044,7 +2088,19 @@ extract_points_to_effects(const nlohmann::json& inst)
         return std::unexpected(effects.error());
     }
     for (const auto& effect : *effects) {
-        state.values[effect.ptr] = make_points_to_set(effect.targets);
+        PointsToSet new_set = make_points_to_set(effect.targets);
+        const bool is_singleton = !new_set.is_unknown && new_set.targets.size() == 1U
+                                  && !is_summary_target(new_set.targets.front());
+        if (is_singleton) {
+            state.values[effect.ptr] = std::move(new_set);
+            continue;
+        }
+        auto it = state.values.find(effect.ptr);
+        if (it == state.values.end()) {
+            state.values.emplace(effect.ptr, std::move(new_set));
+            continue;
+        }
+        it->second = merge_points_to_sets(it->second, new_set);
     }
     return {};
 }
@@ -4143,15 +4199,25 @@ extract_points_to_pointer(const nlohmann::json& predicate_expr)
     return args.at(1).get<std::string>();
 }
 
-[[nodiscard]] bool points_to_contains(const PointsToSet& set, std::string_view target)
+[[nodiscard]] bool
+points_to_contains(const PointsToSet& set, std::string_view alloc_site, std::string_view field)
 {
-    return std::ranges::find(set.targets, target) != set.targets.end();
+    return std::ranges::any_of(set.targets, [&](const PointsToTarget& target) {
+        return target.alloc_site == alloc_site && target.field == field;
+    });
 }
 
 [[nodiscard]] nlohmann::json build_points_to_entries(std::string_view ptr, const PointsToSet& set)
 {
+    nlohmann::json targets = nlohmann::json::array();
+    for (const auto& target : set.targets) {
+        targets.push_back(nlohmann::json{
+            {"alloc_site", target.alloc_site},
+            {     "field",      target.field}
+        });
+    }
     return nlohmann::json::array({
-        nlohmann::json{{"ptr", std::string(ptr)}, {"targets", set.targets}}
+        nlohmann::json{{"ptr", std::string(ptr)}, {"targets", std::move(targets)}}
     });
 }
 
@@ -4209,7 +4275,8 @@ decide_points_to(const nlohmann::json& po,
     }
 
     if (po_kind == "UB.NullDeref") {
-        const bool has_null = points_to_contains(points_to_set, kPointsToNullTarget);
+        const bool has_null =
+            points_to_contains(points_to_set, kPointsToNullTarget, kPointsToRootField);
         if (has_null) {
             if (points_to_set.targets.size() == 1U) {
                 PoDecision decision;
@@ -4230,8 +4297,10 @@ decide_points_to(const nlohmann::json& po,
     }
 
     if (po_kind == "UB.OutOfBounds") {
-        const bool has_oob = points_to_contains(points_to_set, kPointsToOutOfBoundsTarget);
-        const bool has_inbounds = points_to_contains(points_to_set, kPointsToInBoundsTarget);
+        const bool has_oob =
+            points_to_contains(points_to_set, kPointsToOutOfBoundsTarget, kPointsToRootField);
+        const bool has_inbounds =
+            points_to_contains(points_to_set, kPointsToInBoundsTarget, kPointsToRootField);
         if (has_oob) {
             if (points_to_set.targets.size() == 1U) {
                 PoDecision decision;
@@ -4574,10 +4643,11 @@ find_vcall_points_to_set(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& state_opt = *state;
+    if (!state_opt.has_value()) {
         return std::optional<PointsToSet>();
     }
-    const auto& points_state = **state;
+    const auto& points_state = *state_opt;
     if (info.candidate_id.has_value()) {
         auto set_it = points_state.values.find(*info.candidate_id);
         if (set_it != points_state.values.end()) {
@@ -4591,7 +4661,7 @@ find_vcall_points_to_set(const PoProcessingContext& context,
         }
     }
     if (!points_state.values.empty()) {
-        std::vector<std::string> merged_targets;
+        std::vector<PointsToTarget> merged_targets;
         for (const auto& [ptr, set] : points_state.values) {
             (void)ptr;
             if (set.is_unknown) {
@@ -4607,27 +4677,28 @@ find_vcall_points_to_set(const PoProcessingContext& context,
 }
 // NOLINTEND(readability-function-size)
 
-[[nodiscard]] sappp::Result<std::vector<std::string>>
+[[nodiscard]] sappp::Result<std::vector<PointsToTarget>>
 collect_points_to_targets_at_anchor(const PoProcessingContext& context,
                                     std::string_view function_uid,
                                     const IrAnchor& anchor)
 {
     if (context.points_to_cache == nullptr) {
-        return std::vector<std::string>{};
+        return std::vector<PointsToTarget>{};
     }
     auto analysis_it = context.points_to_cache->functions.find(std::string(function_uid));
     if (analysis_it == context.points_to_cache->functions.end()) {
-        return std::vector<std::string>{};
+        return std::vector<PointsToTarget>{};
     }
     auto state = points_to_state_at_anchor(analysis_it->second, anchor);
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
-        return std::vector<std::string>{};
+    const auto& state_opt = *state;
+    if (!state_opt.has_value()) {
+        return std::vector<PointsToTarget>{};
     }
-    std::vector<std::string> merged_targets;
-    for (const auto& [ptr, set] : state->value().values) {
+    std::vector<PointsToTarget> merged_targets;
+    for (const auto& [ptr, set] : state_opt->values) {
         (void)ptr;
         if (set.is_unknown) {
             continue;
@@ -4644,7 +4715,16 @@ filter_vcall_candidates_by_points_to(const std::vector<std::string>& candidates,
     if (points_to_set.is_unknown || points_to_set.targets.empty()) {
         return candidates;
     }
-    std::set<std::string> target_set(points_to_set.targets.begin(), points_to_set.targets.end());
+    std::set<std::string> target_set;
+    for (const auto& target : points_to_set.targets) {
+        if (target.field != kPointsToRootField) {
+            continue;
+        }
+        target_set.insert(target.alloc_site);
+    }
+    if (target_set.empty()) {
+        return candidates;
+    }
     std::vector<std::string> filtered;
     filtered.reserve(candidates.size());
     for (const auto& candidate : candidates) {
@@ -4701,8 +4781,9 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
         if (!points_to_set) {
             return std::unexpected(points_to_set.error());
         }
-        if (points_to_set->has_value()) {
-            candidates = filter_vcall_candidates_by_points_to(candidates, **points_to_set);
+        const auto& points_to_opt = *points_to_set;
+        if (points_to_opt.has_value()) {
+            candidates = filter_vcall_candidates_by_points_to(candidates, *points_to_opt);
         }
     }
     auto merged_targets = collect_points_to_targets_at_anchor(context, *function_uid, *anchor);

@@ -55,7 +55,10 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
         if (vcall_config.points_to_ptr.has_value() && inst_index == 0) {
             nlohmann::json targets = nlohmann::json::array();
             for (const auto& target : vcall_config.points_to_targets) {
-                targets.push_back(std::string(target));
+                targets.push_back(nlohmann::json{
+                    {"alloc_site", std::string(target)},
+                    {     "field",              "root"}
+                });
             }
             inst["effects"] = nlohmann::json{
                 {"points_to",

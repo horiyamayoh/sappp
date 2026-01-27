@@ -37,13 +37,15 @@ ContractMatchContext make_match_context()
 nlohmann::json make_nir_with_points_to()
 {
     nlohmann::json safe_inst = {
-        {     "id",                                                      "I0"                   },
-        {     "op",                                                                     "assign"},
+        {     "id",                                                    "I0"                   },
+        {     "op",                                                                   "assign"},
         {"effects",
          nlohmann::json{{"points_to",
-         nlohmann::json::array(
-         {nlohmann::json{{"ptr", "p"},
-         {"targets", nlohmann::json::array({"alloc1"})}}})}}                                    }
+         nlohmann::json::array({nlohmann::json{
+         {"ptr", "p"},
+         {"targets",
+         nlohmann::json::array({nlohmann::json{{"alloc_site", "alloc1"},
+         {"field", "root"}}})}}})}}                                                           }
     };
     nlohmann::json safe_anchor_inst = {
         {"id",         "I1"},
@@ -167,13 +169,15 @@ nlohmann::json make_contract_snapshot_for_safe()
 nlohmann::json make_nir_with_exception_points_to()
 {
     nlohmann::json invoke_inst = {
-        {     "id",                                        "I0"                   },
-        {     "op",                                                       "invoke"},
+        {     "id",                                                    "I0"                   },
+        {     "op",                                                                   "invoke"},
         {"effects",
          nlohmann::json{{"points_to",
          nlohmann::json::array({nlohmann::json{
          {"ptr", "p"},
-         {"targets", nlohmann::json::array({"inbounds"})}}})}}                    }
+         {"targets",
+         nlohmann::json::array({nlohmann::json{{"alloc_site", "inbounds"},
+         {"field", "root"}}})}}})}}                                                           }
     };
 
     nlohmann::json exception_block = {
@@ -290,7 +294,8 @@ TEST(AnalyzerPointsToTest, PointsToSimpleResolvesNullDeref)
     EXPECT_EQ(points_to.at(0).at("ptr"), "p");
     const auto& targets = points_to.at(0).at("targets");
     ASSERT_EQ(targets.size(), 1U);
-    EXPECT_EQ(targets.at(0), "alloc1");
+    EXPECT_EQ(targets.at(0).at("alloc_site"), "alloc1");
+    EXPECT_EQ(targets.at(0).at("field"), "root");
 }
 
 TEST(AnalyzerPointsToTest, PointsToExceptionPathPropagatesState)
@@ -342,7 +347,8 @@ TEST(AnalyzerPointsToTest, PointsToExceptionPathPropagatesState)
     EXPECT_EQ(points_to.at(0).at("ptr"), "p");
     const auto& targets = points_to.at(0).at("targets");
     ASSERT_EQ(targets.size(), 1U);
-    EXPECT_EQ(targets.at(0), "inbounds");
+    EXPECT_EQ(targets.at(0).at("alloc_site"), "inbounds");
+    EXPECT_EQ(targets.at(0).at("field"), "root");
 }
 
 }  // namespace sappp::analyzer::test
