@@ -20,9 +20,11 @@
 #include <optional>
 #include <ranges>
 #include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -86,6 +88,7 @@ struct VCallSummary
     std::vector<std::string> missing_candidate_ids;
     VCallCandidateSetMap candidate_sets;
     std::vector<std::string> candidate_methods;
+    std::vector<std::string> receiver_keys;
 
     VCallSummary()
         // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
@@ -100,15 +103,44 @@ struct VCallSummary
         , candidate_sets()  // Weffc++ explicit init.
         // NOLINTNEXTLINE(readability-redundant-member-init)
         , candidate_methods()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , receiver_keys()  // Weffc++ explicit init.
     {}
 };
 
 using VCallSummaryMap = std::map<std::string, VCallSummary>;
 
+struct VCallTypeInfo
+{
+    std::vector<std::string> bases;
+    std::vector<std::string> vtable_methods;
+
+    VCallTypeInfo()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        : bases()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , vtable_methods()  // Weffc++ explicit init.
+    {}
+};
+
+using VCallTypeHierarchy = std::unordered_map<std::string, VCallTypeInfo>;
+
+struct VCallCandidateFilter
+{
+    const std::vector<std::string>* methods = nullptr;
+};
+
 struct VCallAnchorInfo
 {
     std::optional<std::string> candidate_id;
     std::optional<std::string> receiver_key;
+
+    VCallAnchorInfo()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        : candidate_id()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , receiver_key()  // Weffc++ explicit init.
+    {}
 };
 
 struct VCallResolvedCandidates
@@ -116,6 +148,15 @@ struct VCallResolvedCandidates
     std::vector<std::string> methods;
     std::vector<const ContractInfo*> contracts;
     std::vector<std::string> missing_contract_targets;
+
+    VCallResolvedCandidates()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        : methods()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , contracts()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , missing_contract_targets()  // Weffc++ explicit init.
+    {}
 };
 
 struct JsonFieldContext
@@ -452,6 +493,271 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
     return args.at(0).get<std::string>();
 }
 
+[[nodiscard]] std::vector<std::string> extract_string_array(const nlohmann::json& input)
+{
+    std::vector<std::string> output;
+    if (!input.is_array()) {
+        return output;
+    }
+    output.reserve(input.size());
+    for (const auto& entry : input) {
+        if (entry.is_string()) {
+            output.emplace_back(entry.get<std::string>());
+        }
+    }
+    return output;
+}
+
+[[nodiscard]] std::vector<std::string>
+extract_vtable_methods_from_array(const nlohmann::json& vtable)
+{
+    std::vector<std::string> methods;
+    if (!vtable.is_array()) {
+        return methods;
+    }
+    for (const auto& entry : vtable) {
+        if (entry.is_string()) {
+            methods.emplace_back(entry.get<std::string>());
+            continue;
+        }
+        if (!entry.is_object()) {
+            continue;
+        }
+        if (entry.contains("method") && entry.at("method").is_string()) {
+            methods.emplace_back(entry.at("method").get<std::string>());
+            continue;
+        }
+        if (entry.contains("target") && entry.at("target").is_string()) {
+            methods.emplace_back(entry.at("target").get<std::string>());
+        }
+    }
+    return methods;
+}
+
+[[nodiscard]] std::vector<std::string>
+extract_vtable_methods_from_object(const nlohmann::json& vtable)
+{
+    if (!vtable.is_object()) {
+        return {};
+    }
+    if (vtable.contains("methods")) {
+        return extract_string_array(vtable.at("methods"));
+    }
+    if (vtable.contains("entries")) {
+        return extract_vtable_methods_from_array(vtable.at("entries"));
+    }
+    return {};
+}
+
+[[nodiscard]] std::vector<std::string> extract_vtable_methods(const nlohmann::json& type_entry)
+{
+    if (!type_entry.is_object()) {
+        return {};
+    }
+
+    if (type_entry.contains("vtable_methods")) {
+        return extract_string_array(type_entry.at("vtable_methods"));
+    }
+
+    if (!type_entry.contains("vtable")) {
+        return {};
+    }
+
+    const auto& vtable = type_entry.at("vtable");
+    if (vtable.is_object()) {
+        return extract_vtable_methods_from_object(vtable);
+    }
+    return extract_vtable_methods_from_array(vtable);
+}
+
+void merge_type_entry(VCallTypeHierarchy& hierarchy, const nlohmann::json& entry)
+{
+    if (!entry.is_object()) {
+        return;
+    }
+    if (!entry.contains("type_id") || !entry.at("type_id").is_string()) {
+        return;
+    }
+    std::string type_id = entry.at("type_id").get<std::string>();
+    auto& info = hierarchy[type_id];
+
+    if (entry.contains("bases") && entry.at("bases").is_array()) {
+        auto bases = extract_string_array(entry.at("bases"));
+        info.bases.insert(info.bases.end(), bases.begin(), bases.end());
+    }
+
+    auto methods = extract_vtable_methods(entry);
+    info.vtable_methods.insert(info.vtable_methods.end(), methods.begin(), methods.end());
+
+    std::ranges::stable_sort(info.bases);
+    auto bases_unique = std::ranges::unique(info.bases);
+    info.bases.erase(bases_unique.begin(), bases_unique.end());
+
+    std::ranges::stable_sort(info.vtable_methods);
+    auto methods_unique = std::ranges::unique(info.vtable_methods);
+    info.vtable_methods.erase(methods_unique.begin(), methods_unique.end());
+}
+
+void merge_type_hierarchy_from_json(VCallTypeHierarchy& hierarchy, const nlohmann::json& root)
+{
+    const nlohmann::json* types = nullptr;
+    if (root.contains("type_hierarchy")) {
+        const auto& type_hierarchy = root.at("type_hierarchy");
+        if (type_hierarchy.is_object() && type_hierarchy.contains("types")
+            && type_hierarchy.at("types").is_array()) {
+            types = &type_hierarchy.at("types");
+        }
+    }
+    if (types == nullptr && root.contains("types") && root.at("types").is_array()) {
+        types = &root.at("types");
+    }
+    if (types == nullptr) {
+        return;
+    }
+    for (const auto& entry : *types) {
+        merge_type_entry(hierarchy, entry);
+    }
+}
+
+[[nodiscard]] VCallTypeHierarchy build_vcall_type_hierarchy(const nlohmann::json& nir_json,
+                                                            const nlohmann::json* specdb_snapshot)
+{
+    VCallTypeHierarchy hierarchy;
+    merge_type_hierarchy_from_json(hierarchy, nir_json);
+    if (specdb_snapshot != nullptr) {
+        merge_type_hierarchy_from_json(hierarchy, *specdb_snapshot);
+    }
+    return hierarchy;
+}
+
+[[nodiscard]] std::optional<std::string>
+resolve_points_to_type_id(std::string_view target, const VCallTypeHierarchy& hierarchy)
+{
+    auto it = hierarchy.find(std::string(target));
+    if (it != hierarchy.end()) {
+        return it->first;
+    }
+
+    constexpr std::array<std::string_view, 3> kPrefixes{
+        {"type:", "type=", "type_id:"}
+    };
+    for (const auto& prefix : kPrefixes) {
+        if (!target.starts_with(prefix)) {
+            continue;
+        }
+        std::string candidate(target.substr(prefix.size()));
+        auto candidate_it = hierarchy.find(candidate);
+        if (candidate_it != hierarchy.end()) {
+            return candidate_it->first;
+        }
+    }
+
+    return std::nullopt;
+}
+
+[[nodiscard]] std::vector<std::string>
+collect_vtable_methods_for_type(const VCallTypeHierarchy& hierarchy, std::string_view type_id)
+{
+    std::vector<std::string> methods;
+    std::deque<std::string> pending;
+    std::unordered_set<std::string> visited;
+
+    pending.emplace_back(type_id);
+
+    while (!pending.empty()) {
+        std::string current = std::move(pending.front());
+        pending.pop_front();
+
+        if (visited.contains(current)) {
+            continue;
+        }
+        visited.insert(current);
+
+        auto it = hierarchy.find(current);
+        if (it == hierarchy.end()) {
+            continue;
+        }
+        methods.insert(methods.end(),
+                       it->second.vtable_methods.begin(),
+                       it->second.vtable_methods.end());
+        for (const auto& base : it->second.bases) {
+            pending.emplace_back(base);
+        }
+    }
+
+    std::ranges::stable_sort(methods);
+    auto unique_end = std::ranges::unique(methods);
+    methods.erase(unique_end.begin(), unique_end.end());
+    return methods;
+}
+
+void append_filtered_methods(std::vector<std::string>& resolved,
+                             const std::vector<std::string>& methods,
+                             bool filter_candidates,
+                             const std::unordered_set<std::string>& candidate_set)
+{
+    if (!filter_candidates) {
+        resolved.insert(resolved.end(), methods.begin(), methods.end());
+        return;
+    }
+    for (const auto& method : methods) {
+        if (candidate_set.contains(method)) {
+            resolved.push_back(method);
+        }
+    }
+}
+
+[[nodiscard]] bool
+append_vcall_methods_for_type_target(std::vector<std::string>& resolved,
+                                     std::string_view target,
+                                     const VCallTypeHierarchy* type_hierarchy,
+                                     bool filter_candidates,
+                                     const std::unordered_set<std::string>& candidate_set)
+{
+    if (type_hierarchy == nullptr) {
+        return false;
+    }
+    auto type_id = resolve_points_to_type_id(target, *type_hierarchy);
+    if (!type_id.has_value()) {
+        return false;
+    }
+    auto vtable_methods = collect_vtable_methods_for_type(*type_hierarchy, *type_id);
+    append_filtered_methods(resolved, vtable_methods, filter_candidates, candidate_set);
+    return true;
+}
+
+[[nodiscard]] std::vector<std::string>
+collect_vcall_methods_from_points_to_targets(std::span<const std::string> targets,
+                                             const VCallCandidateFilter& candidate_filter,
+                                             const VCallTypeHierarchy* type_hierarchy)
+{
+    std::vector<std::string> resolved;
+    bool filter_candidates =
+        candidate_filter.methods != nullptr && !candidate_filter.methods->empty();
+    std::unordered_set<std::string> candidate_set;
+    if (filter_candidates) {
+        candidate_set.insert(candidate_filter.methods->begin(), candidate_filter.methods->end());
+    }
+
+    for (const auto& target : targets) {
+        if (append_vcall_methods_for_type_target(resolved,
+                                                 target,
+                                                 type_hierarchy,
+                                                 filter_candidates,
+                                                 candidate_set)) {
+            continue;
+        }
+        if (!filter_candidates || candidate_set.contains(target)) {
+            resolved.push_back(target);
+        }
+    }
+
+    std::ranges::stable_sort(resolved);
+    auto unique_end = std::ranges::unique(resolved);
+    resolved.erase(unique_end.begin(), unique_end.end());
+    return resolved;
+}
+
 [[nodiscard]] std::vector<const ContractInfo*>
 select_contracts_for_target(std::string_view usr,
                             const ContractIndex& contract_index,
@@ -528,6 +834,9 @@ select_contracts_for_target(std::string_view usr,
                     continue;
                 }
                 summary.has_vcall = true;
+                if (auto receiver_key = extract_vcall_receiver_key(inst)) {
+                    summary.receiver_keys.push_back(*receiver_key);
+                }
                 auto candidate_id = extract_vcall_candidate_id(inst);
                 if (!candidate_id) {
                     summary.missing_candidate_set = true;
@@ -561,6 +870,10 @@ select_contracts_for_target(std::string_view usr,
         std::ranges::stable_sort(summary.candidate_methods);
         auto method_unique = std::ranges::unique(summary.candidate_methods);
         summary.candidate_methods.erase(method_unique.begin(), method_unique.end());
+
+        std::ranges::stable_sort(summary.receiver_keys);
+        auto receiver_unique = std::ranges::unique(summary.receiver_keys);
+        summary.receiver_keys.erase(receiver_unique.begin(), receiver_unique.end());
 
         summary.candidate_sets = std::move(candidate_sets);
 
@@ -996,6 +1309,13 @@ struct MoveArgTargets
 {
     std::optional<std::string> destination;
     std::optional<std::string> source;
+
+    MoveArgTargets()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        : destination()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , source()  // Weffc++ explicit init.
+    {}
 };
 
 [[nodiscard]] MoveArgTargets extract_move_targets(const nlohmann::json& inst)
@@ -3844,6 +4164,7 @@ struct PoProcessingContext
     const ContractIndex* contract_index = nullptr;
     const ContractMatchContext* match_context = nullptr;
     const VCallSummaryMap* vcall_summaries = nullptr;
+    const VCallTypeHierarchy* vcall_type_hierarchy = nullptr;
     std::unordered_map<std::string, std::string>* contract_ref_cache = nullptr;
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
     const HeapLifetimeAnalysisCache* heap_lifetime_cache = nullptr;
@@ -4574,18 +4895,19 @@ find_vcall_points_to_set(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& points_opt = *state;
+    if (!points_opt.has_value()) {
         return std::optional<PointsToSet>();
     }
-    const auto& points_state = **state;
-    if (info.candidate_id.has_value()) {
-        auto set_it = points_state.values.find(*info.candidate_id);
+    const PointsToState& points_state = *points_opt;
+    if (info.receiver_key.has_value()) {
+        auto set_it = points_state.values.find(*info.receiver_key);
         if (set_it != points_state.values.end()) {
             return std::optional<PointsToSet>(set_it->second);
         }
     }
-    if (info.receiver_key.has_value()) {
-        auto set_it = points_state.values.find(*info.receiver_key);
+    if (info.candidate_id.has_value()) {
+        auto set_it = points_state.values.find(*info.candidate_id);
         if (set_it != points_state.values.end()) {
             return std::optional<PointsToSet>(set_it->second);
         }
@@ -4623,11 +4945,12 @@ collect_points_to_targets_at_anchor(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& points_opt = *state;
+    if (!points_opt.has_value()) {
         return std::vector<std::string>{};
     }
     std::vector<std::string> merged_targets;
-    for (const auto& [ptr, set] : state->value().values) {
+    for (const auto& [ptr, set] : points_opt->values) {
         (void)ptr;
         if (set.is_unknown) {
             continue;
@@ -4690,10 +5013,36 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
             }
         }
     }
+    if (!anchor_info.has_value() && summary.receiver_keys.size() == 1U) {
+        VCallAnchorInfo fallback;
+        fallback.receiver_key = summary.receiver_keys.front();
+        anchor_info = fallback;
+    }
 
     std::ranges::stable_sort(candidates);
     auto unique_end = std::ranges::unique(candidates);
     candidates.erase(unique_end.begin(), candidates.end());
+
+    auto apply_points_to_targets = [&](const std::vector<std::string>& targets) {
+        if (targets.empty()) {
+            return;
+        }
+        VCallCandidateFilter filter{.methods = &candidates};
+        auto resolved_targets =
+            collect_vcall_methods_from_points_to_targets(std::span<const std::string>(targets),
+                                                         filter,
+                                                         context.vcall_type_hierarchy);
+        if (resolved_targets.empty()) {
+            return;
+        }
+        if (candidates.empty()) {
+            candidates = std::move(resolved_targets);
+            return;
+        }
+        candidates =
+            filter_vcall_candidates_by_points_to(candidates,
+                                                 make_points_to_set(std::move(resolved_targets)));
+    };
 
     if (anchor_info.has_value()) {
         auto points_to_set =
@@ -4701,19 +5050,20 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
         if (!points_to_set) {
             return std::unexpected(points_to_set.error());
         }
-        if (points_to_set->has_value()) {
-            candidates = filter_vcall_candidates_by_points_to(candidates, **points_to_set);
+        const auto& points_to_opt = *points_to_set;
+        if (points_to_opt.has_value()) {
+            apply_points_to_targets(points_to_opt->targets);
         }
     }
     auto merged_targets = collect_points_to_targets_at_anchor(context, *function_uid, *anchor);
     if (!merged_targets) {
         return std::unexpected(merged_targets.error());
     }
-    if (!merged_targets->empty()) {
-        candidates =
-            filter_vcall_candidates_by_points_to(candidates,
-                                                 make_points_to_set(std::move(*merged_targets)));
-    }
+    apply_points_to_targets(*merged_targets);
+
+    std::ranges::stable_sort(candidates);
+    unique_end = std::ranges::unique(candidates);
+    candidates.erase(unique_end.begin(), candidates.end());
 
     resolved.methods = candidates;
 
@@ -4766,16 +5116,20 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
         return std::optional<UnknownDetails>();
     }
     const VCallSummary& detail = *(*summary);
-    if (detail.missing_candidate_set) {
-        return std::optional<UnknownDetails>(
-            build_vcall_missing_candidates_details(detail.missing_candidate_ids));
-    }
-    if (detail.empty_candidate_set) {
-        return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
-    }
     auto resolved_candidates = resolve_vcall_candidates_for_po(po, context, detail);
     if (!resolved_candidates) {
         return std::unexpected(resolved_candidates.error());
+    }
+    if (detail.missing_candidate_set) {
+        if (resolved_candidates->methods.empty()) {
+            return std::optional<UnknownDetails>(
+                build_vcall_missing_candidates_details(detail.missing_candidate_ids));
+        }
+    }
+    if (detail.empty_candidate_set) {
+        if (resolved_candidates->methods.empty()) {
+            return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
+        }
     }
     if (resolved_candidates->methods.empty()) {
         return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
@@ -5091,6 +5445,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     }
     ContractMatchContext normalized_context = normalize_match_context(match_context);
     const auto vcall_summaries = build_vcall_summary_map(nir_json);
+    const auto vcall_type_hierarchy = build_vcall_type_hierarchy(nir_json, specdb_snapshot);
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto init_cache = build_init_analysis_cache(nir_json, &budget_tracker);
@@ -5119,6 +5474,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .contract_index = &(*contract_index),
                                 .match_context = &normalized_context,
                                 .vcall_summaries = &vcall_summaries,
+                                .vcall_type_hierarchy = &vcall_type_hierarchy,
                                 .contract_ref_cache = &contract_ref_cache,
                                 .lifetime_cache = &lifetime_cache,
                                 .heap_lifetime_cache = &heap_lifetime_cache,

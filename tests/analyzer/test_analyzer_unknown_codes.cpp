@@ -34,6 +34,7 @@ struct VCallTestConfig
     std::vector<std::string_view> candidate_methods;
     std::optional<std::string_view> points_to_ptr;
     std::vector<std::string_view> points_to_targets;
+    std::vector<nlohmann::json> type_entries;
 };
 
 nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
@@ -96,13 +97,23 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
         };
     }
 
-    return nlohmann::json{
+    nlohmann::json nir = {
         {"schema_version",                                                "nir.v1"},
         {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
         {  "generated_at",                                  "1970-01-01T00:00:00Z"},
         {         "tu_id",                                        make_sha256('a')},
         {     "functions",                           nlohmann::json::array({func})}
     };
+
+    if (!vcall_config.type_entries.empty()) {
+        nlohmann::json types = nlohmann::json::array();
+        for (const auto& entry : vcall_config.type_entries) {
+            types.push_back(entry);
+        }
+        nir["types"] = std::move(types);
+    }
+
+    return nir;
 }
 
 nlohmann::json make_po_list(std::string_view po_kind, std::string_view inst_id = "I0")
@@ -177,6 +188,35 @@ nlohmann::json make_contract_snapshot(bool include_concurrency = false,
         {  "generated_at",                                  "1970-01-01T00:00:00Z"},
         {     "contracts",                                               contracts}
     };
+}
+
+nlohmann::json make_type_entry(std::string_view type_id,
+                               const std::vector<std::string_view>& bases,
+                               const std::vector<std::string_view>& vtable_methods)
+{
+    nlohmann::json entry = {
+        {        "type_id",                      std::string(type_id)},
+        {"clang_canonical",                      std::string(type_id)},
+        {         "layout", nlohmann::json{{"size", 1}, {"align", 1}}}
+    };
+
+    if (!bases.empty()) {
+        nlohmann::json bases_json = nlohmann::json::array();
+        for (const auto& base : bases) {
+            bases_json.push_back(std::string(base));
+        }
+        entry["bases"] = std::move(bases_json);
+    }
+
+    if (!vtable_methods.empty()) {
+        nlohmann::json methods = nlohmann::json::array();
+        for (const auto& method : vtable_methods) {
+            methods.push_back(std::string(method));
+        }
+        entry["vtable"] = std::move(methods);
+    }
+
+    return entry;
 }
 
 Analyzer make_analyzer(const std::filesystem::path& cert_dir)
@@ -285,6 +325,7 @@ TEST(AnalyzerUnknownCodeTest, NumericUnknownWithVcallCandidates)
         .candidate_methods = {"_Z3barv"},
         .points_to_ptr = std::nullopt,
         .points_to_targets = {},
+        .type_entries = {},
     };
     auto nir = make_nir_with_ops({"vcall"}, vcall_config);
     auto po_list = make_po_list("UB.DivZero");
@@ -309,6 +350,32 @@ TEST(AnalyzerUnknownCodeTest, NumericUnknownWithPointsToResolvedVcall)
         .candidate_methods = {"_Z3barv", "_Z3bazv"},
         .points_to_ptr = "receiver",
         .points_to_targets = {"_Z3barv"},
+        .type_entries = {},
+    };
+    auto nir = make_nir_with_ops({"assign", "vcall"}, vcall_config);
+    auto po_list = make_po_list("UB.DivZero", "I1");
+    auto specdb_snapshot = make_contract_snapshot(false, {"_Z3barv"});
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "DomainTooWeak.Numeric", "refine-numeric");
+}
+
+TEST(AnalyzerUnknownCodeTest, NumericUnknownWithVcallDynamicTypeResolved)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_dynamic_type");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    VCallTestConfig vcall_config{
+        .candidate_id = "CS0",
+        .include_candidates = true,
+        .candidate_methods = {"_Z3barv", "_Z3bazv"},
+        .points_to_ptr = "receiver",
+        .points_to_targets = {"type:T0"},
+        .type_entries = {make_type_entry("T0", {}, {"_Z3barv"})},
     };
     auto nir = make_nir_with_ops({"assign", "vcall"}, vcall_config);
     auto po_list = make_po_list("UB.DivZero", "I1");

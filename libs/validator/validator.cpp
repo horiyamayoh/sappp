@@ -754,9 +754,10 @@ validate_trace_transition(const TraceStepInfo& previous,
             return proof_failed_error("BugTrace unwind without call frame");
         }
         auto reversed_call_stack = call_stack | std::views::reverse;
-        auto match_it = std::ranges::find_if(reversed_call_stack, [&](const CallFrame& frame) {
-            return frame.function_uid == current.function_uid;
-        });
+        auto match_it =
+            std::ranges::find_if(reversed_call_stack, [&](const CallFrame& frame) noexcept {
+                return frame.function_uid == current.function_uid;
+            });
         if (match_it == std::ranges::end(reversed_call_stack)) {
             return proof_failed_error("BugTrace unwind target mismatch");
         }
