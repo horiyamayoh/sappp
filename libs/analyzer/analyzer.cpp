@@ -13,6 +13,7 @@
 #include <array>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <iterator>
 #include <limits>
@@ -1889,6 +1890,976 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
     return cache;
 }
 
+struct NumericValue
+{
+    std::optional<std::int64_t> lo;
+    std::optional<std::int64_t> hi;
+
+    bool operator==(const NumericValue&) const = default;
+};
+
+struct NumericState
+{
+    std::map<std::string, NumericValue> values;
+
+    NumericState()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : values()
+    {}
+
+    bool operator==(const NumericState&) const = default;
+};
+
+[[nodiscard]] bool numeric_value_is_top(const NumericValue& value)
+{
+    return !value.lo.has_value() && !value.hi.has_value();
+}
+
+[[nodiscard]] bool numeric_value_is_singleton(const NumericValue& value, std::int64_t& out)
+{
+    if (value.lo.has_value() && value.hi.has_value() && *value.lo == *value.hi) {
+        out = *value.lo;
+        return true;
+    }
+    return false;
+}
+
+[[nodiscard]] NumericValue merge_numeric_values(const NumericValue& a, const NumericValue& b)
+{
+    if (numeric_value_is_top(a) || numeric_value_is_top(b)) {
+        return NumericValue{};
+    }
+    std::optional<std::int64_t> lo;
+    std::optional<std::int64_t> hi;
+    if (a.lo.has_value() && b.lo.has_value()) {
+        lo = std::min(*a.lo, *b.lo);
+    }
+    if (a.hi.has_value() && b.hi.has_value()) {
+        hi = std::max(*a.hi, *b.hi);
+    }
+    return NumericValue{.lo = lo, .hi = hi};
+}
+
+[[nodiscard]] NumericState merge_numeric_states(const NumericState& a, const NumericState& b)
+{
+    NumericState result;
+    for (const auto& [key, value] : a.values) {
+        NumericValue other{};
+        auto it = b.values.find(key);
+        if (it != b.values.end()) {
+            other = it->second;
+        }
+        NumericValue merged = merge_numeric_values(value, other);
+        if (!numeric_value_is_top(merged)) {
+            result.values.emplace(key, merged);
+        }
+    }
+    for (const auto& [key, value] : b.values) {
+        if (result.values.contains(key)) {
+            continue;
+        }
+        NumericValue merged = merge_numeric_values(value, NumericValue{});
+        if (!numeric_value_is_top(merged)) {
+            result.values.emplace(key, merged);
+        }
+    }
+    return result;
+}
+
+[[nodiscard]] std::optional<std::int64_t> extract_int64(const nlohmann::json& value)
+{
+    if (!value.is_number_integer()) {
+        return std::nullopt;
+    }
+    return value.get<std::int64_t>();
+}
+
+[[nodiscard]] std::optional<std::int64_t> checked_add(std::int64_t a, std::int64_t b)
+{
+    __int128 result = static_cast<__int128>(a) + static_cast<__int128>(b);
+    if (result > std::numeric_limits<std::int64_t>::max()
+        || result < std::numeric_limits<std::int64_t>::min()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(result);
+}
+
+[[nodiscard]] std::optional<std::int64_t> checked_sub(std::int64_t a, std::int64_t b)
+{
+    __int128 result = static_cast<__int128>(a) - static_cast<__int128>(b);
+    if (result > std::numeric_limits<std::int64_t>::max()
+        || result < std::numeric_limits<std::int64_t>::min()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(result);
+}
+
+[[nodiscard]] std::optional<std::int64_t> checked_mul(std::int64_t a, std::int64_t b)
+{
+    __int128 result = static_cast<__int128>(a) * static_cast<__int128>(b);
+    if (result > std::numeric_limits<std::int64_t>::max()
+        || result < std::numeric_limits<std::int64_t>::min()) {
+        return std::nullopt;
+    }
+    return static_cast<std::int64_t>(result);
+}
+
+[[nodiscard]] std::optional<std::int64_t> checked_div(std::int64_t a, std::int64_t b)
+{
+    if (b == 0) {
+        return std::nullopt;
+    }
+    if (a == std::numeric_limits<std::int64_t>::min() && b == -1) {
+        return std::nullopt;
+    }
+    return a / b;
+}
+
+[[nodiscard]] std::optional<NumericValue> eval_numeric_expr(const nlohmann::json& expr,
+                                                            const NumericState& state);
+
+[[nodiscard]] std::optional<std::string> extract_numeric_var(const nlohmann::json& expr)
+{
+    if (expr.is_string()) {
+        return expr.get<std::string>();
+    }
+    if (!expr.is_object()) {
+        return std::nullopt;
+    }
+    if (expr.contains("op") && expr.at("op").is_string()
+        && expr.at("op").get<std::string>() == "ref") {
+        if (expr.contains("name") && expr.at("name").is_string()) {
+            return expr.at("name").get<std::string>();
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] NumericValue apply_numeric_binary_add(const NumericValue& a, const NumericValue& b)
+{
+    if (!a.lo.has_value() || !a.hi.has_value() || !b.lo.has_value() || !b.hi.has_value()) {
+        return NumericValue{};
+    }
+    auto lo = checked_add(*a.lo, *b.lo);
+    auto hi = checked_add(*a.hi, *b.hi);
+    if (!lo || !hi) {
+        return NumericValue{};
+    }
+    return NumericValue{.lo = lo, .hi = hi};
+}
+
+[[nodiscard]] NumericValue apply_numeric_binary_sub(const NumericValue& a, const NumericValue& b)
+{
+    if (!a.lo.has_value() || !a.hi.has_value() || !b.lo.has_value() || !b.hi.has_value()) {
+        return NumericValue{};
+    }
+    auto lo = checked_sub(*a.lo, *b.hi);
+    auto hi = checked_sub(*a.hi, *b.lo);
+    if (!lo || !hi) {
+        return NumericValue{};
+    }
+    return NumericValue{.lo = lo, .hi = hi};
+}
+
+[[nodiscard]] NumericValue apply_numeric_binary_mul(const NumericValue& a, const NumericValue& b)
+{
+    if (!a.lo.has_value() || !a.hi.has_value() || !b.lo.has_value() || !b.hi.has_value()) {
+        return NumericValue{};
+    }
+    std::array<std::optional<std::int64_t>, 4> products = {
+        checked_mul(*a.lo, *b.lo),
+        checked_mul(*a.lo, *b.hi),
+        checked_mul(*a.hi, *b.lo),
+        checked_mul(*a.hi, *b.hi),
+    };
+    if (std::ranges::any_of(products, [](const auto& entry) { return !entry.has_value(); })) {
+        return NumericValue{};
+    }
+    auto* min_it = std::ranges::min_element(products, [](const auto& lhs, const auto& rhs) {
+        return *lhs < *rhs;
+    });
+    auto* max_it = std::ranges::max_element(products, [](const auto& lhs, const auto& rhs) {
+        return *lhs < *rhs;
+    });
+    return NumericValue{.lo = *min_it, .hi = *max_it};
+}
+
+[[nodiscard]] NumericValue apply_numeric_binary_div(const NumericValue& a, const NumericValue& b)
+{
+    if (!a.lo.has_value() || !a.hi.has_value() || !b.lo.has_value() || !b.hi.has_value()) {
+        return NumericValue{};
+    }
+    if (*b.lo <= 0 && *b.hi >= 0) {
+        return NumericValue{};
+    }
+    std::array<std::optional<std::int64_t>, 4> quotients = {
+        checked_div(*a.lo, *b.lo),
+        checked_div(*a.lo, *b.hi),
+        checked_div(*a.hi, *b.lo),
+        checked_div(*a.hi, *b.hi),
+    };
+    if (std::ranges::any_of(quotients, [](const auto& entry) { return !entry.has_value(); })) {
+        return NumericValue{};
+    }
+    auto* min_it = std::ranges::min_element(quotients, [](const auto& lhs, const auto& rhs) {
+        return *lhs < *rhs;
+    });
+    auto* max_it = std::ranges::max_element(quotients, [](const auto& lhs, const auto& rhs) {
+        return *lhs < *rhs;
+    });
+    return NumericValue{.lo = *min_it, .hi = *max_it};
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Expression evaluator covers supported ops.
+[[nodiscard]] std::optional<NumericValue> eval_numeric_expr(const nlohmann::json& expr,
+                                                            const NumericState& state)
+{
+    if (auto literal = extract_int64(expr); literal.has_value()) {
+        return NumericValue{.lo = literal, .hi = literal};
+    }
+    if (expr.is_boolean()) {
+        return NumericValue{.lo = expr.get<bool>() ? 1 : 0, .hi = expr.get<bool>() ? 1 : 0};
+    }
+    if (auto var = extract_numeric_var(expr); var.has_value()) {
+        auto it = state.values.find(*var);
+        if (it != state.values.end()) {
+            return it->second;
+        }
+        return NumericValue{};
+    }
+    if (!expr.is_object() || !expr.contains("op") || !expr.at("op").is_string()) {
+        return std::nullopt;
+    }
+    const auto& op = expr.at("op").get_ref<const std::string&>();
+    if (op == "ref") {
+        if (auto var = extract_numeric_var(expr); var.has_value()) {
+            auto it = state.values.find(*var);
+            if (it != state.values.end()) {
+                return it->second;
+            }
+            return NumericValue{};
+        }
+    }
+    if (op == "const" || op == "literal") {
+        if (expr.contains("args") && expr.at("args").is_array() && !expr.at("args").empty()) {
+            return eval_numeric_expr(expr.at("args").at(0), state);
+        }
+    }
+    if (!expr.contains("args") || !expr.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = expr.at("args");
+    if (op == "neg" || op == "-" || op == "minus") {
+        if (args.empty()) {
+            return std::nullopt;
+        }
+        auto value = eval_numeric_expr(args.at(0), state);
+        if (!value.has_value()) {
+            return std::nullopt;
+        }
+        if (!value->lo.has_value() || !value->hi.has_value()) {
+            return NumericValue{};
+        }
+        auto lo = checked_sub(0, *value->hi);
+        auto hi = checked_sub(0, *value->lo);
+        if (!lo || !hi) {
+            return NumericValue{};
+        }
+        return NumericValue{.lo = lo, .hi = hi};
+    }
+    if (args.size() < 2) {
+        return std::nullopt;
+    }
+    auto lhs = eval_numeric_expr(args.at(0), state);
+    auto rhs = eval_numeric_expr(args.at(1), state);
+    if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+    }
+    if (op == "add" || op == "+") {
+        return apply_numeric_binary_add(*lhs, *rhs);
+    }
+    if (op == "sub" || op == "-") {
+        return apply_numeric_binary_sub(*lhs, *rhs);
+    }
+    if (op == "mul" || op == "*") {
+        return apply_numeric_binary_mul(*lhs, *rhs);
+    }
+    if (op == "div" || op == "/") {
+        return apply_numeric_binary_div(*lhs, *rhs);
+    }
+    if (op == "mod" || op == "%") {
+        return NumericValue{};
+    }
+    return std::nullopt;
+}
+
+// NOLINTBEGIN(readability-function-size) - Comparison handling is explicit by operator.
+[[nodiscard]] std::optional<bool>
+evaluate_comparison(std::string_view op, const NumericValue& lhs, const NumericValue& rhs)
+{
+    if (!lhs.lo.has_value() || !lhs.hi.has_value() || !rhs.lo.has_value() || !rhs.hi.has_value()) {
+        return std::nullopt;
+    }
+    if (op == "eq" || op == "==" || op == "equal") {
+        if (*lhs.lo == *lhs.hi && *rhs.lo == *rhs.hi && *lhs.lo == *rhs.lo) {
+            return true;
+        }
+        if (*lhs.hi < *rhs.lo || *rhs.hi < *lhs.lo) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    if (op == "neq" || op == "!=" || op == "ne") {
+        if (*lhs.hi < *rhs.lo || *rhs.hi < *lhs.lo) {
+            return true;
+        }
+        if (*lhs.lo == *lhs.hi && *rhs.lo == *rhs.hi && *lhs.lo == *rhs.lo) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    if (op == "lt" || op == "<") {
+        if (*lhs.hi < *rhs.lo) {
+            return true;
+        }
+        if (*lhs.lo >= *rhs.hi) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    if (op == "le" || op == "<=") {
+        if (*lhs.hi <= *rhs.lo) {
+            return true;
+        }
+        if (*lhs.lo > *rhs.hi) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    if (op == "gt" || op == ">") {
+        if (*lhs.lo > *rhs.hi) {
+            return true;
+        }
+        if (*lhs.hi <= *rhs.lo) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    if (op == "ge" || op == ">=") {
+        if (*lhs.lo >= *rhs.hi) {
+            return true;
+        }
+        if (*lhs.hi < *rhs.lo) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+// NOLINTEND(readability-function-size)
+
+// NOLINTNEXTLINE(readability-function-size) - Boolean evaluator mirrors supported op set.
+[[nodiscard]] std::optional<bool> evaluate_boolean_expr(const nlohmann::json& expr,
+                                                        const NumericState& state)
+{
+    if (expr.is_boolean()) {
+        return expr.get<bool>();
+    }
+    if (auto literal = extract_int64(expr); literal.has_value()) {
+        return *literal != 0;
+    }
+    if (!expr.is_object() || !expr.contains("op") || !expr.at("op").is_string()) {
+        return std::nullopt;
+    }
+    const auto& op = expr.at("op").get_ref<const std::string&>();
+    if (!expr.contains("args") || !expr.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = expr.at("args");
+    if (op == "ub.check") {
+        if (args.size() >= 2) {
+            return evaluate_boolean_expr(args.at(1), state);
+        }
+        return std::nullopt;
+    }
+    if (op == "not" || op == "!") {
+        if (args.empty()) {
+            return std::nullopt;
+        }
+        auto value = evaluate_boolean_expr(args.at(0), state);
+        if (!value.has_value()) {
+            return std::nullopt;
+        }
+        return !*value;
+    }
+    if (op == "and" || op == "&&") {
+        bool all_true = true;
+        for (const auto& arg : args) {
+            auto value = evaluate_boolean_expr(arg, state);
+            if (!value.has_value()) {
+                all_true = false;
+                continue;
+            }
+            if (!*value) {
+                return false;
+            }
+        }
+        if (all_true) {
+            return true;
+        }
+        return std::nullopt;
+    }
+    if (op == "or" || op == "||") {
+        bool all_false = true;
+        for (const auto& arg : args) {
+            auto value = evaluate_boolean_expr(arg, state);
+            if (!value.has_value()) {
+                all_false = false;
+                continue;
+            }
+            if (*value) {
+                return true;
+            }
+        }
+        if (all_false) {
+            return false;
+        }
+        return std::nullopt;
+    }
+    if (args.size() < 2) {
+        return std::nullopt;
+    }
+    auto lhs = eval_numeric_expr(args.at(0), state);
+    auto rhs = eval_numeric_expr(args.at(1), state);
+    if (!lhs.has_value() || !rhs.has_value()) {
+        return std::nullopt;
+    }
+    return evaluate_comparison(op, *lhs, *rhs);
+}
+
+void apply_numeric_constraint(NumericState& state,
+                              std::string_view var,
+                              std::optional<std::int64_t> lo,
+                              std::optional<std::int64_t> hi)
+{
+    NumericValue current{};
+    if (auto it = state.values.find(std::string(var)); it != state.values.end()) {
+        current = it->second;
+    }
+    std::optional<std::int64_t> new_lo = current.lo;
+    std::optional<std::int64_t> new_hi = current.hi;
+    if (lo.has_value()) {
+        if (!new_lo.has_value() || *lo > *new_lo) {
+            new_lo = lo;
+        }
+    }
+    if (hi.has_value()) {
+        if (!new_hi.has_value() || *hi < *new_hi) {
+            new_hi = hi;
+        }
+    }
+    NumericValue updated{.lo = new_lo, .hi = new_hi};
+    if (numeric_value_is_top(updated)) {
+        state.values.erase(std::string(var));
+    } else {
+        state.values[std::string(var)] = updated;
+    }
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Guard logic covers all comparison branches.
+void apply_numeric_guard(NumericState& state, const nlohmann::json& expr, bool expect_true)
+{
+    if (!expr.is_object() || !expr.contains("op") || !expr.at("op").is_string()) {
+        return;
+    }
+    if (!expr.contains("args") || !expr.at("args").is_array()) {
+        return;
+    }
+    const auto& op = expr.at("op").get_ref<const std::string&>();
+    const auto& args = expr.at("args");
+    if (op == "not" || op == "!") {
+        if (!args.empty()) {
+            apply_numeric_guard(state, args.at(0), !expect_true);
+        }
+        return;
+    }
+    if (op == "and" || op == "&&") {
+        if (expect_true) {
+            for (const auto& arg : args) {
+                apply_numeric_guard(state, arg, true);
+            }
+        }
+        return;
+    }
+    if (op == "or" || op == "||") {
+        if (!expect_true) {
+            for (const auto& arg : args) {
+                apply_numeric_guard(state, arg, false);
+            }
+        }
+        return;
+    }
+    if (args.size() < 2) {
+        return;
+    }
+    auto var_name = extract_numeric_var(args.at(0));
+    auto constant = eval_numeric_expr(args.at(1), state);
+    bool swapped = false;
+    if (!var_name.has_value()) {
+        var_name = extract_numeric_var(args.at(1));
+        constant = eval_numeric_expr(args.at(0), state);
+        swapped = true;
+    }
+    if (!var_name.has_value() || !constant.has_value()) {
+        return;
+    }
+    std::int64_t bound = 0;
+    if (!numeric_value_is_singleton(*constant, bound)) {
+        return;
+    }
+    std::string_view compare_op = op;
+    if (swapped) {
+        if (op == "lt") {
+            compare_op = "gt";
+        } else if (op == "le") {
+            compare_op = "ge";
+        } else if (op == "gt") {
+            compare_op = "lt";
+        } else if (op == "ge") {
+            compare_op = "le";
+        }
+    }
+    if (compare_op == "eq" || compare_op == "==" || compare_op == "equal") {
+        if (expect_true) {
+            apply_numeric_constraint(state, *var_name, bound, bound);
+        }
+        return;
+    }
+    if (compare_op == "neq" || compare_op == "!=" || compare_op == "ne") {
+        if (!expect_true) {
+            apply_numeric_constraint(state, *var_name, bound, bound);
+        }
+        return;
+    }
+    if (compare_op == "lt" || compare_op == "<") {
+        if (expect_true) {
+            auto upper = checked_sub(bound, 1);
+            if (upper.has_value()) {
+                apply_numeric_constraint(state, *var_name, std::nullopt, upper);
+            }
+        } else {
+            apply_numeric_constraint(state, *var_name, bound, std::nullopt);
+        }
+        return;
+    }
+    if (compare_op == "le" || compare_op == "<=") {
+        if (expect_true) {
+            apply_numeric_constraint(state, *var_name, std::nullopt, bound);
+        } else {
+            auto lower = checked_add(bound, 1);
+            if (lower.has_value()) {
+                apply_numeric_constraint(state, *var_name, lower, std::nullopt);
+            }
+        }
+        return;
+    }
+    if (compare_op == "gt" || compare_op == ">") {
+        if (expect_true) {
+            auto lower = checked_add(bound, 1);
+            if (lower.has_value()) {
+                apply_numeric_constraint(state, *var_name, lower, std::nullopt);
+            }
+        } else {
+            apply_numeric_constraint(state, *var_name, std::nullopt, bound);
+        }
+        return;
+    }
+    if (compare_op == "ge" || compare_op == ">=") {
+        if (expect_true) {
+            apply_numeric_constraint(state, *var_name, bound, std::nullopt);
+        } else {
+            auto upper = checked_sub(bound, 1);
+            if (upper.has_value()) {
+                apply_numeric_constraint(state, *var_name, std::nullopt, upper);
+            }
+        }
+        return;
+    }
+}
+
+struct NumericPredecessor
+{
+    std::string block_id;
+    std::string edge_kind;
+
+    NumericPredecessor()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : block_id()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , edge_kind()
+    {}
+};
+
+struct NumericFlowPredecessors
+{
+    std::vector<NumericPredecessor> preds;
+
+    NumericFlowPredecessors()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : preds()
+    {}
+};
+
+struct FunctionNumericAnalysis
+{
+    std::string function_uid;
+    std::string entry_block;
+    std::map<std::string, const nlohmann::json*> blocks;
+    std::vector<std::string> block_order;
+    std::map<std::string, NumericFlowPredecessors> predecessors;
+    std::map<std::string, const nlohmann::json*> branch_conditions;
+    std::map<std::string, NumericState> in_states;
+    std::map<std::string, NumericState> out_states;
+
+    FunctionNumericAnalysis()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : function_uid()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , entry_block()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , blocks()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , block_order()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , predecessors()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , branch_conditions()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , in_states()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        , out_states()
+    {}
+};
+
+struct NumericAnalysisCache
+{
+    std::map<std::string, FunctionNumericAnalysis> functions;
+
+    NumericAnalysisCache()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : functions()
+    {}
+};
+
+[[nodiscard]] const nlohmann::json* extract_branch_condition(const nlohmann::json& inst)
+{
+    if (inst.contains("cond") && inst.at("cond").is_object()) {
+        return &inst.at("cond");
+    }
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return nullptr;
+    }
+    for (const auto& arg : inst.at("args")) {
+        if (arg.is_object() && arg.contains("op") && arg.at("op").is_string()) {
+            return &arg;
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] const nlohmann::json* find_block_branch_condition(const nlohmann::json& block)
+{
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return nullptr;
+    }
+    const nlohmann::json* condition = nullptr;
+    for (const auto& inst : block.at("insts")) {
+        if (!inst.is_object() || !inst.contains("op") || !inst.at("op").is_string()) {
+            continue;
+        }
+        std::string_view op = inst.at("op").get_ref<const std::string&>();
+        if (op == "branch" || op == "br" || op == "if") {
+            condition = extract_branch_condition(inst);
+        }
+    }
+    return condition;
+}
+
+[[nodiscard]] std::optional<std::string>
+extract_numeric_assignment_target(const nlohmann::json& arg)
+{
+    if (arg.is_string()) {
+        return arg.get<std::string>();
+    }
+    return extract_ref_name(arg);
+}
+
+void apply_numeric_inst_effect(const nlohmann::json& inst, NumericState& state)
+{
+    if (!inst.contains("op") || !inst.at("op").is_string()) {
+        return;
+    }
+    const auto& op = inst.at("op").get_ref<const std::string&>();
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return;
+    }
+    const auto& args = inst.at("args");
+    if ((op == "assign" || op == "binop" || op == "cmp") && args.size() >= 2) {
+        auto target = extract_numeric_assignment_target(args.at(0));
+        if (!target.has_value()) {
+            return;
+        }
+        auto value = eval_numeric_expr(args.at(1), state);
+        if (!value.has_value()) {
+            state.values.erase(*target);
+            return;
+        }
+        if (numeric_value_is_top(*value)) {
+            state.values.erase(*target);
+            return;
+        }
+        state.values[*target] = *value;
+    }
+}
+
+[[nodiscard]] std::vector<const nlohmann::json*>
+collect_ordered_numeric_insts(const nlohmann::json& block)
+{
+    std::vector<const nlohmann::json*> insts;
+    if (!block.contains("insts") || !block.at("insts").is_array()) {
+        return insts;
+    }
+    for (const auto& inst : block.at("insts")) {
+        if (!inst.is_object() || !inst.contains("id") || !inst.at("id").is_string()) {
+            continue;
+        }
+        insts.push_back(&inst);
+    }
+    std::ranges::stable_sort(insts, [](const nlohmann::json* a, const nlohmann::json* b) {
+        return a->at("id").get<std::string>() < b->at("id").get<std::string>();
+    });
+    return insts;
+}
+
+[[nodiscard]] NumericState apply_numeric_block_transfer(const NumericState& in_state,
+                                                        const nlohmann::json& block)
+{
+    NumericState out = in_state;
+    auto ordered_insts = collect_ordered_numeric_insts(block);
+    for (const auto* inst : ordered_insts) {
+        apply_numeric_inst_effect(*inst, out);
+    }
+    return out;
+}
+
+[[nodiscard]] NumericState merge_predecessor_numeric_states(const FunctionNumericAnalysis& analysis,
+                                                            std::string_view block_id)
+{
+    auto pred_it = analysis.predecessors.find(std::string(block_id));
+    if (pred_it == analysis.predecessors.end()) {
+        return NumericState{};
+    }
+    bool first = true;
+    NumericState merged;
+    for (const auto& pred : pred_it->second.preds) {
+        auto out_it = analysis.out_states.find(pred.block_id);
+        if (out_it == analysis.out_states.end()) {
+            continue;
+        }
+        NumericState current = out_it->second;
+        if (pred.edge_kind == "true" || pred.edge_kind == "false") {
+            auto cond_it = analysis.branch_conditions.find(pred.block_id);
+            if (cond_it != analysis.branch_conditions.end() && cond_it->second != nullptr) {
+                apply_numeric_guard(current, *cond_it->second, pred.edge_kind == "true");
+            }
+        }
+        if (first) {
+            merged = current;
+            first = false;
+            continue;
+        }
+        merged = merge_numeric_states(merged, current);
+    }
+    if (first) {
+        return NumericState{};
+    }
+    return merged;
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Fixpoint loop mirrors other analyses.
+void compute_numeric_fixpoint(FunctionNumericAnalysis& analysis, BudgetTracker* budget)
+{
+    bool changed = true;
+    while (changed) {
+        if (budget != nullptr && budget->exceeded()) {
+            return;
+        }
+        changed = false;
+        for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return;
+            }
+            NumericState in_state = merge_predecessor_numeric_states(analysis, block_id);
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second != in_state) {
+                analysis.in_states[block_id] = in_state;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                    return;
+                }
+            }
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            NumericState out_state = apply_numeric_block_transfer(in_state, *block_it->second);
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second != out_state) {
+                analysis.out_states[block_id] = out_state;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(out_state.values.size())) {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+[[nodiscard]] std::optional<NumericState>
+numeric_state_at_anchor(const FunctionNumericAnalysis& analysis, const IrAnchor& anchor)
+{
+    auto block_it = analysis.blocks.find(anchor.block_id);
+    if (block_it == analysis.blocks.end()) {
+        return std::nullopt;
+    }
+    NumericState state;
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    if (in_it != analysis.in_states.end()) {
+        state = in_it->second;
+    }
+    const nlohmann::json& block = *block_it->second;
+    auto ordered_insts = collect_ordered_numeric_insts(block);
+    if (ordered_insts.empty()) {
+        return state;
+    }
+    for (const auto* inst : ordered_insts) {
+        if (inst->at("id").get<std::string>() == anchor.inst_id) {
+            return state;
+        }
+        apply_numeric_inst_effect(*inst, state);
+    }
+    return std::nullopt;
+}
+
+// NOLINTNEXTLINE(readability-function-size) - Cache assembly reads structured JSON in one pass.
+[[nodiscard]] NumericAnalysisCache build_numeric_analysis_cache(const nlohmann::json& nir_json,
+                                                                BudgetTracker* budget)
+{
+    NumericAnalysisCache cache;
+    if (budget != nullptr && budget->exceeded()) {
+        return cache;
+    }
+    if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
+        return cache;
+    }
+
+    for (const auto& func : nir_json.at("functions")) {
+        if (!func.is_object()) {
+            continue;
+        }
+        if (!func.contains("function_uid") || !func.at("function_uid").is_string()) {
+            continue;
+        }
+        if (!func.contains("cfg") || !func.at("cfg").is_object()) {
+            continue;
+        }
+        const auto& cfg = func.at("cfg");
+        if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+            continue;
+        }
+
+        FunctionNumericAnalysis analysis;
+        analysis.function_uid = func.at("function_uid").get<std::string>();
+        if (cfg.contains("entry") && cfg.at("entry").is_string()) {
+            analysis.entry_block = cfg.at("entry").get<std::string>();
+        }
+
+        for (const auto& block : cfg.at("blocks")) {
+            if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()) {
+                continue;
+            }
+            std::string block_id = block.at("id").get<std::string>();
+            analysis.block_order.push_back(block_id);
+            analysis.blocks.emplace(block_id, &block);
+            analysis.in_states.emplace(block_id, NumericState{});
+            analysis.out_states.emplace(block_id, NumericState{});
+            if (const auto* condition = find_block_branch_condition(block); condition != nullptr) {
+                analysis.branch_conditions.emplace(block_id, condition);
+            }
+        }
+
+        std::ranges::stable_sort(analysis.block_order);
+
+        if (cfg.contains("edges") && cfg.at("edges").is_array()) {
+            for (const auto& edge : cfg.at("edges")) {
+                if (!edge.is_object()) {
+                    continue;
+                }
+                if (!edge.contains("from") || !edge.at("from").is_string()) {
+                    continue;
+                }
+                if (!edge.contains("to") || !edge.at("to").is_string()) {
+                    continue;
+                }
+                std::string from = edge.at("from").get<std::string>();
+                std::string to = edge.at("to").get<std::string>();
+                std::string kind;
+                if (edge.contains("kind") && edge.at("kind").is_string()) {
+                    kind = edge.at("kind").get<std::string>();
+                }
+                auto& preds = analysis.predecessors[to];
+                NumericPredecessor pred;
+                pred.block_id = from;
+                pred.edge_kind = kind;
+                preds.preds.push_back(std::move(pred));
+            }
+        }
+
+        for (auto& [block_id, preds] : analysis.predecessors) {
+            (void)block_id;
+            std::ranges::stable_sort(preds.preds,
+                                     [](const NumericPredecessor& a, const NumericPredecessor& b) {
+                                         if (a.block_id != b.block_id) {
+                                             return a.block_id < b.block_id;
+                                         }
+                                         return a.edge_kind < b.edge_kind;
+                                     });
+            auto unique_end = std::ranges::unique(
+                preds.preds,
+                [](const NumericPredecessor& a, const NumericPredecessor& b) {
+                    return a.block_id == b.block_id && a.edge_kind == b.edge_kind;
+                });
+            preds.preds.erase(unique_end.begin(), unique_end.end());
+        }
+
+        if (!analysis.block_order.empty()) {
+            if (analysis.entry_block.empty()) {
+                analysis.entry_block = analysis.block_order.front();
+            }
+            if (budget != nullptr && !budget->consume_summary_node(analysis.function_uid)) {
+                return cache;
+            }
+            compute_numeric_fixpoint(analysis, budget);
+            if (budget != nullptr && budget->exceeded()) {
+                return cache;
+            }
+            cache.functions.emplace(analysis.function_uid, std::move(analysis));
+        }
+    }
+
+    return cache;
+}
+
 struct PointsToSet
 {
     bool is_unknown = false;
@@ -3217,11 +4188,13 @@ build_bug_trace_steps(const nlohmann::json& nir_json,
     };
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Evidence builder uses explicit parameters.
 [[nodiscard]] nlohmann::json make_safety_proof(const std::string& function_uid,
                                                const IrAnchor& anchor,
                                                const nlohmann::json& predicate_expr,
                                                bool predicate_holds,
                                                const std::optional<nlohmann::json>& points_to,
+                                               const std::optional<nlohmann::json>& numeric,
                                                std::string_view domain)
 {
     nlohmann::json state = nlohmann::json::object();
@@ -3232,6 +4205,9 @@ build_bug_trace_steps(const nlohmann::json& nir_json,
     }
     if (points_to) {
         state["points_to"] = *points_to;
+    }
+    if (numeric) {
+        state["numeric"] = *numeric;
     }
 
     nlohmann::json point = nlohmann::json{
@@ -3848,6 +4824,7 @@ struct PoProcessingContext
     const LifetimeAnalysisCache* lifetime_cache = nullptr;
     const HeapLifetimeAnalysisCache* heap_lifetime_cache = nullptr;
     const InitAnalysisCache* init_cache = nullptr;
+    const NumericAnalysisCache* numeric_cache = nullptr;
     const nlohmann::json* nir_json = nullptr;
     const PointsToAnalysisCache* points_to_cache = nullptr;
     std::string_view tu_id;
@@ -3880,6 +4857,7 @@ struct EvidenceInput
     bool is_bug = false;
     bool is_safe = false;
     const std::optional<nlohmann::json>* points_to = nullptr;
+    const std::optional<nlohmann::json>* numeric = nullptr;
     std::string_view safety_domain = kBaseSafetyDomain;
 };
 
@@ -3910,15 +4888,16 @@ struct EvidenceInput
         return std::unexpected(predicate_expr.error());
     }
 
-    EvidenceResult output{.evidence = make_safety_proof(std::string(input.function_uid),
-                                                        *input.anchor,
-                                                        *predicate_expr,
-                                                        input.is_safe,
-                                                        input.points_to != nullptr
-                                                            ? *input.points_to
-                                                            : std::optional<nlohmann::json>(),
-                                                        input.safety_domain),
-                          .result_kind = "SAFE"};
+    EvidenceResult output{
+        .evidence = make_safety_proof(
+            std::string(input.function_uid),
+            *input.anchor,
+            *predicate_expr,
+            input.is_safe,
+            input.points_to != nullptr ? *input.points_to : std::optional<nlohmann::json>(),
+            input.numeric != nullptr ? *input.numeric : std::optional<nlohmann::json>(),
+            input.safety_domain),
+        .result_kind = "SAFE"};
     return output;
 }
 
@@ -3963,11 +4942,13 @@ struct PoBaseData
     bool is_safe = false;
 };
 
+// NOLINTNEXTLINE(readability-function-size) - Proof storage wires multiple inputs.
 [[nodiscard]] sappp::VoidResult store_po_proof(const nlohmann::json& po,
                                                const PoBaseData& base,
                                                const PoProcessingContext& context,
                                                const std::vector<std::string>& contract_hashes,
                                                const std::optional<nlohmann::json>& points_to,
+                                               const std::optional<nlohmann::json>& numeric,
                                                std::string_view safety_domain)
 {
     auto po_hash = put_cert(*context.cert_store, base.po_def);
@@ -3989,6 +4970,7 @@ struct PoBaseData
                                  .is_bug = base.is_bug,
                                  .is_safe = base.is_safe,
                                  .points_to = &points_to,
+                                 .numeric = &numeric,
                                  .safety_domain = safety_domain};
     auto evidence_result = build_evidence(evidence_input);
     if (!evidence_result) {
@@ -4068,6 +5050,7 @@ struct PoDecision
     bool is_unknown = false;
     UnknownDetails unknown_details{};
     std::optional<nlohmann::json> points_to = std::nullopt;
+    std::optional<nlohmann::json> numeric = std::nullopt;
     std::string safety_domain = std::string(kBaseSafetyDomain);
 };
 
@@ -4142,6 +5125,175 @@ extract_points_to_pointer(const nlohmann::json& predicate_expr)
     }
     return args.at(1).get<std::string>();
 }
+
+[[nodiscard]] std::optional<nlohmann::json> build_numeric_entries(const NumericState& state)
+{
+    nlohmann::json entries = nlohmann::json::array();
+    for (const auto& [var, value] : state.values) {
+        if (!value.lo.has_value() && !value.hi.has_value()) {
+            continue;
+        }
+        nlohmann::json entry = nlohmann::json{
+            {"var",                                                                       var},
+            { "lo", value.lo.has_value() ? nlohmann::json(*value.lo) : nlohmann::json("-inf")},
+            { "hi",  value.hi.has_value() ? nlohmann::json(*value.hi) : nlohmann::json("inf")},
+        };
+        entries.push_back(std::move(entry));
+    }
+    if (entries.empty()) {
+        return std::nullopt;
+    }
+    return entries;
+}
+
+[[nodiscard]] const nlohmann::json* extract_ub_check_arg(const nlohmann::json& predicate_expr,
+                                                         std::size_t index)
+{
+    if (!predicate_expr.contains("op") || !predicate_expr.at("op").is_string()) {
+        return nullptr;
+    }
+    if (predicate_expr.at("op").get<std::string>() != "ub.check") {
+        return nullptr;
+    }
+    if (!predicate_expr.contains("args") || !predicate_expr.at("args").is_array()) {
+        return nullptr;
+    }
+    const auto& args = predicate_expr.at("args");
+    if (args.size() <= index) {
+        return nullptr;
+    }
+    return &args.at(index);
+}
+
+[[nodiscard]] bool numeric_value_excludes_zero(const NumericValue& value)
+{
+    return (value.lo.has_value() && *value.lo > 0) || (value.hi.has_value() && *value.hi < 0);
+}
+
+[[nodiscard]] bool numeric_value_is_zero(const NumericValue& value)
+{
+    std::int64_t singleton = 0;
+    return numeric_value_is_singleton(value, singleton) && singleton == 0;
+}
+
+[[nodiscard]] sappp::Result<std::optional<NumericState>>
+resolve_numeric_state(const nlohmann::json& po, const PoProcessingContext& context)
+{
+    if (context.numeric_cache == nullptr || context.function_uid_map == nullptr) {
+        return std::optional<NumericState>();
+    }
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+    auto analysis_it = context.numeric_cache->functions.find(*function_uid);
+    if (analysis_it == context.numeric_cache->functions.end()) {
+        return std::optional<NumericState>();
+    }
+    auto state = numeric_state_at_anchor(analysis_it->second, *anchor);
+    if (!state) {
+        return std::optional<NumericState>();
+    }
+    return state;
+}
+
+// NOLINTBEGIN(readability-function-size, bugprone-easily-swappable-parameters)
+[[nodiscard]] sappp::Result<std::optional<PoDecision>>
+decide_numeric_po(const nlohmann::json& po,
+                  const nlohmann::json& predicate_expr,
+                  std::string_view po_kind,
+                  const PoProcessingContext& context)
+{
+    auto numeric_state = resolve_numeric_state(po, context);
+    if (!numeric_state) {
+        return std::unexpected(numeric_state.error());
+    }
+    const auto& state_opt = *numeric_state;
+    if (!state_opt.has_value()) {
+        return std::optional<PoDecision>();
+    }
+    const NumericState& state = *state_opt;
+    auto predicate_value = evaluate_boolean_expr(predicate_expr, state);
+    if (predicate_value.has_value()) {
+        PoDecision decision;
+        decision.is_bug = *predicate_value;
+        decision.is_safe = !*predicate_value;
+        if (decision.is_safe) {
+            decision.numeric = build_numeric_entries(state);
+        }
+        return std::optional<PoDecision>(decision);
+    }
+
+    if (po_kind == "UB.DivZero") {
+        const nlohmann::json* divisor_expr = extract_ub_check_arg(predicate_expr, 1);
+        if (divisor_expr == nullptr) {
+            return std::optional<PoDecision>();
+        }
+        auto divisor = eval_numeric_expr(*divisor_expr, state);
+        if (!divisor.has_value()) {
+            return std::optional<PoDecision>();
+        }
+        if (numeric_value_is_zero(*divisor)) {
+            PoDecision decision;
+            decision.is_bug = true;
+            return std::optional<PoDecision>(decision);
+        }
+        if (numeric_value_excludes_zero(*divisor)) {
+            PoDecision decision;
+            decision.is_safe = true;
+            decision.numeric = build_numeric_entries(state);
+            return std::optional<PoDecision>(decision);
+        }
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details(po_kind);
+        return std::optional<PoDecision>(decision);
+    }
+
+    if (po_kind == "UB.OutOfBounds") {
+        const nlohmann::json* index_expr = extract_ub_check_arg(predicate_expr, 1);
+        const nlohmann::json* size_expr = extract_ub_check_arg(predicate_expr, 2);
+        if (index_expr == nullptr || size_expr == nullptr) {
+            return std::optional<PoDecision>();
+        }
+        auto index = eval_numeric_expr(*index_expr, state);
+        auto size = eval_numeric_expr(*size_expr, state);
+        if (!index.has_value() || !size.has_value()) {
+            return std::optional<PoDecision>();
+        }
+        const NumericValue& index_value = *index;
+        const NumericValue& size_value = *size;
+        if (index_value.hi.has_value() && *index_value.hi < 0) {
+            PoDecision decision;
+            decision.is_bug = true;
+            return std::optional<PoDecision>(decision);
+        }
+        if (size_value.hi.has_value() && index_value.lo.has_value()
+            && *index_value.lo >= *size_value.hi) {
+            PoDecision decision;
+            decision.is_bug = true;
+            return std::optional<PoDecision>(decision);
+        }
+        if (size_value.lo.has_value() && index_value.lo.has_value() && index_value.hi.has_value()
+            && *index_value.lo >= 0 && *index_value.hi < *size_value.lo) {
+            PoDecision decision;
+            decision.is_safe = true;
+            decision.numeric = build_numeric_entries(state);
+            return std::optional<PoDecision>(decision);
+        }
+        PoDecision decision;
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details(po_kind);
+        return std::optional<PoDecision>(decision);
+    }
+
+    return std::optional<PoDecision>();
+}
+// NOLINTEND(readability-function-size, bugprone-easily-swappable-parameters)
 
 [[nodiscard]] bool points_to_contains(const PointsToSet& set, std::string_view target)
 {
@@ -4574,10 +5726,11 @@ find_vcall_points_to_set(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& points_state_opt = *state;
+    if (!points_state_opt.has_value()) {
         return std::optional<PointsToSet>();
     }
-    const auto& points_state = **state;
+    const auto& points_state = *points_state_opt;
     if (info.candidate_id.has_value()) {
         auto set_it = points_state.values.find(*info.candidate_id);
         if (set_it != points_state.values.end()) {
@@ -4623,11 +5776,12 @@ collect_points_to_targets_at_anchor(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& points_state_opt = *state;
+    if (!points_state_opt.has_value()) {
         return std::vector<std::string>{};
     }
     std::vector<std::string> merged_targets;
-    for (const auto& [ptr, set] : state->value().values) {
+    for (const auto& [ptr, set] : points_state_opt->values) {
         (void)ptr;
         if (set.is_unknown) {
             continue;
@@ -4701,8 +5855,9 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
         if (!points_to_set) {
             return std::unexpected(points_to_set.error());
         }
-        if (points_to_set->has_value()) {
-            candidates = filter_vcall_candidates_by_points_to(candidates, **points_to_set);
+        const auto& points_to_set_opt = *points_to_set;
+        if (points_to_set_opt.has_value()) {
+            candidates = filter_vcall_candidates_by_points_to(candidates, *points_to_set_opt);
         }
     }
     auto merged_targets = collect_points_to_targets_at_anchor(context, *function_uid, *anchor);
@@ -4857,8 +6012,17 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
             decision.is_safe = !holds;
             return decision;
         }
+        auto numeric_decision = decide_numeric_po(po, *predicate_expr, *po_kind, context);
+        if (!numeric_decision) {
+            return std::unexpected(numeric_decision.error());
+        }
+        const auto& numeric_decision_opt = *numeric_decision;
+        if (numeric_decision_opt.has_value()) {
+            return *numeric_decision_opt;
+        }
         PoDecision decision;
-        decision.is_bug = true;
+        decision.is_unknown = true;
+        decision.unknown_details = build_unknown_details(*po_kind);
         return decision;
     }
 
@@ -4894,6 +6058,17 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
         const auto& points_opt = *points_to_decision;
         if (points_opt.has_value()) {
             return *points_opt;
+        }
+    }
+
+    if (*po_kind == "UB.DivZero" || *po_kind == "UB.OutOfBounds") {
+        auto numeric_decision = decide_numeric_po(po, *predicate_expr, *po_kind, context);
+        if (!numeric_decision) {
+            return std::unexpected(numeric_decision.error());
+        }
+        const auto& numeric_decision_opt = *numeric_decision;
+        if (numeric_decision_opt.has_value()) {
+            return *numeric_decision_opt;
         }
     }
 
@@ -4982,6 +6157,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
                                      context,
                                      contract_hashes,
                                      decision->points_to,
+                                     decision->numeric,
                                      decision->safety_domain);
         !stored) {
         return std::unexpected(stored.error());
@@ -5094,6 +6270,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto init_cache = build_init_analysis_cache(nir_json, &budget_tracker);
+    const auto numeric_cache = build_numeric_analysis_cache(nir_json, &budget_tracker);
     auto points_to_cache = build_points_to_analysis_cache(nir_json, &budget_tracker);
     if (!points_to_cache) {
         return std::unexpected(points_to_cache.error());
@@ -5123,6 +6300,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
                                 .lifetime_cache = &lifetime_cache,
                                 .heap_lifetime_cache = &heap_lifetime_cache,
                                 .init_cache = &init_cache,
+                                .numeric_cache = &numeric_cache,
                                 .nir_json = &nir_json,
                                 .points_to_cache = &(*points_to_cache),
                                 .tu_id = *tu_id,
