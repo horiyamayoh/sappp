@@ -938,6 +938,48 @@ struct LifetimeState
     return result;
 }
 
+[[nodiscard]] bool lifetime_value_less_equal(LifetimeValue a, LifetimeValue b)
+{
+    if (a == b) {
+        return true;
+    }
+    return b == LifetimeValue::kMaybe;
+}
+
+[[nodiscard]] bool lifetime_state_less_equal(const LifetimeState& a, const LifetimeState& b)
+{
+    for (const auto& [key, value] : a.values) {
+        LifetimeValue other = LifetimeValue::kMaybe;
+        if (auto it = b.values.find(key); it != b.values.end()) {
+            other = it->second;
+        }
+        if (!lifetime_value_less_equal(value, other)) {
+            return false;
+        }
+    }
+    return std::ranges::all_of(b.values, [&](const auto& entry) {
+        if (a.values.contains(entry.first)) {
+            return true;
+        }
+        return lifetime_value_less_equal(LifetimeValue::kMaybe, entry.second);
+    });
+}
+
+[[nodiscard]] LifetimeState widen_lifetime_states(const LifetimeState& current,
+                                                  const LifetimeState& next)
+{
+    return merge_lifetime_states(current, next);
+}
+
+[[nodiscard]] LifetimeState narrow_lifetime_states(const LifetimeState& current,
+                                                   const LifetimeState& next)
+{
+    if (lifetime_state_less_equal(next, current)) {
+        return next;
+    }
+    return current;
+}
+
 enum class LifetimeFlow {
     kNormal,
     kException,
@@ -955,6 +997,84 @@ struct FlowPredecessors
         , exception()
     {}
 };
+
+[[nodiscard]] std::map<std::string, std::size_t>
+build_block_order_index(const std::vector<std::string>& block_order)
+{
+    std::map<std::string, std::size_t> order_index;
+    std::size_t index = 0;
+    for (const auto& block_id : block_order) {
+        order_index.emplace(block_id, index);
+        ++index;
+    }
+    return order_index;
+}
+
+[[nodiscard]] std::map<std::string, std::vector<std::string>>
+build_successors_map(const std::map<std::string, FlowPredecessors>& predecessors,
+                     const std::map<std::string, std::size_t>& order_index)
+{
+    std::map<std::string, std::vector<std::string>> successors;
+    for (const auto& [block_id, preds] : predecessors) {
+        for (const auto& pred : preds.normal) {
+            successors[pred].push_back(block_id);
+        }
+        for (const auto& pred : preds.exception) {
+            successors[pred].push_back(block_id);
+        }
+    }
+
+    for (auto& [block_id, succs] : successors) {
+        std::ranges::stable_sort(succs, [&](const std::string& lhs, const std::string& rhs) {
+            const auto lhs_it = order_index.find(lhs);
+            const auto rhs_it = order_index.find(rhs);
+            const auto lhs_order = lhs_it != order_index.end() ? lhs_it->second : 0;
+            const auto rhs_order = rhs_it != order_index.end() ? rhs_it->second : 0;
+            if (lhs_order != rhs_order) {
+                return lhs_order < rhs_order;
+            }
+            return lhs < rhs;
+        });
+        auto unique_end = std::ranges::unique(succs);
+        succs.erase(unique_end.begin(), unique_end.end());
+    }
+
+    return successors;
+}
+
+[[nodiscard]] bool has_back_edge(const std::vector<std::string>& preds,
+                                 std::size_t block_index,
+                                 const std::map<std::string, std::size_t>& order_index)
+{
+    return std::ranges::any_of(preds, [&](const std::string& pred) {
+        auto pred_it = order_index.find(pred);
+        return pred_it != order_index.end() && pred_it->second >= block_index;
+    });
+}
+
+[[nodiscard]] std::set<std::string>
+detect_loop_headers(const std::vector<std::string>& block_order,
+                    const std::map<std::string, FlowPredecessors>& predecessors,
+                    const std::map<std::string, std::size_t>& order_index)
+{
+    std::set<std::string> loop_headers;
+    for (const auto& block_id : block_order) {
+        auto pred_it = predecessors.find(block_id);
+        if (pred_it == predecessors.end()) {
+            continue;
+        }
+        auto block_index_it = order_index.find(block_id);
+        if (block_index_it == order_index.end()) {
+            continue;
+        }
+        const auto block_index = block_index_it->second;
+        if (has_back_edge(pred_it->second.normal, block_index, order_index)
+            || has_back_edge(pred_it->second.exception, block_index, order_index)) {
+            loop_headers.insert(block_id);
+        }
+    }
+    return loop_headers;
+}
 
 [[nodiscard]] std::optional<std::string>
 extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readability-function-size)
@@ -1208,20 +1328,45 @@ apply_lifetime_block_transfer_with_exception(const LifetimeState& in_state,
 // NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker* budget)
 {
-    bool changed = true;
-    while (changed) {
-        if (budget != nullptr && budget->exceeded()) {
-            return;
-        }
-        changed = false;
+    const auto order_index = build_block_order_index(analysis.block_order);
+    const auto successors = build_successors_map(analysis.predecessors, order_index);
+    const auto loop_headers =
+        detect_loop_headers(analysis.block_order, analysis.predecessors, order_index);
+
+    const auto run_phase = [&](bool use_widen, bool use_narrow) {
+        std::set<std::pair<std::size_t, std::string>> worklist;
         for (const auto& block_id : analysis.block_order) {
-            if (budget != nullptr && !budget->consume_iteration()) {
-                return;
+            auto index_it = order_index.find(block_id);
+            if (index_it != order_index.end()) {
+                worklist.emplace(index_it->second, block_id);
             }
+        }
+
+        while (!worklist.empty()) {
+            if (budget != nullptr && budget->exceeded()) {
+                return false;
+            }
+            auto iter = worklist.begin();
+            std::string block_id = iter->second;
+            worklist.erase(iter);
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return false;
+            }
+            const bool is_loop_header = loop_headers.contains(block_id);
+
             LifetimeState normal_in =
                 merge_predecessor_states(analysis, block_id, LifetimeFlow::kNormal);
             LifetimeState exception_in =
                 merge_predecessor_states(analysis, block_id, LifetimeFlow::kException);
+
+            auto exception_in_it = analysis.exception_in_states.find(block_id);
+            if (is_loop_header && exception_in_it != analysis.exception_in_states.end()) {
+                if (use_widen) {
+                    exception_in = widen_lifetime_states(exception_in_it->second, exception_in);
+                } else if (use_narrow) {
+                    exception_in = narrow_lifetime_states(exception_in_it->second, exception_in);
+                }
+            }
 
             auto pred_it = analysis.predecessors.find(block_id);
             bool has_normal_preds = false;
@@ -1244,22 +1389,30 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
             }
 
             auto normal_in_it = analysis.normal_in_states.find(block_id);
-            if (normal_in_it == analysis.normal_in_states.end()
-                || normal_in_it->second.values != normal_entry.values) {
-                analysis.normal_in_states[block_id] = normal_entry;
-                changed = true;
-                if (budget != nullptr && !budget->consume_state(normal_in.values.size())) {
-                    return;
+            if (is_loop_header && normal_in_it != analysis.normal_in_states.end()) {
+                if (use_widen) {
+                    normal_entry = widen_lifetime_states(normal_in_it->second, normal_entry);
+                } else if (use_narrow) {
+                    normal_entry = narrow_lifetime_states(normal_in_it->second, normal_entry);
                 }
             }
 
-            auto exception_in_it = analysis.exception_in_states.find(block_id);
+            bool block_changed = false;
+            if (normal_in_it == analysis.normal_in_states.end()
+                || normal_in_it->second.values != normal_entry.values) {
+                analysis.normal_in_states[block_id] = normal_entry;
+                block_changed = true;
+                if (budget != nullptr && !budget->consume_state(normal_entry.values.size())) {
+                    return false;
+                }
+            }
+
             if (exception_in_it == analysis.exception_in_states.end()
                 || exception_in_it->second.values != exception_in.values) {
                 analysis.exception_in_states[block_id] = exception_in;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(exception_in.values.size())) {
-                    return;
+                    return false;
                 }
             }
 
@@ -1274,9 +1427,9 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
             if (normal_out_it == analysis.normal_out_states.end()
                 || normal_out_it->second.values != normal_out.values) {
                 analysis.normal_out_states[block_id] = normal_out;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(normal_out.values.size())) {
-                    return;
+                    return false;
                 }
             }
 
@@ -1305,12 +1458,33 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
             if (exception_out_it == analysis.exception_out_states.end()
                 || exception_out_it->second.values != exception_out.values) {
                 analysis.exception_out_states[block_id] = exception_out;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(exception_out.values.size())) {
-                    return;
+                    return false;
+                }
+            }
+
+            if (block_changed) {
+                auto succ_it = successors.find(block_id);
+                if (succ_it != successors.end()) {
+                    for (const auto& succ : succ_it->second) {
+                        auto succ_index_it = order_index.find(succ);
+                        if (succ_index_it != order_index.end()) {
+                            worklist.emplace(succ_index_it->second, succ);
+                        }
+                    }
                 }
             }
         }
+
+        return true;
+    };
+
+    if (!run_phase(true, false)) {
+        return;
+    }
+    if (!loop_headers.empty()) {
+        run_phase(false, true);
     }
 }
 
@@ -1525,6 +1699,46 @@ struct InitState
     return result;
 }
 
+[[nodiscard]] bool init_value_less_equal(InitValue a, InitValue b)
+{
+    if (a == b) {
+        return true;
+    }
+    return b == InitValue::kMaybe;
+}
+
+[[nodiscard]] bool init_state_less_equal(const InitState& a, const InitState& b)
+{
+    for (const auto& [key, value] : a.values) {
+        InitValue other = InitValue::kMaybe;
+        if (auto it = b.values.find(key); it != b.values.end()) {
+            other = it->second;
+        }
+        if (!init_value_less_equal(value, other)) {
+            return false;
+        }
+    }
+    return std::ranges::all_of(b.values, [&](const auto& entry) {
+        if (a.values.contains(entry.first)) {
+            return true;
+        }
+        return init_value_less_equal(InitValue::kMaybe, entry.second);
+    });
+}
+
+[[nodiscard]] InitState widen_init_states(const InitState& current, const InitState& next)
+{
+    return merge_init_states(current, next);
+}
+
+[[nodiscard]] InitState narrow_init_states(const InitState& current, const InitState& next)
+{
+    if (init_state_less_equal(next, current)) {
+        return next;
+    }
+    return current;
+}
+
 // NOLINTNEXTLINE(readability-function-size) - Op-driven init state updates.
 void apply_init_effect(const nlohmann::json& inst, InitState& state)
 {
@@ -1701,23 +1915,48 @@ apply_init_block_transfer_with_exception(const InitState& in_state, const nlohma
 // NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget)
 {
-    bool changed = true;
-    while (changed) {
-        if (budget != nullptr && budget->exceeded()) {
-            return;
-        }
-        changed = false;
+    const auto order_index = build_block_order_index(analysis.block_order);
+    const auto successors = build_successors_map(analysis.predecessors, order_index);
+    const auto loop_headers =
+        detect_loop_headers(analysis.block_order, analysis.predecessors, order_index);
+
+    const auto run_phase = [&](bool use_widen, bool use_narrow) {
+        std::set<std::pair<std::size_t, std::string>> worklist;
         for (const auto& block_id : analysis.block_order) {
-            if (budget != nullptr && !budget->consume_iteration()) {
-                return;
+            auto index_it = order_index.find(block_id);
+            if (index_it != order_index.end()) {
+                worklist.emplace(index_it->second, block_id);
             }
+        }
+
+        while (!worklist.empty()) {
+            if (budget != nullptr && budget->exceeded()) {
+                return false;
+            }
+            auto iter = worklist.begin();
+            std::string block_id = iter->second;
+            worklist.erase(iter);
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return false;
+            }
+            const bool is_loop_header = loop_headers.contains(block_id);
+
             InitState in_state = merge_init_predecessor_states(analysis, block_id);
             auto in_it = analysis.in_states.find(block_id);
+            if (is_loop_header && in_it != analysis.in_states.end()) {
+                if (use_widen) {
+                    in_state = widen_init_states(in_it->second, in_state);
+                } else if (use_narrow) {
+                    in_state = narrow_init_states(in_it->second, in_state);
+                }
+            }
+
+            bool block_changed = false;
             if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
                 analysis.in_states[block_id] = in_state;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
-                    return;
+                    return false;
                 }
             }
 
@@ -1730,9 +1969,9 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
             auto out_it = analysis.out_states.find(block_id);
             if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
                 analysis.out_states[block_id] = out_state;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(out_state.values.size())) {
-                    return;
+                    return false;
                 }
             }
 
@@ -1751,14 +1990,35 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
             if (exception_out_it == analysis.exception_out_states.end()
                 || exception_out_it->second.values != exception_out.values) {
                 analysis.exception_out_states[block_id] = std::move(exception_out);
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr
                     && !budget->consume_state(
                         analysis.exception_out_states.at(block_id).values.size())) {
-                    return;
+                    return false;
+                }
+            }
+
+            if (block_changed) {
+                auto succ_it = successors.find(block_id);
+                if (succ_it != successors.end()) {
+                    for (const auto& succ : succ_it->second) {
+                        auto succ_index_it = order_index.find(succ);
+                        if (succ_index_it != order_index.end()) {
+                            worklist.emplace(succ_index_it->second, succ);
+                        }
+                    }
                 }
             }
         }
+
+        return true;
+    };
+
+    if (!run_phase(true, false)) {
+        return;
+    }
+    if (!loop_headers.empty()) {
+        run_phase(false, true);
     }
 }
 
@@ -1986,6 +2246,59 @@ struct PointsToEffect
     return result;
 }
 
+[[nodiscard]] bool points_to_set_less_equal(const PointsToSet& a, const PointsToSet& b)
+{
+    if (b.is_unknown) {
+        return true;
+    }
+    if (a.is_unknown) {
+        return false;
+    }
+    return std::ranges::includes(b.targets, a.targets);
+}
+
+[[nodiscard]] PointsToSet points_to_set_or_unknown(const PointsToState& state,
+                                                   const std::string& key)
+{
+    auto it = state.values.find(key);
+    if (it != state.values.end()) {
+        return it->second;
+    }
+    return {true, {}};
+}
+
+[[nodiscard]] bool points_to_state_less_equal(const PointsToState& a, const PointsToState& b)
+{
+    for (const auto& [key, value] : a.values) {
+        PointsToSet other = points_to_set_or_unknown(b, key);
+        if (!points_to_set_less_equal(value, other)) {
+            return false;
+        }
+    }
+    return std::ranges::all_of(b.values, [&](const auto& entry) {
+        if (a.values.contains(entry.first)) {
+            return true;
+        }
+        PointsToSet other = points_to_set_or_unknown(a, entry.first);
+        return points_to_set_less_equal(other, entry.second);
+    });
+}
+
+[[nodiscard]] PointsToState widen_points_to_states(const PointsToState& current,
+                                                   const PointsToState& next)
+{
+    return merge_points_to_states(current, next);
+}
+
+[[nodiscard]] PointsToState narrow_points_to_states(const PointsToState& current,
+                                                    const PointsToState& next)
+{
+    if (points_to_state_less_equal(next, current)) {
+        return next;
+    }
+    return current;
+}
+
 [[nodiscard]] sappp::Result<std::vector<PointsToEffect>>
 extract_points_to_effects(const nlohmann::json& inst)
 {
@@ -2190,21 +2503,46 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
 [[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis,
                                                            BudgetTracker* budget)
 {
-    bool changed = true;
-    while (changed) {
-        if (budget != nullptr && budget->exceeded()) {
-            return {};
-        }
-        changed = false;
+    const auto order_index = build_block_order_index(analysis.block_order);
+    const auto successors = build_successors_map(analysis.predecessors, order_index);
+    const auto loop_headers =
+        detect_loop_headers(analysis.block_order, analysis.predecessors, order_index);
+
+    const auto run_phase = [&](bool use_widen, bool use_narrow) -> sappp::VoidResult {
+        std::set<std::pair<std::size_t, std::string>> worklist;
         for (const auto& block_id : analysis.block_order) {
+            auto index_it = order_index.find(block_id);
+            if (index_it != order_index.end()) {
+                worklist.emplace(index_it->second, block_id);
+            }
+        }
+
+        while (!worklist.empty()) {
+            if (budget != nullptr && budget->exceeded()) {
+                return {};
+            }
+            auto iter = worklist.begin();
+            std::string block_id = iter->second;
+            worklist.erase(iter);
             if (budget != nullptr && !budget->consume_iteration()) {
                 return {};
             }
+            const bool is_loop_header = loop_headers.contains(block_id);
+
             PointsToState in_state = merge_predecessor_points_to_states(analysis, block_id);
             auto in_it = analysis.in_states.find(block_id);
+            if (is_loop_header && in_it != analysis.in_states.end()) {
+                if (use_widen) {
+                    in_state = widen_points_to_states(in_it->second, in_state);
+                } else if (use_narrow) {
+                    in_state = narrow_points_to_states(in_it->second, in_state);
+                }
+            }
+
+            bool block_changed = false;
             if (in_it == analysis.in_states.end() || in_it->second != in_state) {
                 analysis.in_states[block_id] = in_state;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
                     return {};
                 }
@@ -2222,7 +2560,7 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
             auto out_it = analysis.out_states.find(block_id);
             if (out_it == analysis.out_states.end() || out_it->second != transfer->normal_out) {
                 analysis.out_states[block_id] = transfer->normal_out;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr
                     && !budget->consume_state(transfer->normal_out.values.size())) {
                     return {};
@@ -2244,13 +2582,36 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
             if (exception_out_it == analysis.exception_out_states.end()
                 || exception_out_it->second != exception_out) {
                 analysis.exception_out_states[block_id] = std::move(exception_out);
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr
                     && !budget->consume_state(
                         analysis.exception_out_states.at(block_id).values.size())) {
                     return {};
                 }
             }
+
+            if (block_changed) {
+                auto succ_it = successors.find(block_id);
+                if (succ_it != successors.end()) {
+                    for (const auto& succ : succ_it->second) {
+                        auto succ_index_it = order_index.find(succ);
+                        if (succ_index_it != order_index.end()) {
+                            worklist.emplace(succ_index_it->second, succ);
+                        }
+                    }
+                }
+            }
+        }
+
+        return {};
+    };
+
+    if (auto widened = run_phase(true, false); !widened) {
+        return widened;
+    }
+    if (!loop_headers.empty()) {
+        if (auto narrowed = run_phase(false, true); !narrowed) {
+            return narrowed;
         }
     }
     return {};
@@ -2432,6 +2793,48 @@ struct HeapLifetimeState
         result.values.emplace(key, merge_heap_value(HeapLifetimeValue::kMaybe, value));
     }
     return result;
+}
+
+[[nodiscard]] bool heap_value_less_equal(HeapLifetimeValue a, HeapLifetimeValue b)
+{
+    if (a == b) {
+        return true;
+    }
+    return b == HeapLifetimeValue::kMaybe;
+}
+
+[[nodiscard]] bool heap_state_less_equal(const HeapLifetimeState& a, const HeapLifetimeState& b)
+{
+    for (const auto& [key, value] : a.values) {
+        HeapLifetimeValue other = HeapLifetimeValue::kMaybe;
+        if (auto it = b.values.find(key); it != b.values.end()) {
+            other = it->second;
+        }
+        if (!heap_value_less_equal(value, other)) {
+            return false;
+        }
+    }
+    return std::ranges::all_of(b.values, [&](const auto& entry) {
+        if (a.values.contains(entry.first)) {
+            return true;
+        }
+        return heap_value_less_equal(HeapLifetimeValue::kMaybe, entry.second);
+    });
+}
+
+[[nodiscard]] HeapLifetimeState widen_heap_states(const HeapLifetimeState& current,
+                                                  const HeapLifetimeState& next)
+{
+    return merge_heap_states(current, next);
+}
+
+[[nodiscard]] HeapLifetimeState narrow_heap_states(const HeapLifetimeState& current,
+                                                   const HeapLifetimeState& next)
+{
+    if (heap_state_less_equal(next, current)) {
+        return next;
+    }
+    return current;
 }
 
 [[nodiscard]] HeapLifetimeState make_heap_state(const std::vector<std::string>& labels,
@@ -2629,23 +3032,48 @@ apply_heap_block_transfer_with_exception(const HeapLifetimeState& in_state,
 // NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, BudgetTracker* budget)
 {
-    bool changed = true;
-    while (changed) {
-        if (budget != nullptr && budget->exceeded()) {
-            return;
-        }
-        changed = false;
+    const auto order_index = build_block_order_index(analysis.block_order);
+    const auto successors = build_successors_map(analysis.predecessors, order_index);
+    const auto loop_headers =
+        detect_loop_headers(analysis.block_order, analysis.predecessors, order_index);
+
+    const auto run_phase = [&](bool use_widen, bool use_narrow) {
+        std::set<std::pair<std::size_t, std::string>> worklist;
         for (const auto& block_id : analysis.block_order) {
-            if (budget != nullptr && !budget->consume_iteration()) {
-                return;
+            auto index_it = order_index.find(block_id);
+            if (index_it != order_index.end()) {
+                worklist.emplace(index_it->second, block_id);
             }
+        }
+
+        while (!worklist.empty()) {
+            if (budget != nullptr && budget->exceeded()) {
+                return false;
+            }
+            auto iter = worklist.begin();
+            std::string block_id = iter->second;
+            worklist.erase(iter);
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return false;
+            }
+            const bool is_loop_header = loop_headers.contains(block_id);
+
             HeapLifetimeState in_state = merge_heap_predecessor_states(analysis, block_id);
             auto in_it = analysis.in_states.find(block_id);
+            if (is_loop_header && in_it != analysis.in_states.end()) {
+                if (use_widen) {
+                    in_state = widen_heap_states(in_it->second, in_state);
+                } else if (use_narrow) {
+                    in_state = narrow_heap_states(in_it->second, in_state);
+                }
+            }
+
+            bool block_changed = false;
             if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
                 analysis.in_states[block_id] = in_state;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
-                    return;
+                    return false;
                 }
             }
 
@@ -2658,9 +3086,9 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, Budg
             auto out_it = analysis.out_states.find(block_id);
             if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
                 analysis.out_states[block_id] = out_state;
-                changed = true;
+                block_changed = true;
                 if (budget != nullptr && !budget->consume_state(out_state.values.size())) {
-                    return;
+                    return false;
                 }
             }
 
@@ -2678,9 +3106,35 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, Budg
             if (exception_out_it == analysis.exception_out_states.end()
                 || exception_out_it->second.values != exception_out.values) {
                 analysis.exception_out_states[block_id] = std::move(exception_out);
-                changed = true;
+                block_changed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(
+                        analysis.exception_out_states.at(block_id).values.size())) {
+                    return false;
+                }
+            }
+
+            if (block_changed) {
+                auto succ_it = successors.find(block_id);
+                if (succ_it != successors.end()) {
+                    for (const auto& succ : succ_it->second) {
+                        auto succ_index_it = order_index.find(succ);
+                        if (succ_index_it != order_index.end()) {
+                            worklist.emplace(succ_index_it->second, succ);
+                        }
+                    }
+                }
             }
         }
+
+        return true;
+    };
+
+    if (!run_phase(true, false)) {
+        return;
+    }
+    if (!loop_headers.empty()) {
+        run_phase(false, true);
     }
 }
 
@@ -4574,10 +5028,11 @@ find_vcall_points_to_set(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& optional_state = *state;
+    if (!optional_state.has_value()) {
         return std::optional<PointsToSet>();
     }
-    const auto& points_state = **state;
+    const auto& points_state = optional_state.value();
     if (info.candidate_id.has_value()) {
         auto set_it = points_state.values.find(*info.candidate_id);
         if (set_it != points_state.values.end()) {
@@ -4623,11 +5078,12 @@ collect_points_to_targets_at_anchor(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& optional_state = *state;
+    if (!optional_state.has_value()) {
         return std::vector<std::string>{};
     }
     std::vector<std::string> merged_targets;
-    for (const auto& [ptr, set] : state->value().values) {
+    for (const auto& [ptr, set] : optional_state.value().values) {
         (void)ptr;
         if (set.is_unknown) {
             continue;
@@ -4701,8 +5157,10 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
         if (!points_to_set) {
             return std::unexpected(points_to_set.error());
         }
-        if (points_to_set->has_value()) {
-            candidates = filter_vcall_candidates_by_points_to(candidates, **points_to_set);
+        const auto& optional_points_to_set = *points_to_set;
+        if (optional_points_to_set.has_value()) {
+            candidates =
+                filter_vcall_candidates_by_points_to(candidates, optional_points_to_set.value());
         }
     }
     auto merged_targets = collect_points_to_targets_at_anchor(context, *function_uid, *anchor);
