@@ -144,7 +144,7 @@ struct BudgetTracker
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() - start_time)
                                     .count();
-        if (elapsed_ms > static_cast<long long>(*budget.max_time_ms)) {
+        if (std::cmp_greater(elapsed_ms, *budget.max_time_ms)) {
             exceeded_limit = "max_time_ms";
             return false;
         }
@@ -978,23 +978,6 @@ extract_first_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabil
     return first.get<std::string>();
 }
 
-[[nodiscard]] std::optional<std::string>
-extract_second_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readability-function-size)
-{
-    if (!inst.contains("args") || !inst.at("args").is_array()) {
-        return std::nullopt;
-    }
-    const auto& args = inst.at("args");
-    if (args.size() < 2) {
-        return std::nullopt;
-    }
-    const auto& second = args.at(1);
-    if (!second.is_string()) {
-        return std::nullopt;
-    }
-    return second.get<std::string>();
-}
-
 [[nodiscard]] std::optional<std::string> extract_ref_name(const nlohmann::json& arg)
 {
     if (!arg.is_object()) {
@@ -1004,6 +987,41 @@ extract_second_string_arg(const nlohmann::json& inst)  // NOLINTNEXTLINE(readabi
         return std::nullopt;
     }
     return arg.at("name").get<std::string>();
+}
+
+[[nodiscard]] std::optional<std::string> extract_label_arg(const nlohmann::json& arg)
+{
+    if (arg.is_string()) {
+        return arg.get<std::string>();
+    }
+    return extract_ref_name(arg);
+}
+
+struct MoveArgTargets
+{
+    std::optional<std::string> destination;
+    std::optional<std::string> source;
+};
+
+[[nodiscard]] MoveArgTargets extract_move_targets(const nlohmann::json& inst)
+{
+    MoveArgTargets targets;
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return targets;
+    }
+    const auto& args = inst.at("args");
+    if (args.size() >= 3U) {
+        targets.destination = extract_label_arg(args.at(1));
+        targets.source = extract_label_arg(args.at(2));
+        return targets;
+    }
+    if (args.size() >= 2U) {
+        targets.source = extract_label_arg(args.at(1));
+        if (args.at(0).is_object()) {
+            targets.destination = extract_ref_name(args.at(0));
+        }
+    }
+    return targets;
 }
 
 [[nodiscard]] std::optional<bool> extract_ref_has_init(const nlohmann::json& arg)
@@ -1032,9 +1050,12 @@ void apply_lifetime_effect(const nlohmann::json& inst, LifetimeState& state)
     } else if (op == "lifetime.end" || op == "dtor") {
         state.values[*label] = LifetimeValue::kDead;
     } else if (op == "move") {
-        auto source_label = extract_second_string_arg(inst);
-        if (source_label.has_value()) {
-            state.values[*source_label] = LifetimeValue::kMaybe;
+        auto targets = extract_move_targets(inst);
+        if (targets.destination.has_value()) {
+            state.values[*targets.destination] = LifetimeValue::kAlive;
+        }
+        if (targets.source.has_value()) {
+            state.values[*targets.source] = LifetimeValue::kMaybe;
         }
     }
 }
@@ -1543,8 +1564,9 @@ void apply_init_effect(const nlohmann::json& inst, InitState& state)
         return;
     }
     if (op == "move") {
-        if (args.size() >= 2U && args.at(1).is_string()) {
-            state.values[args.at(1).get<std::string>()] = InitValue::kMaybe;
+        auto targets = extract_move_targets(inst);
+        if (targets.source.has_value()) {
+            state.values[*targets.source] = InitValue::kMaybe;
         }
         return;
     }
