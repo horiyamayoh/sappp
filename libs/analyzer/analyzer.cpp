@@ -1104,6 +1104,14 @@ struct FunctionFeatureFlags
     bool has_atomic = false;
     bool has_thread = false;
     bool has_sync = false;
+    bool has_sync_contract = false;
+    std::vector<std::string> exception_ops;
+    std::vector<std::string> exception_boundary_without_edge;
+    std::vector<std::string> exception_edge_without_boundary;
+    std::vector<std::string> atomic_orders;
+    std::vector<std::string> atomic_unknown_orders;
+    std::vector<std::string> thread_ops;
+    std::vector<std::string> sync_ops;
 };
 
 using FunctionFeatureCache = std::map<std::string, FunctionFeatureFlags>;
@@ -1232,15 +1240,14 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
             }
 
             LifetimeState normal_entry = normal_in;
-            if (has_exception_preds && !has_normal_preds) {
+            if (!has_normal_preds && has_exception_preds) {
                 normal_entry = exception_in;
-            } else if (has_exception_preds && has_normal_preds) {
-                normal_entry = merge_lifetime_states(normal_entry, exception_in);
             }
 
             if (auto landingpad_it = analysis.has_landingpad.find(block_id);
-                landingpad_it != analysis.has_landingpad.end() && landingpad_it->second) {
-                normal_entry = merge_lifetime_states(normal_entry, exception_in);
+                landingpad_it != analysis.has_landingpad.end() && landingpad_it->second
+                && has_exception_preds && !has_normal_preds) {
+                normal_entry = exception_in;
             }
 
             auto normal_in_it = analysis.normal_in_states.find(block_id);
@@ -1280,25 +1287,31 @@ void compute_lifetime_fixpoint(FunctionLifetimeAnalysis& analysis, BudgetTracker
                 }
             }
 
-            LifetimeState exception_source = merge_lifetime_states(normal_entry, exception_in);
+            LifetimeState exception_out = exception_in;
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                exception_source = merge_lifetime_states(exception_source, normal_entry);
-            }
-
-            LifetimeState exception_out = exception_source;
-            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
-                exception_succ_it != analysis.has_exception_successor.end()
-                && exception_succ_it->second) {
-                auto exception_transfer =
-                    apply_lifetime_block_transfer_with_exception(exception_source,
-                                                                 *block_it->second);
-                if (exception_transfer.exception_out.has_value()) {
-                    exception_out = std::move(*exception_transfer.exception_out);
-                } else {
-                    exception_out =
-                        merge_lifetime_states(exception_source, exception_transfer.normal_out);
+                bool has_exception_out = false;
+                auto add_exception_out = [&](const std::optional<LifetimeState>& candidate) {
+                    if (!candidate.has_value()) {
+                        return;
+                    }
+                    if (!has_exception_out) {
+                        exception_out = *candidate;
+                        has_exception_out = true;
+                        return;
+                    }
+                    exception_out = merge_lifetime_states(exception_out, *candidate);
+                };
+                add_exception_out(normal_transfer.exception_out);
+                if (has_exception_preds) {
+                    auto exception_transfer =
+                        apply_lifetime_block_transfer_with_exception(exception_in,
+                                                                     *block_it->second);
+                    add_exception_out(exception_transfer.exception_out);
+                }
+                if (!has_exception_out) {
+                    exception_out = merge_lifetime_states(normal_entry, exception_in);
                 }
             }
             auto exception_out_it = analysis.exception_out_states.find(block_id);
@@ -1577,6 +1590,7 @@ struct FunctionInitAnalysis
     std::map<std::string, bool> has_exception_successor;
     std::map<std::string, InitState> in_states;
     std::map<std::string, InitState> out_states;
+    std::map<std::string, InitState> exception_in_states;
     std::map<std::string, InitState> exception_out_states;
 
     // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
@@ -1589,6 +1603,7 @@ struct FunctionInitAnalysis
         , has_exception_successor()
         , in_states()
         , out_states()
+        , exception_in_states()
         , exception_out_states()
     {}
     // NOLINTEND(readability-redundant-member-init)
@@ -1605,31 +1620,33 @@ struct InitAnalysisCache
 };
 
 [[nodiscard]] InitState merge_init_predecessor_states(const FunctionInitAnalysis& analysis,
-                                                      std::string_view block_id)
+                                                      std::string_view block_id,
+                                                      LifetimeFlow flow)
 {
     auto pred_it = analysis.predecessors.find(std::string(block_id));
     if (pred_it == analysis.predecessors.end()) {
         return InitState{};
     }
 
-    bool first = true;
-    InitState merged;
-    for (const auto& pred : pred_it->second.normal) {
-        auto out_it = analysis.out_states.find(pred);
-        if (out_it == analysis.out_states.end()) {
-            continue;
-        }
-        if (first) {
-            merged = out_it->second;
-            first = false;
-            continue;
-        }
-        merged = merge_init_states(merged, out_it->second);
+    const std::vector<std::string>* pred_list = nullptr;
+    const std::map<std::string, InitState>* out_states = nullptr;
+    if (flow == LifetimeFlow::kNormal) {
+        pred_list = &pred_it->second.normal;
+        out_states = &analysis.out_states;
+    } else {
+        pred_list = &pred_it->second.exception;
+        out_states = &analysis.exception_out_states;
     }
 
-    for (const auto& pred : pred_it->second.exception) {
-        auto out_it = analysis.exception_out_states.find(pred);
-        if (out_it == analysis.exception_out_states.end()) {
+    if (pred_list->empty()) {
+        return InitState{};
+    }
+
+    bool first = true;
+    InitState merged;
+    for (const auto& pred : *pred_list) {
+        auto out_it = out_states->find(pred);
+        if (out_it == out_states->end()) {
             continue;
         }
         if (first) {
@@ -1711,12 +1728,38 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
             if (budget != nullptr && !budget->consume_iteration()) {
                 return;
             }
-            InitState in_state = merge_init_predecessor_states(analysis, block_id);
+            InitState normal_in =
+                merge_init_predecessor_states(analysis, block_id, LifetimeFlow::kNormal);
+            InitState exception_in =
+                merge_init_predecessor_states(analysis, block_id, LifetimeFlow::kException);
+            auto pred_it = analysis.predecessors.find(block_id);
+            bool has_normal_preds = false;
+            bool has_exception_preds = false;
+            if (pred_it != analysis.predecessors.end()) {
+                has_normal_preds = !pred_it->second.normal.empty();
+                has_exception_preds = !pred_it->second.exception.empty();
+            }
+
+            InitState entry_state = normal_in;
+            if (!has_normal_preds && has_exception_preds) {
+                entry_state = exception_in;
+            }
+
             auto in_it = analysis.in_states.find(block_id);
-            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
-                analysis.in_states[block_id] = in_state;
+            if (in_it == analysis.in_states.end() || in_it->second.values != entry_state.values) {
+                analysis.in_states[block_id] = entry_state;
                 changed = true;
-                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                if (budget != nullptr && !budget->consume_state(entry_state.values.size())) {
+                    return;
+                }
+            }
+
+            auto exception_in_it = analysis.exception_in_states.find(block_id);
+            if (exception_in_it == analysis.exception_in_states.end()
+                || exception_in_it->second.values != exception_in.values) {
+                analysis.exception_in_states[block_id] = exception_in;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(exception_in.values.size())) {
                     return;
                 }
             }
@@ -1725,7 +1768,8 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
             if (block_it == analysis.blocks.end()) {
                 continue;
             }
-            auto transfer = apply_init_block_transfer_with_exception(in_state, *block_it->second);
+            auto transfer =
+                apply_init_block_transfer_with_exception(entry_state, *block_it->second);
             InitState out_state = std::move(transfer.normal_out);
             auto out_it = analysis.out_states.find(block_id);
             if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
@@ -1736,15 +1780,30 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
                 }
             }
 
-            InitState exception_out = in_state;
+            InitState exception_out = exception_in;
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                if (transfer.exception_out.has_value()) {
-                    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guarded above.
-                    exception_out = std::move(*transfer.exception_out);
-                } else {
-                    exception_out = merge_init_states(in_state, out_state);
+                bool has_exception_out = false;
+                auto add_exception_out = [&](const std::optional<InitState>& candidate) {
+                    if (!candidate.has_value()) {
+                        return;
+                    }
+                    if (!has_exception_out) {
+                        exception_out = *candidate;
+                        has_exception_out = true;
+                        return;
+                    }
+                    exception_out = merge_init_states(exception_out, *candidate);
+                };
+                add_exception_out(transfer.exception_out);
+                if (has_exception_preds) {
+                    auto exception_transfer =
+                        apply_init_block_transfer_with_exception(exception_in, *block_it->second);
+                    add_exception_out(exception_transfer.exception_out);
+                }
+                if (!has_exception_out) {
+                    exception_out = merge_init_states(entry_state, exception_in);
                 }
             }
             auto exception_out_it = analysis.exception_out_states.find(block_id);
@@ -1770,9 +1829,26 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
         return std::nullopt;
     }
     InitState state;
+    auto pred_it = analysis.predecessors.find(anchor.block_id);
+    bool has_normal_preds = false;
+    bool has_exception_preds = false;
+    if (pred_it != analysis.predecessors.end()) {
+        has_normal_preds = !pred_it->second.normal.empty();
+        has_exception_preds = !pred_it->second.exception.empty();
+    }
     auto in_it = analysis.in_states.find(anchor.block_id);
-    if (in_it != analysis.in_states.end()) {
+    auto exception_it = analysis.exception_in_states.find(anchor.block_id);
+    if (has_exception_preds && !has_normal_preds) {
+        if (exception_it != analysis.exception_in_states.end()) {
+            state = exception_it->second;
+        }
+    } else if (has_normal_preds && has_exception_preds && in_it != analysis.in_states.end()
+               && exception_it != analysis.exception_in_states.end()) {
+        state = merge_init_states(in_it->second, exception_it->second);
+    } else if (in_it != analysis.in_states.end()) {
         state = in_it->second;
+    } else if (exception_it != analysis.exception_in_states.end()) {
+        state = exception_it->second;
     }
     const nlohmann::json& block = *block_it->second;
     if (!block.contains("insts") || !block.at("insts").is_array()) {
@@ -1830,6 +1906,7 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
             analysis.blocks.emplace(block_id, &block);
             analysis.in_states.emplace(block_id, InitState{});
             analysis.out_states.emplace(block_id, InitState{});
+            analysis.exception_in_states.emplace(block_id, InitState{});
             analysis.exception_out_states.emplace(block_id, InitState{});
             analysis.has_exception_successor.emplace(block_id, false);
         }
@@ -2059,6 +2136,7 @@ struct FunctionPointsToAnalysis
     std::map<std::string, bool> has_exception_successor;
     std::map<std::string, PointsToState> in_states;
     std::map<std::string, PointsToState> out_states;
+    std::map<std::string, PointsToState> exception_in_states;
     std::map<std::string, PointsToState> exception_out_states;
 
     // NOLINTBEGIN(readability-redundant-member-init) - required for -Weffc++.
@@ -2071,6 +2149,7 @@ struct FunctionPointsToAnalysis
         , has_exception_successor()
         , in_states()
         , out_states()
+        , exception_in_states()
         , exception_out_states()
     {}
     // NOLINTEND(readability-redundant-member-init)
@@ -2088,31 +2167,33 @@ struct PointsToAnalysisCache
 
 [[nodiscard]] PointsToState
 merge_predecessor_points_to_states(const FunctionPointsToAnalysis& analysis,
-                                   std::string_view block_id)
+                                   std::string_view block_id,
+                                   LifetimeFlow flow)
 {
     auto pred_it = analysis.predecessors.find(std::string(block_id));
     if (pred_it == analysis.predecessors.end()) {
         return PointsToState{};
     }
 
-    bool first = true;
-    PointsToState merged;
-    for (const auto& pred : pred_it->second.normal) {
-        auto out_it = analysis.out_states.find(pred);
-        if (out_it == analysis.out_states.end()) {
-            continue;
-        }
-        if (first) {
-            merged = out_it->second;
-            first = false;
-            continue;
-        }
-        merged = merge_points_to_states(merged, out_it->second);
+    const std::vector<std::string>* pred_list = nullptr;
+    const std::map<std::string, PointsToState>* out_states = nullptr;
+    if (flow == LifetimeFlow::kNormal) {
+        pred_list = &pred_it->second.normal;
+        out_states = &analysis.out_states;
+    } else {
+        pred_list = &pred_it->second.exception;
+        out_states = &analysis.exception_out_states;
     }
 
-    for (const auto& pred : pred_it->second.exception) {
-        auto out_it = analysis.exception_out_states.find(pred);
-        if (out_it == analysis.exception_out_states.end()) {
+    if (pred_list->empty()) {
+        return PointsToState{};
+    }
+
+    bool first = true;
+    PointsToState merged;
+    for (const auto& pred : *pred_list) {
+        auto out_it = out_states->find(pred);
+        if (out_it == out_states->end()) {
             continue;
         }
         if (first) {
@@ -2200,12 +2281,38 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
             if (budget != nullptr && !budget->consume_iteration()) {
                 return {};
             }
-            PointsToState in_state = merge_predecessor_points_to_states(analysis, block_id);
+            PointsToState normal_in =
+                merge_predecessor_points_to_states(analysis, block_id, LifetimeFlow::kNormal);
+            PointsToState exception_in =
+                merge_predecessor_points_to_states(analysis, block_id, LifetimeFlow::kException);
+            auto pred_it = analysis.predecessors.find(block_id);
+            bool has_normal_preds = false;
+            bool has_exception_preds = false;
+            if (pred_it != analysis.predecessors.end()) {
+                has_normal_preds = !pred_it->second.normal.empty();
+                has_exception_preds = !pred_it->second.exception.empty();
+            }
+
+            PointsToState entry_state = normal_in;
+            if (!has_normal_preds && has_exception_preds) {
+                entry_state = exception_in;
+            }
+
             auto in_it = analysis.in_states.find(block_id);
-            if (in_it == analysis.in_states.end() || in_it->second != in_state) {
-                analysis.in_states[block_id] = in_state;
+            if (in_it == analysis.in_states.end() || in_it->second != entry_state) {
+                analysis.in_states[block_id] = entry_state;
                 changed = true;
-                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                if (budget != nullptr && !budget->consume_state(entry_state.values.size())) {
+                    return {};
+                }
+            }
+
+            auto exception_in_it = analysis.exception_in_states.find(block_id);
+            if (exception_in_it == analysis.exception_in_states.end()
+                || exception_in_it->second != exception_in) {
+                analysis.exception_in_states[block_id] = exception_in;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(exception_in.values.size())) {
                     return {};
                 }
             }
@@ -2215,7 +2322,7 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                 continue;
             }
             auto transfer =
-                apply_points_to_block_transfer_with_exception(in_state, *block_it->second);
+                apply_points_to_block_transfer_with_exception(entry_state, *block_it->second);
             if (!transfer) {
                 return std::unexpected(transfer.error());
             }
@@ -2229,15 +2336,34 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                 }
             }
 
-            PointsToState exception_out = in_state;
+            PointsToState exception_out = exception_in;
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                if (transfer->exception_out.has_value()) {
-                    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guarded above.
-                    exception_out = std::move(*transfer->exception_out);
-                } else {
-                    exception_out = merge_points_to_states(in_state, transfer->normal_out);
+                bool has_exception_out = false;
+                auto add_exception_out = [&](const std::optional<PointsToState>& candidate) {
+                    if (!candidate.has_value()) {
+                        return;
+                    }
+                    if (!has_exception_out) {
+                        exception_out = *candidate;
+                        has_exception_out = true;
+                        return;
+                    }
+                    exception_out = merge_points_to_states(exception_out, *candidate);
+                };
+                add_exception_out(transfer->exception_out);
+                if (has_exception_preds) {
+                    auto exception_transfer =
+                        apply_points_to_block_transfer_with_exception(exception_in,
+                                                                      *block_it->second);
+                    if (!exception_transfer) {
+                        return std::unexpected(exception_transfer.error());
+                    }
+                    add_exception_out(exception_transfer->exception_out);
+                }
+                if (!has_exception_out) {
+                    exception_out = merge_points_to_states(entry_state, exception_in);
                 }
             }
             auto exception_out_it = analysis.exception_out_states.find(block_id);
@@ -2256,6 +2382,7 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
     return {};
 }
 
+// NOLINTBEGIN(readability-function-size) - Anchor walk keeps control flow explicit.
 [[nodiscard]] sappp::Result<std::optional<PointsToState>>
 points_to_state_at_anchor(const FunctionPointsToAnalysis& analysis, const IrAnchor& anchor)
 {
@@ -2263,10 +2390,27 @@ points_to_state_at_anchor(const FunctionPointsToAnalysis& analysis, const IrAnch
     if (block_it == analysis.blocks.end()) {
         return std::optional<PointsToState>();
     }
-    auto in_it = analysis.in_states.find(anchor.block_id);
     PointsToState state;
-    if (in_it != analysis.in_states.end()) {
+    auto pred_it = analysis.predecessors.find(anchor.block_id);
+    bool has_normal_preds = false;
+    bool has_exception_preds = false;
+    if (pred_it != analysis.predecessors.end()) {
+        has_normal_preds = !pred_it->second.normal.empty();
+        has_exception_preds = !pred_it->second.exception.empty();
+    }
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    auto exception_it = analysis.exception_in_states.find(anchor.block_id);
+    if (has_exception_preds && !has_normal_preds) {
+        if (exception_it != analysis.exception_in_states.end()) {
+            state = exception_it->second;
+        }
+    } else if (has_normal_preds && has_exception_preds && in_it != analysis.in_states.end()
+               && exception_it != analysis.exception_in_states.end()) {
+        state = merge_points_to_states(in_it->second, exception_it->second);
+    } else if (in_it != analysis.in_states.end()) {
         state = in_it->second;
+    } else if (exception_it != analysis.exception_in_states.end()) {
+        state = exception_it->second;
     }
     const nlohmann::json& block = *block_it->second;
     if (!block.contains("insts") || !block.at("insts").is_array()) {
@@ -2283,6 +2427,7 @@ points_to_state_at_anchor(const FunctionPointsToAnalysis& analysis, const IrAnch
     }
     return std::optional<PointsToState>();
 }
+// NOLINTEND(readability-function-size)
 
 [[nodiscard]] sappp::Result<PointsToAnalysisCache>
 build_points_to_analysis_cache(const nlohmann::json& nir_json,  // NOLINT(readability-function-size)
@@ -2327,6 +2472,7 @@ build_points_to_analysis_cache(const nlohmann::json& nir_json,  // NOLINT(readab
             analysis.blocks.emplace(block_id, &block);
             analysis.in_states.emplace(block_id, PointsToState{});
             analysis.out_states.emplace(block_id, PointsToState{});
+            analysis.exception_in_states.emplace(block_id, PointsToState{});
             analysis.exception_out_states.emplace(block_id, PointsToState{});
             analysis.has_exception_successor.emplace(block_id, false);
         }
@@ -2471,6 +2617,7 @@ struct FunctionHeapLifetimeAnalysis
     std::map<std::string, bool> has_exception_successor;
     std::map<std::string, HeapLifetimeState> in_states;
     std::map<std::string, HeapLifetimeState> out_states;
+    std::map<std::string, HeapLifetimeState> exception_in_states;
     std::map<std::string, HeapLifetimeState> exception_out_states;
     HeapLifetimeState initial_state;
 
@@ -2484,6 +2631,7 @@ struct FunctionHeapLifetimeAnalysis
         , has_exception_successor()
         , in_states()
         , out_states()
+        , exception_in_states()
         , exception_out_states()
         , initial_state()
     {}
@@ -2532,31 +2680,33 @@ struct HeapLifetimeAnalysisCache
 
 [[nodiscard]] HeapLifetimeState
 merge_heap_predecessor_states(const FunctionHeapLifetimeAnalysis& analysis,
-                              std::string_view block_id)
+                              std::string_view block_id,
+                              LifetimeFlow flow)
 {
     auto pred_it = analysis.predecessors.find(std::string(block_id));
     if (pred_it == analysis.predecessors.end()) {
         return analysis.initial_state;
     }
 
-    bool first = true;
-    HeapLifetimeState merged;
-    for (const auto& pred : pred_it->second.normal) {
-        auto out_it = analysis.out_states.find(pred);
-        if (out_it == analysis.out_states.end()) {
-            continue;
-        }
-        if (first) {
-            merged = out_it->second;
-            first = false;
-            continue;
-        }
-        merged = merge_heap_states(merged, out_it->second);
+    const std::vector<std::string>* pred_list = nullptr;
+    const std::map<std::string, HeapLifetimeState>* out_states = nullptr;
+    if (flow == LifetimeFlow::kNormal) {
+        pred_list = &pred_it->second.normal;
+        out_states = &analysis.out_states;
+    } else {
+        pred_list = &pred_it->second.exception;
+        out_states = &analysis.exception_out_states;
     }
 
-    for (const auto& pred : pred_it->second.exception) {
-        auto out_it = analysis.exception_out_states.find(pred);
-        if (out_it == analysis.exception_out_states.end()) {
+    if (pred_list->empty()) {
+        return analysis.initial_state;
+    }
+
+    bool first = true;
+    HeapLifetimeState merged;
+    for (const auto& pred : *pred_list) {
+        auto out_it = out_states->find(pred);
+        if (out_it == out_states->end()) {
             continue;
         }
         if (first) {
@@ -2639,12 +2789,38 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, Budg
             if (budget != nullptr && !budget->consume_iteration()) {
                 return;
             }
-            HeapLifetimeState in_state = merge_heap_predecessor_states(analysis, block_id);
+            HeapLifetimeState normal_in =
+                merge_heap_predecessor_states(analysis, block_id, LifetimeFlow::kNormal);
+            HeapLifetimeState exception_in =
+                merge_heap_predecessor_states(analysis, block_id, LifetimeFlow::kException);
+            auto pred_it = analysis.predecessors.find(block_id);
+            bool has_normal_preds = false;
+            bool has_exception_preds = false;
+            if (pred_it != analysis.predecessors.end()) {
+                has_normal_preds = !pred_it->second.normal.empty();
+                has_exception_preds = !pred_it->second.exception.empty();
+            }
+
+            HeapLifetimeState entry_state = normal_in;
+            if (!has_normal_preds && has_exception_preds) {
+                entry_state = exception_in;
+            }
+
             auto in_it = analysis.in_states.find(block_id);
-            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
-                analysis.in_states[block_id] = in_state;
+            if (in_it == analysis.in_states.end() || in_it->second.values != entry_state.values) {
+                analysis.in_states[block_id] = entry_state;
                 changed = true;
-                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                if (budget != nullptr && !budget->consume_state(entry_state.values.size())) {
+                    return;
+                }
+            }
+
+            auto exception_in_it = analysis.exception_in_states.find(block_id);
+            if (exception_in_it == analysis.exception_in_states.end()
+                || exception_in_it->second.values != exception_in.values) {
+                analysis.exception_in_states[block_id] = exception_in;
+                changed = true;
+                if (budget != nullptr && !budget->consume_state(exception_in.values.size())) {
                     return;
                 }
             }
@@ -2653,7 +2829,8 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, Budg
             if (block_it == analysis.blocks.end()) {
                 continue;
             }
-            auto transfer = apply_heap_block_transfer_with_exception(in_state, *block_it->second);
+            auto transfer =
+                apply_heap_block_transfer_with_exception(entry_state, *block_it->second);
             HeapLifetimeState out_state = std::move(transfer.normal_out);
             auto out_it = analysis.out_states.find(block_id);
             if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
@@ -2664,14 +2841,30 @@ void compute_heap_lifetime_fixpoint(FunctionHeapLifetimeAnalysis& analysis, Budg
                 }
             }
 
-            HeapLifetimeState exception_out = in_state;
+            HeapLifetimeState exception_out = exception_in;
             if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
                 exception_succ_it != analysis.has_exception_successor.end()
                 && exception_succ_it->second) {
-                if (transfer.exception_out.has_value()) {
-                    exception_out = std::move(*transfer.exception_out);
-                } else {
-                    exception_out = merge_heap_states(in_state, out_state);
+                bool has_exception_out = false;
+                auto add_exception_out = [&](const std::optional<HeapLifetimeState>& candidate) {
+                    if (!candidate.has_value()) {
+                        return;
+                    }
+                    if (!has_exception_out) {
+                        exception_out = *candidate;
+                        has_exception_out = true;
+                        return;
+                    }
+                    exception_out = merge_heap_states(exception_out, *candidate);
+                };
+                add_exception_out(transfer.exception_out);
+                if (has_exception_preds) {
+                    auto exception_transfer =
+                        apply_heap_block_transfer_with_exception(exception_in, *block_it->second);
+                    add_exception_out(exception_transfer.exception_out);
+                }
+                if (!has_exception_out) {
+                    exception_out = merge_heap_states(entry_state, exception_in);
                 }
             }
             auto exception_out_it = analysis.exception_out_states.find(block_id);
@@ -2691,10 +2884,27 @@ heap_state_at_anchor(const FunctionHeapLifetimeAnalysis& analysis, const IrAncho
     if (block_it == analysis.blocks.end()) {
         return std::nullopt;
     }
-    auto in_it = analysis.in_states.find(anchor.block_id);
     HeapLifetimeState state = analysis.initial_state;
-    if (in_it != analysis.in_states.end()) {
+    auto pred_it = analysis.predecessors.find(anchor.block_id);
+    bool has_normal_preds = false;
+    bool has_exception_preds = false;
+    if (pred_it != analysis.predecessors.end()) {
+        has_normal_preds = !pred_it->second.normal.empty();
+        has_exception_preds = !pred_it->second.exception.empty();
+    }
+    auto in_it = analysis.in_states.find(anchor.block_id);
+    auto exception_it = analysis.exception_in_states.find(anchor.block_id);
+    if (has_exception_preds && !has_normal_preds) {
+        if (exception_it != analysis.exception_in_states.end()) {
+            state = exception_it->second;
+        }
+    } else if (has_normal_preds && has_exception_preds && in_it != analysis.in_states.end()
+               && exception_it != analysis.exception_in_states.end()) {
+        state = merge_heap_states(in_it->second, exception_it->second);
+    } else if (in_it != analysis.in_states.end()) {
         state = in_it->second;
+    } else if (exception_it != analysis.exception_in_states.end()) {
+        state = exception_it->second;
     }
     const nlohmann::json& block = *block_it->second;
     if (!block.contains("insts") || !block.at("insts").is_array()) {
@@ -2754,6 +2964,7 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json, BudgetTracker
             analysis.blocks.emplace(block_id, &block);
             analysis.in_states.emplace(block_id, analysis.initial_state);
             analysis.out_states.emplace(block_id, analysis.initial_state);
+            analysis.exception_in_states.emplace(block_id, analysis.initial_state);
             analysis.exception_out_states.emplace(block_id, analysis.initial_state);
             analysis.has_exception_successor.emplace(block_id, false);
         }
@@ -2842,6 +3053,40 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json, BudgetTracker
     return op == "fence" || op.starts_with("atomic.");
 }
 
+[[nodiscard]] std::optional<std::string> extract_memory_order(const nlohmann::json& inst)
+{
+    if (!inst.contains("memory_order")) {
+        return std::nullopt;
+    }
+    const auto& value = inst.at("memory_order");
+    if (!value.is_string()) {
+        return std::nullopt;
+    }
+    return value.get<std::string>();
+}
+
+[[nodiscard]] std::optional<std::string> normalize_memory_order(std::string_view memory_order)
+{
+    if (memory_order == "relaxed") {
+        return std::string("relaxed");
+    }
+    if (memory_order == "seq_cst") {
+        return std::string("seq_cst");
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] std::string format_inst_location(std::string_view block_id,
+                                               const nlohmann::json& inst)
+{
+    std::string location(block_id);
+    if (inst.contains("id") && inst.at("id").is_string()) {
+        location += ":";
+        location += inst.at("id").get<std::string>();
+    }
+    return location;
+}
+
 void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
 {
     if (is_exception_op(op)) {
@@ -2861,8 +3106,11 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
     }
 }
 
-// NOLINTNEXTLINE(readability-function-size) - Collect feature flags.
-[[nodiscard]] FunctionFeatureCache build_function_feature_cache(const nlohmann::json& nir_json)
+// NOLINTBEGIN(readability-function-size) - Feature scan is explicit for determinism.
+[[nodiscard]] FunctionFeatureCache
+build_function_feature_cache(const nlohmann::json& nir_json,
+                             const ContractIndex* contract_index,
+                             const ContractMatchContext* match_context)
 {
     FunctionFeatureCache cache;
     if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
@@ -2909,6 +3157,40 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
                         if (is_exception_boundary_op(op)) {
                             has_exception_boundary = true;
                         }
+                        if (is_exception_op(op)) {
+                            std::string detail = std::string(op);
+                            if (auto arg = extract_first_string_arg(inst)) {
+                                detail += "(" + *arg + ")";
+                            }
+                            detail += "@" + format_inst_location(block_id, inst);
+                            flags.exception_ops.push_back(std::move(detail));
+                        }
+                        if (is_atomic_op(op)) {
+                            const auto order = extract_memory_order(inst);
+                            std::string location = format_inst_location(block_id, inst);
+                            if (!order) {
+                                flags.atomic_unknown_orders.push_back(std::string(op) + "@"
+                                                                      + location + ":missing");
+                            } else if (auto normalized = normalize_memory_order(*order)) {
+                                flags.atomic_orders.push_back(*normalized);
+                            } else {
+                                flags.atomic_unknown_orders.push_back(std::string(op) + "@"
+                                                                      + location + ":unsupported("
+                                                                      + *order + ")");
+                            }
+                        }
+                        if (is_thread_op(op)) {
+                            flags.thread_ops.push_back(std::string(op) + "@"
+                                                       + format_inst_location(block_id, inst));
+                        }
+                        if (op == "sync.event") {
+                            std::string detail = std::string(op);
+                            if (auto arg = extract_first_string_arg(inst)) {
+                                detail += "(" + *arg + ")";
+                            }
+                            detail += "@" + format_inst_location(block_id, inst);
+                            flags.sync_ops.push_back(std::move(detail));
+                        }
                     }
                     block_has_exception_boundary.emplace(block_id, has_exception_boundary);
                     block_has_exception_edge.emplace(block_id, false);
@@ -2946,26 +3228,51 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
                                       : false;
             if (has_boundary != has_edge && (has_boundary || has_edge)) {
                 flags.has_unmodeled_exception_flow = true;
-                break;
+            }
+            if (has_boundary && !has_edge) {
+                flags.exception_boundary_without_edge.push_back(block_id);
             }
         }
-        if (!flags.has_unmodeled_exception_flow) {
-            for (const auto& [block_id, has_edge] : block_has_exception_edge) {
-                if (!has_edge) {
-                    continue;
-                }
-                if (!block_has_exception_boundary.contains(block_id)) {
-                    flags.has_unmodeled_exception_flow = true;
+        for (const auto& [block_id, has_edge] : block_has_exception_edge) {
+            if (!has_edge) {
+                continue;
+            }
+            if (!block_has_exception_boundary.contains(block_id)) {
+                flags.has_unmodeled_exception_flow = true;
+                flags.exception_edge_without_boundary.push_back(block_id);
+            }
+        }
+
+        if (contract_index != nullptr && match_context != nullptr) {
+            auto matched =
+                select_contracts_for_target(function_uid, *contract_index, *match_context);
+            for (const auto* contract : matched) {
+                if (contract->has_concurrency) {
+                    flags.has_sync_contract = true;
                     break;
                 }
             }
         }
+
+        auto stable_unique = [](std::vector<std::string>& items) {
+            std::ranges::stable_sort(items);
+            auto unique_end = std::ranges::unique(items);
+            items.erase(unique_end.begin(), unique_end.end());
+        };
+        stable_unique(flags.exception_ops);
+        stable_unique(flags.exception_boundary_without_edge);
+        stable_unique(flags.exception_edge_without_boundary);
+        stable_unique(flags.atomic_orders);
+        stable_unique(flags.atomic_unknown_orders);
+        stable_unique(flags.thread_ops);
+        stable_unique(flags.sync_ops);
 
         cache.emplace(function_uid, flags);
     }
 
     return cache;
 }
+// NOLINTEND(readability-function-size)
 
 [[nodiscard]] nlohmann::json
 make_ir_ref_obj(const std::string& tu_id, const std::string& function_uid, const IrAnchor& anchor)
@@ -3437,6 +3744,14 @@ struct UnknownDetails
     return joined;
 }
 
+[[nodiscard]] std::string append_missing_notes(std::string_view base, std::string_view extra)
+{
+    if (extra.empty()) {
+        return std::string(base);
+    }
+    return std::string(base) + " " + std::string(extra);
+}
+
 [[nodiscard]] UnknownDetails make_unknown_details(std::string_view code,
                                                   std::string_view missing_notes,
                                                   std::string_view refinement_message,
@@ -3464,13 +3779,15 @@ struct UnknownDetails
                           .refinement_domain = "contract"};
 }
 
-[[nodiscard]] UnknownDetails build_exception_flow_unknown_details()
+[[nodiscard]] UnknownDetails build_exception_flow_unknown_details(std::string_view extra_notes)
 {
-    return make_unknown_details("ExceptionFlowConservative",
-                                "Exception flow detected; analysis does not model exceptions.",
-                                "Model exception flow to discharge this PO.",
-                                "refine-exception",
-                                "exception");
+    return make_unknown_details(
+        "ExceptionFlowConservative",
+        append_missing_notes("Exception flow detected; analysis does not model exceptions.",
+                             extra_notes),
+        "Model exception flow to discharge this PO.",
+        "refine-exception",
+        "exception");
 }
 
 [[nodiscard]] UnknownDetails build_virtual_dispatch_unknown_details()
@@ -3482,31 +3799,37 @@ struct UnknownDetails
                                 "dispatch");
 }
 
-[[nodiscard]] UnknownDetails build_atomic_order_unknown_details()
+[[nodiscard]] UnknownDetails build_atomic_order_unknown_details(std::string_view extra_notes)
 {
-    return make_unknown_details("AtomicOrderUnknown",
-                                "Atomic ordering is not modeled.",
-                                "Model atomic order and happens-before relations.",
-                                "refine-atomic-order",
-                                "concurrency");
+    return make_unknown_details(
+        "AtomicOrderUnknown",
+        append_missing_notes("Atomic ordering is not modeled.", extra_notes),
+        "Model atomic order and happens-before relations.",
+        "refine-atomic-order",
+        "concurrency");
 }
 
-[[nodiscard]] UnknownDetails build_sync_contract_missing_unknown_details()
+[[nodiscard]] UnknownDetails
+build_sync_contract_missing_unknown_details(std::string_view extra_notes)
 {
-    return make_unknown_details("SyncContractMissing",
-                                "Synchronization event lacks a concurrency contract.",
-                                "Add concurrency contract for the synchronization primitive.",
-                                "add-contract",
-                                "concurrency");
+    return make_unknown_details(
+        "SyncContractMissing",
+        append_missing_notes("Synchronization event lacks a concurrency contract.", extra_notes),
+        "Add concurrency contract for the synchronization primitive.",
+        "add-contract",
+        "concurrency");
 }
 
-[[nodiscard]] UnknownDetails build_concurrency_unsupported_unknown_details()
+[[nodiscard]] UnknownDetails
+build_concurrency_unsupported_unknown_details(std::string_view extra_notes)
 {
-    return make_unknown_details("ConcurrencyUnsupported",
-                                "Concurrency events detected; analysis is not implemented.",
-                                "Implement concurrency analysis for this PO.",
-                                "refine-concurrency",
-                                "concurrency");
+    return make_unknown_details(
+        "ConcurrencyUnsupported",
+        append_missing_notes("Concurrency events detected; analysis is not implemented.",
+                             extra_notes),
+        "Implement concurrency analysis for this PO.",
+        "refine-concurrency",
+        "concurrency");
 }
 
 [[nodiscard]] UnknownDetails build_budget_exceeded_unknown_details(std::string_view limit)
@@ -3649,23 +3972,78 @@ build_vcall_missing_contract_details(const std::vector<std::string>& missing_met
     return !summary->candidate_methods.empty();
 }
 
+// NOLINTBEGIN(readability-function-size) - Unknown selection keeps explicit ordering.
 [[nodiscard]] std::optional<UnknownDetails>
 build_feature_unknown_details(const FunctionFeatureFlags& features,
                               const ContractMatchSummary& contract_match,
                               const VCallSummary* vcall_summary,
                               const VCallResolvedCandidates* resolved_candidates)
 {
-    if (features.has_sync && !contract_match.has_concurrency) {
-        return build_sync_contract_missing_unknown_details();
+    auto format_list = [](std::string_view label,
+                          const std::vector<std::string>& items) -> std::string {
+        if (items.empty()) {
+            return {};
+        }
+        return std::string(label) + ": " + join_strings(items, ", ") + ".";
+    };
+
+    if (features.has_sync && !contract_match.has_concurrency && !features.has_sync_contract) {
+        std::string notes = format_list("sync events", features.sync_ops);
+        return build_sync_contract_missing_unknown_details(notes);
     }
     if (features.has_atomic) {
-        return build_atomic_order_unknown_details();
+        std::string notes;
+        std::string orders = format_list("orders", features.atomic_orders);
+        std::string missing = format_list("missing orders", features.atomic_unknown_orders);
+        if (!orders.empty()) {
+            notes += orders;
+        }
+        if (!missing.empty()) {
+            if (!notes.empty()) {
+                notes += " ";
+            }
+            notes += missing;
+        }
+        return build_atomic_order_unknown_details(notes);
     }
     if (features.has_thread || features.has_sync) {
-        return build_concurrency_unsupported_unknown_details();
+        std::string notes;
+        std::string threads = format_list("thread ops", features.thread_ops);
+        std::string syncs = format_list("sync events", features.sync_ops);
+        if (!threads.empty()) {
+            notes += threads;
+        }
+        if (!syncs.empty()) {
+            if (!notes.empty()) {
+                notes += " ";
+            }
+            notes += syncs;
+        }
+        return build_concurrency_unsupported_unknown_details(notes);
     }
     if (features.has_exception_flow && features.has_unmodeled_exception_flow) {
-        return build_exception_flow_unknown_details();
+        std::string notes;
+        std::string ops = format_list("exception ops", features.exception_ops);
+        std::string boundary =
+            format_list("boundary without edge", features.exception_boundary_without_edge);
+        std::string edge =
+            format_list("edge without boundary", features.exception_edge_without_boundary);
+        if (!ops.empty()) {
+            notes += ops;
+        }
+        if (!boundary.empty()) {
+            if (!notes.empty()) {
+                notes += " ";
+            }
+            notes += boundary;
+        }
+        if (!edge.empty()) {
+            if (!notes.empty()) {
+                notes += " ";
+            }
+            notes += edge;
+        }
+        return build_exception_flow_unknown_details(notes);
     }
     if (features.has_vcall) {
         if (vcall_dispatch_resolved(vcall_summary, resolved_candidates)) {
@@ -3675,6 +4053,7 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
     }
     return std::nullopt;
 }
+// NOLINTEND(readability-function-size)
 
 [[nodiscard]] bool allow_feature_override(std::string_view unknown_code)
 {
@@ -5098,7 +5477,8 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
     if (!points_to_cache) {
         return std::unexpected(points_to_cache.error());
     }
-    const auto feature_cache = build_function_feature_cache(nir_json);
+    const auto feature_cache =
+        build_function_feature_cache(nir_json, &(*contract_index), &normalized_context);
     std::unordered_map<std::string, std::string> contract_ref_cache;
 
     std::string points_to_domain = std::string(kPointsToDomainSimple);
