@@ -219,6 +219,28 @@ TEST(AnalyzerUnknownCodeTest, ExceptionFlowConservativeForUnmodeledExceptionEdge
     expect_unknown_code(unknowns, "ExceptionFlowConservative", "refine-exception");
 }
 
+TEST(AnalyzerUnknownCodeTest, ExceptionFlowMatchesBoundaryAvoidsUnknown)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_exception_match");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    auto nir = make_nir_with_ops(
+        {
+            "invoke"
+    },
+        {},
+        {nlohmann::json{{"from", "B1"}, {"to", "B1"}, {"kind", "exception"}}});
+    auto po_list = make_po_list("UB.DivZero");
+    auto specdb_snapshot = make_contract_snapshot();
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "DomainTooWeak.Numeric", "refine-numeric");
+}
+
 TEST(AnalyzerUnknownCodeTest, VirtualDispatchUnknownForVcallMissingCandidates)
 {
     auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_unknown");

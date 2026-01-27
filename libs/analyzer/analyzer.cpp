@@ -2806,8 +2806,8 @@ build_heap_lifetime_analysis_cache(const nlohmann::json& nir_json, BudgetTracker
 
 [[nodiscard]] bool is_exception_boundary_op(std::string_view op)
 {
-    constexpr std::array<std::string_view, 3> kExceptionBoundaryOps{
-        {"invoke", "throw", "resume"}
+    constexpr std::array<std::string_view, 4> kExceptionBoundaryOps{
+        {"invoke", "throw", "resume", "landingpad"}
     };
     return std::ranges::find(kExceptionBoundaryOps, op) != kExceptionBoundaryOps.end();
 }
@@ -2862,6 +2862,7 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
         const std::string function_uid = func.at("function_uid").get<std::string>();
         FunctionFeatureFlags flags;
         std::map<std::string, bool> block_has_exception_boundary;
+        std::map<std::string, bool> block_has_exception_edge;
 
         if (func.contains("tables") && func.at("tables").is_object()) {
             const auto& tables = func.at("tables");
@@ -2893,6 +2894,7 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
                         }
                     }
                     block_has_exception_boundary.emplace(block_id, has_exception_boundary);
+                    block_has_exception_edge.emplace(block_id, false);
                 }
             }
             if (cfg.contains("edges") && cfg.at("edges").is_array()) {
@@ -2908,14 +2910,36 @@ void update_feature_flags(std::string_view op, FunctionFeatureFlags& flags)
                     flags.has_exception_flow = true;
                     if (edge.contains("from") && edge.at("from").is_string()) {
                         const std::string from = edge.at("from").get<std::string>();
-                        auto boundary_it = block_has_exception_boundary.find(from);
-                        if (boundary_it == block_has_exception_boundary.end()
-                            || !boundary_it->second) {
-                            flags.has_unmodeled_exception_flow = true;
+                        if (auto edge_it = block_has_exception_edge.find(from);
+                            edge_it != block_has_exception_edge.end()) {
+                            edge_it->second = true;
+                        } else {
+                            block_has_exception_edge.emplace(from, true);
                         }
                     } else {
                         flags.has_unmodeled_exception_flow = true;
                     }
+                }
+            }
+        }
+
+        for (const auto& [block_id, has_boundary] : block_has_exception_boundary) {
+            const bool has_edge = block_has_exception_edge.contains(block_id)
+                                      ? block_has_exception_edge.at(block_id)
+                                      : false;
+            if (has_boundary != has_edge && (has_boundary || has_edge)) {
+                flags.has_unmodeled_exception_flow = true;
+                break;
+            }
+        }
+        if (!flags.has_unmodeled_exception_flow) {
+            for (const auto& [block_id, has_edge] : block_has_exception_edge) {
+                if (!has_edge) {
+                    continue;
+                }
+                if (!block_has_exception_boundary.contains(block_id)) {
+                    flags.has_unmodeled_exception_flow = true;
+                    break;
                 }
             }
         }
@@ -3618,7 +3642,7 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
     if (features.has_thread || features.has_sync) {
         return build_concurrency_unsupported_unknown_details();
     }
-    if (features.has_unmodeled_exception_flow) {
+    if (features.has_exception_flow && features.has_unmodeled_exception_flow) {
         return build_exception_flow_unknown_details();
     }
     if (features.has_vcall) {
