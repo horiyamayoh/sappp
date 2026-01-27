@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <optional>
@@ -75,15 +76,16 @@ struct ContractInfo
 
 using ContractIndex = std::map<std::string, std::vector<ContractInfo>>;
 
+using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
+
 struct VCallSummary
 {
     bool has_vcall = false;
     bool missing_candidate_set = false;
     bool empty_candidate_set = false;
     std::vector<std::string> missing_candidate_ids;
+    VCallCandidateSetMap candidate_sets;
     std::vector<std::string> candidate_methods;
-    std::vector<const ContractInfo*> candidate_contracts;
-    std::vector<std::string> missing_contract_targets;
 
     VCallSummary()
         // NOLINTNEXTLINE(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
@@ -95,15 +97,26 @@ struct VCallSummary
         // NOLINTNEXTLINE(readability-redundant-member-init)
         , missing_candidate_ids()  // Weffc++ explicit init.
         // NOLINTNEXTLINE(readability-redundant-member-init)
+        , candidate_sets()  // Weffc++ explicit init.
+        // NOLINTNEXTLINE(readability-redundant-member-init)
         , candidate_methods()  // Weffc++ explicit init.
-        // NOLINTNEXTLINE(readability-redundant-member-init)
-        , candidate_contracts()  // Weffc++ explicit init.
-        // NOLINTNEXTLINE(readability-redundant-member-init)
-        , missing_contract_targets()  // Weffc++ explicit init.
     {}
 };
 
 using VCallSummaryMap = std::map<std::string, VCallSummary>;
+
+struct VCallAnchorInfo
+{
+    std::optional<std::string> candidate_id;
+    std::optional<std::string> receiver_key;
+};
+
+struct VCallResolvedCandidates
+{
+    std::vector<std::string> methods;
+    std::vector<const ContractInfo*> contracts;
+    std::vector<std::string> missing_contract_targets;
+};
 
 struct JsonFieldContext
 {
@@ -144,7 +157,7 @@ struct BudgetTracker
         const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                                     std::chrono::steady_clock::now() - start_time)
                                     .count();
-        if (elapsed_ms > static_cast<long long>(*budget.max_time_ms)) {
+        if (std::cmp_greater(elapsed_ms, *budget.max_time_ms)) {
             exceeded_limit = "max_time_ms";
             return false;
         }
@@ -415,8 +428,6 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
     return index;
 }
 
-using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
-
 [[nodiscard]] std::optional<std::string> extract_vcall_candidate_id(const nlohmann::json& inst)
 {
     if (!inst.contains("args") || !inst.at("args").is_array()) {
@@ -427,6 +438,18 @@ using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
         return std::nullopt;
     }
     return args.at(1).get<std::string>();
+}
+
+[[nodiscard]] std::optional<std::string> extract_vcall_receiver_key(const nlohmann::json& inst)
+{
+    if (!inst.contains("args") || !inst.at("args").is_array()) {
+        return std::nullopt;
+    }
+    const auto& args = inst.at("args");
+    if (args.empty() || !args.at(0).is_string()) {
+        return std::nullopt;
+    }
+    return args.at(0).get<std::string>();
 }
 
 [[nodiscard]] std::vector<const ContractInfo*>
@@ -466,9 +489,7 @@ select_contracts_for_target(std::string_view usr,
 }
 
 // NOLINTNEXTLINE(readability-function-size) - Summarize vcall candidates.
-[[nodiscard]] VCallSummaryMap build_vcall_summary_map(const nlohmann::json& nir_json,
-                                                      const ContractIndex& contract_index,
-                                                      const ContractMatchContext& context)
+[[nodiscard]] VCallSummaryMap build_vcall_summary_map(const nlohmann::json& nir_json)
 {
     VCallSummaryMap summaries;
     if (!nir_json.contains("functions") || !nir_json.at("functions").is_array()) {
@@ -485,7 +506,7 @@ select_contracts_for_target(std::string_view usr,
         std::string function_uid = func.at("function_uid").get<std::string>();
 
         VCallSummary summary;
-        const auto candidate_sets = collect_vcall_candidate_sets(func);
+        auto candidate_sets = collect_vcall_candidate_sets(func);
 
         if (!func.contains("cfg") || !func.at("cfg").is_object()) {
             continue;
@@ -541,33 +562,7 @@ select_contracts_for_target(std::string_view usr,
         auto method_unique = std::ranges::unique(summary.candidate_methods);
         summary.candidate_methods.erase(method_unique.begin(), method_unique.end());
 
-        for (const auto& method : summary.candidate_methods) {
-            bool has_pre = false;
-            auto matched_contracts = select_contracts_for_target(method, contract_index, context);
-            for (const auto* contract : matched_contracts) {
-                summary.candidate_contracts.push_back(contract);
-                has_pre = has_pre || contract->has_pre;
-            }
-            if (!has_pre) {
-                summary.missing_contract_targets.push_back(method);
-            }
-        }
-
-        std::ranges::stable_sort(summary.missing_contract_targets);
-        auto missing_contract_unique = std::ranges::unique(summary.missing_contract_targets);
-        summary.missing_contract_targets.erase(missing_contract_unique.begin(),
-                                               missing_contract_unique.end());
-
-        std::ranges::stable_sort(summary.candidate_contracts,
-                                 [](const ContractInfo* a, const ContractInfo* b) noexcept {
-                                     return a->contract_id < b->contract_id;
-                                 });
-        auto contract_unique =
-            std::ranges::unique(summary.candidate_contracts,
-                                [](const ContractInfo* a, const ContractInfo* b) noexcept {
-                                    return a->contract_id == b->contract_id;
-                                });
-        summary.candidate_contracts.erase(contract_unique.begin(), contract_unique.end());
+        summary.candidate_sets = std::move(candidate_sets);
 
         summaries.emplace(std::move(function_uid), std::move(summary));
     }
@@ -3587,7 +3582,8 @@ build_vcall_missing_contract_details(const std::vector<std::string>& missing_met
                           .refinement_domain = "unknown"};
 }
 
-[[nodiscard]] bool vcall_dispatch_resolved(const VCallSummary* summary)
+[[nodiscard]] bool vcall_dispatch_resolved(const VCallSummary* summary,
+                                           const VCallResolvedCandidates* resolved_candidates)
 {
     if (summary == nullptr) {
         return false;
@@ -3598,8 +3594,11 @@ build_vcall_missing_contract_details(const std::vector<std::string>& missing_met
     if (summary->missing_candidate_set || summary->empty_candidate_set) {
         return false;
     }
-    if (!summary->missing_contract_targets.empty()) {
-        return false;
+    if (resolved_candidates != nullptr) {
+        if (!resolved_candidates->missing_contract_targets.empty()) {
+            return false;
+        }
+        return !resolved_candidates->methods.empty();
     }
     return !summary->candidate_methods.empty();
 }
@@ -3607,7 +3606,8 @@ build_vcall_missing_contract_details(const std::vector<std::string>& missing_met
 [[nodiscard]] std::optional<UnknownDetails>
 build_feature_unknown_details(const FunctionFeatureFlags& features,
                               const ContractMatchSummary& contract_match,
-                              const VCallSummary* vcall_summary)
+                              const VCallSummary* vcall_summary,
+                              const VCallResolvedCandidates* resolved_candidates)
 {
     if (features.has_sync && !contract_match.has_concurrency) {
         return build_sync_contract_missing_unknown_details();
@@ -3622,7 +3622,7 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
         return build_exception_flow_unknown_details();
     }
     if (features.has_vcall) {
-        if (vcall_dispatch_resolved(vcall_summary)) {
+        if (vcall_dispatch_resolved(vcall_summary, resolved_candidates)) {
             return std::nullopt;
         }
         return build_virtual_dispatch_unknown_details();
@@ -4460,6 +4460,255 @@ find_vcall_summary(const nlohmann::json& po, const PoProcessingContext& context)
     return &it->second;
 }
 
+[[nodiscard]] const nlohmann::json* find_anchor_inst(const nlohmann::json& nir_json,
+                                                     std::string_view function_uid,
+                                                     const IrAnchor& anchor)
+{
+    const nlohmann::json* function_json = find_function_json(nir_json, function_uid);
+    if (function_json == nullptr || !function_json->contains("cfg")) {
+        return nullptr;
+    }
+    const auto& cfg = function_json->at("cfg");
+    if (!cfg.contains("blocks") || !cfg.at("blocks").is_array()) {
+        return nullptr;
+    }
+    for (const auto& block : cfg.at("blocks")) {
+        if (!block.is_object() || !block.contains("id") || !block.at("id").is_string()
+            || !block.contains("insts") || !block.at("insts").is_array()) {
+            continue;
+        }
+        if (block.at("id").get<std::string>() != anchor.block_id) {
+            continue;
+        }
+        for (const auto& inst : block.at("insts")) {
+            if (!inst.is_object() || !inst.contains("id") || !inst.at("id").is_string()) {
+                continue;
+            }
+            if (inst.at("id").get<std::string>() == anchor.inst_id) {
+                return &inst;
+            }
+        }
+        return nullptr;
+    }
+    return nullptr;
+}
+
+[[nodiscard]] std::optional<VCallAnchorInfo> find_vcall_anchor_info(const nlohmann::json& nir_json,
+                                                                    std::string_view function_uid,
+                                                                    const IrAnchor& anchor)
+{
+    const auto* inst = find_anchor_inst(nir_json, function_uid, anchor);
+    if (inst == nullptr || !inst->contains("op") || !inst->at("op").is_string()) {
+        return std::nullopt;
+    }
+    if (inst->at("op").get<std::string>() != "vcall") {
+        return std::nullopt;
+    }
+    VCallAnchorInfo info;
+    info.candidate_id = extract_vcall_candidate_id(*inst);
+    info.receiver_key = extract_vcall_receiver_key(*inst);
+    return info;
+}
+
+// NOLINTBEGIN(readability-function-size) - Vcall points-to checks aggregate multiple fallbacks.
+[[nodiscard]] sappp::Result<std::optional<PointsToSet>>
+find_vcall_points_to_set(const PoProcessingContext& context,
+                         std::string_view function_uid,
+                         const IrAnchor& anchor,
+                         const VCallAnchorInfo& info)
+{
+    if (context.points_to_cache == nullptr) {
+        return std::optional<PointsToSet>();
+    }
+    auto analysis_it = context.points_to_cache->functions.find(std::string(function_uid));
+    if (analysis_it == context.points_to_cache->functions.end()) {
+        return std::optional<PointsToSet>();
+    }
+    auto state = points_to_state_at_anchor(analysis_it->second, anchor);
+    if (!state) {
+        return std::unexpected(state.error());
+    }
+    if (!state->has_value()) {
+        return std::optional<PointsToSet>();
+    }
+    const auto& points_state = **state;
+    if (info.candidate_id.has_value()) {
+        auto set_it = points_state.values.find(*info.candidate_id);
+        if (set_it != points_state.values.end()) {
+            return std::optional<PointsToSet>(set_it->second);
+        }
+    }
+    if (info.receiver_key.has_value()) {
+        auto set_it = points_state.values.find(*info.receiver_key);
+        if (set_it != points_state.values.end()) {
+            return std::optional<PointsToSet>(set_it->second);
+        }
+    }
+    if (!points_state.values.empty()) {
+        std::vector<std::string> merged_targets;
+        for (const auto& [ptr, set] : points_state.values) {
+            (void)ptr;
+            if (set.is_unknown) {
+                continue;
+            }
+            merged_targets.insert(merged_targets.end(), set.targets.begin(), set.targets.end());
+        }
+        if (!merged_targets.empty()) {
+            return std::optional<PointsToSet>(make_points_to_set(std::move(merged_targets)));
+        }
+    }
+    return std::optional<PointsToSet>();
+}
+// NOLINTEND(readability-function-size)
+
+[[nodiscard]] sappp::Result<std::vector<std::string>>
+collect_points_to_targets_at_anchor(const PoProcessingContext& context,
+                                    std::string_view function_uid,
+                                    const IrAnchor& anchor)
+{
+    if (context.points_to_cache == nullptr) {
+        return std::vector<std::string>{};
+    }
+    auto analysis_it = context.points_to_cache->functions.find(std::string(function_uid));
+    if (analysis_it == context.points_to_cache->functions.end()) {
+        return std::vector<std::string>{};
+    }
+    auto state = points_to_state_at_anchor(analysis_it->second, anchor);
+    if (!state) {
+        return std::unexpected(state.error());
+    }
+    if (!state->has_value()) {
+        return std::vector<std::string>{};
+    }
+    std::vector<std::string> merged_targets;
+    for (const auto& [ptr, set] : state->value().values) {
+        (void)ptr;
+        if (set.is_unknown) {
+            continue;
+        }
+        merged_targets.insert(merged_targets.end(), set.targets.begin(), set.targets.end());
+    }
+    return merged_targets;
+}
+
+[[nodiscard]] std::vector<std::string>
+filter_vcall_candidates_by_points_to(const std::vector<std::string>& candidates,
+                                     const PointsToSet& points_to_set)
+{
+    if (points_to_set.is_unknown || points_to_set.targets.empty()) {
+        return candidates;
+    }
+    std::set<std::string> target_set(points_to_set.targets.begin(), points_to_set.targets.end());
+    std::vector<std::string> filtered;
+    filtered.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        if (target_set.contains(candidate)) {
+            filtered.push_back(candidate);
+        }
+    }
+    if (filtered.empty()) {
+        return candidates;
+    }
+    return filtered;
+}
+
+// NOLINTBEGIN(readability-function-size) - Vcall resolution stages are explicitly expanded.
+[[nodiscard]] sappp::Result<VCallResolvedCandidates>
+resolve_vcall_candidates_for_po(const nlohmann::json& po,
+                                const PoProcessingContext& context,
+                                const VCallSummary& summary)
+{
+    VCallResolvedCandidates resolved;
+    if (context.function_uid_map == nullptr) {
+        resolved.methods = summary.candidate_methods;
+        return resolved;
+    }
+
+    auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+    if (!function_uid) {
+        return std::unexpected(function_uid.error());
+    }
+    auto anchor = extract_anchor(po);
+    if (!anchor) {
+        return std::unexpected(anchor.error());
+    }
+
+    std::vector<std::string> candidates = summary.candidate_methods;
+    std::optional<VCallAnchorInfo> anchor_info;
+    if (context.nir_json != nullptr) {
+        anchor_info = find_vcall_anchor_info(*context.nir_json, *function_uid, *anchor);
+        if (anchor_info.has_value() && anchor_info->candidate_id.has_value()) {
+            auto set_it = summary.candidate_sets.find(*anchor_info->candidate_id);
+            if (set_it != summary.candidate_sets.end()) {
+                candidates = set_it->second;
+            }
+        }
+    }
+
+    std::ranges::stable_sort(candidates);
+    auto unique_end = std::ranges::unique(candidates);
+    candidates.erase(unique_end.begin(), candidates.end());
+
+    if (anchor_info.has_value()) {
+        auto points_to_set =
+            find_vcall_points_to_set(context, *function_uid, *anchor, *anchor_info);
+        if (!points_to_set) {
+            return std::unexpected(points_to_set.error());
+        }
+        if (points_to_set->has_value()) {
+            candidates = filter_vcall_candidates_by_points_to(candidates, **points_to_set);
+        }
+    }
+    auto merged_targets = collect_points_to_targets_at_anchor(context, *function_uid, *anchor);
+    if (!merged_targets) {
+        return std::unexpected(merged_targets.error());
+    }
+    if (!merged_targets->empty()) {
+        candidates =
+            filter_vcall_candidates_by_points_to(candidates,
+                                                 make_points_to_set(std::move(*merged_targets)));
+    }
+
+    resolved.methods = candidates;
+
+    if (context.contract_index != nullptr) {
+        ContractMatchContext fallback;
+        const ContractMatchContext& match_context =
+            context.match_context == nullptr ? fallback : *context.match_context;
+        for (const auto& method : candidates) {
+            bool has_pre = false;
+            auto matched_contracts =
+                select_contracts_for_target(method, *context.contract_index, match_context);
+            for (const auto* contract : matched_contracts) {
+                resolved.contracts.push_back(contract);
+                has_pre = has_pre || contract->has_pre;
+            }
+            if (!has_pre) {
+                resolved.missing_contract_targets.push_back(method);
+            }
+        }
+    }
+
+    std::ranges::stable_sort(resolved.missing_contract_targets);
+    auto missing_unique = std::ranges::unique(resolved.missing_contract_targets);
+    resolved.missing_contract_targets.erase(missing_unique.begin(), missing_unique.end());
+
+    std::ranges::stable_sort(resolved.contracts,
+                             [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                 return a->contract_id < b->contract_id;
+                             });
+    auto contract_unique =
+        std::ranges::unique(resolved.contracts,
+                            [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                return a->contract_id == b->contract_id;
+                            });
+    resolved.contracts.erase(contract_unique.begin(), contract_unique.end());
+
+    return resolved;
+}
+// NOLINTEND(readability-function-size)
+
+// NOLINTBEGIN(readability-function-size) - Vcall unknown handling mirrors legacy cases.
 [[nodiscard]] sappp::Result<std::optional<UnknownDetails>>
 resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContext& context)
 {
@@ -4478,12 +4727,38 @@ resolve_vcall_unknown_details(const nlohmann::json& po, const PoProcessingContex
     if (detail.empty_candidate_set) {
         return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
     }
-    if (!detail.missing_contract_targets.empty()) {
+    auto resolved_candidates = resolve_vcall_candidates_for_po(po, context, detail);
+    if (!resolved_candidates) {
+        return std::unexpected(resolved_candidates.error());
+    }
+    if (resolved_candidates->methods.empty()) {
+        return std::optional<UnknownDetails>(build_vcall_empty_candidates_details());
+    }
+    if (!resolved_candidates->missing_contract_targets.empty()) {
+        if (context.contract_index != nullptr && context.function_uid_map != nullptr) {
+            auto function_uid = resolve_function_uid(*context.function_uid_map, po);
+            if (!function_uid) {
+                return std::unexpected(function_uid.error());
+            }
+            auto anchor = extract_anchor(po);
+            if (!anchor) {
+                return std::unexpected(anchor.error());
+            }
+            auto merged_targets =
+                collect_points_to_targets_at_anchor(context, *function_uid, *anchor);
+            if (!merged_targets) {
+                return std::unexpected(merged_targets.error());
+            }
+            if (!merged_targets->empty()) {
+                return std::optional<UnknownDetails>();
+            }
+        }
         return std::optional<UnknownDetails>(
-            build_vcall_missing_contract_details(detail.missing_contract_targets));
+            build_vcall_missing_contract_details(resolved_candidates->missing_contract_targets));
     }
     return std::optional<UnknownDetails>();
 }
+// NOLINTEND(readability-function-size)
 
 // NOLINTNEXTLINE(readability-function-size) - Central PO dispatch.
 [[nodiscard]] sappp::Result<PoDecision> decide_po(const nlohmann::json& po,
@@ -4618,13 +4893,21 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
 
     std::vector<const ContractInfo*> vcall_contracts;
     const VCallSummary* vcall_summary_ptr = nullptr;
+    std::optional<VCallResolvedCandidates> vcall_resolved;
+    const VCallResolvedCandidates* vcall_resolved_ptr = nullptr;
     auto vcall_summary = find_vcall_summary(po, context);
     if (!vcall_summary) {
         return std::unexpected(vcall_summary.error());
     }
     if (*vcall_summary != nullptr) {
         vcall_summary_ptr = *vcall_summary;
-        vcall_contracts = vcall_summary_ptr->candidate_contracts;
+        auto resolved = resolve_vcall_candidates_for_po(po, context, *vcall_summary_ptr);
+        if (!resolved) {
+            return std::unexpected(resolved.error());
+        }
+        vcall_resolved = std::move(*resolved);
+        vcall_resolved_ptr = &(*vcall_resolved);
+        vcall_contracts = vcall_resolved_ptr->contracts;
     }
 
     auto merged_contracts = merge_contracts(*contract_match, vcall_contracts);
@@ -4666,7 +4949,8 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
             if (it != context.feature_cache->end()) {
                 if (auto feature_details = build_feature_unknown_details(it->second,
                                                                          *contract_match,
-                                                                         vcall_summary_ptr)) {
+                                                                         vcall_summary_ptr,
+                                                                         vcall_resolved_ptr)) {
                     details = std::move(*feature_details);
                 }
             }
@@ -4760,8 +5044,7 @@ sappp::Result<AnalyzeOutput> Analyzer::analyze(const nlohmann::json& nir_json,
         return std::unexpected(contract_index.error());
     }
     ContractMatchContext normalized_context = normalize_match_context(match_context);
-    const auto vcall_summaries =
-        build_vcall_summary_map(nir_json, *contract_index, normalized_context);
+    const auto vcall_summaries = build_vcall_summary_map(nir_json);
     const auto lifetime_cache = build_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto heap_lifetime_cache = build_heap_lifetime_analysis_cache(nir_json, &budget_tracker);
     const auto init_cache = build_init_analysis_cache(nir_json, &budget_tracker);

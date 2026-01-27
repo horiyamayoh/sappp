@@ -32,6 +32,8 @@ struct VCallTestConfig
     std::optional<std::string_view> candidate_id;
     bool include_candidates = false;
     std::vector<std::string_view> candidate_methods;
+    std::optional<std::string_view> points_to_ptr;
+    std::vector<std::string_view> points_to_targets;
 };
 
 nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
@@ -41,13 +43,26 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
     nlohmann::json insts = nlohmann::json::array();
     int index = 0;
     for (const auto& op : ops) {
+        int inst_index = index++;
         nlohmann::json inst = nlohmann::json{
-            {"id", "I" + std::to_string(index++)},
-            {"op",               std::string(op)}
+            {"id", "I" + std::to_string(inst_index)},
+            {"op",                  std::string(op)}
         };
         if (op == "vcall" && vcall_config.candidate_id.has_value()) {
             inst["args"] =
                 nlohmann::json::array({"receiver", std::string(*vcall_config.candidate_id)});
+        }
+        if (vcall_config.points_to_ptr.has_value() && inst_index == 0) {
+            nlohmann::json targets = nlohmann::json::array();
+            for (const auto& target : vcall_config.points_to_targets) {
+                targets.push_back(std::string(target));
+            }
+            inst["effects"] = nlohmann::json{
+                {"points_to",
+                 nlohmann::json::array(
+                     {nlohmann::json{{"ptr", std::string(*vcall_config.points_to_ptr)},
+                                     {"targets", std::move(targets)}}})}
+            };
         }
         insts.push_back(std::move(inst));
     }
@@ -90,22 +105,22 @@ nlohmann::json make_nir_with_ops(const std::vector<std::string_view>& ops,
     };
 }
 
-nlohmann::json make_po_list(std::string_view po_kind)
+nlohmann::json make_po_list(std::string_view po_kind, std::string_view inst_id = "I0")
 {
     nlohmann::json po = {
-        {               "po_id",            make_sha256('b')                                },
-        {             "po_kind",                                        std::string(po_kind)},
-        {     "profile_version",                                            "safety.core.v1"},
-        {   "semantics_version",                                                    "sem.v1"},
-        {"proof_system_version",                                                  "proof.v1"},
+        {               "po_id",                      make_sha256('b')                                },
+        {             "po_kind",                                                  std::string(po_kind)},
+        {     "profile_version",                                                      "safety.core.v1"},
+        {   "semantics_version",                                                              "sem.v1"},
+        {"proof_system_version",                                                            "proof.v1"},
         {       "repo_identity",
-         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}     },
-        {            "function", nlohmann::json{{"usr", "usr::foo"}, {"mangled", "_Z3foov"}}},
-        {              "anchor",       nlohmann::json{{"block_id", "B1"}, {"inst_id", "I0"}}},
+         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}               },
+        {            "function",           nlohmann::json{{"usr", "usr::foo"}, {"mangled", "_Z3foov"}}},
+        {              "anchor", nlohmann::json{{"block_id", "B1"}, {"inst_id", std::string(inst_id)}}},
         {           "predicate",
          nlohmann::json{
          {"expr", nlohmann::json{{"op", "custom.op"}, {"args", nlohmann::json::array({true})}}},
-         {"pretty", "custom"}}                                                              }
+         {"pretty", "custom"}}                                                                        }
     };
 
     return nlohmann::json{
@@ -246,9 +261,35 @@ TEST(AnalyzerUnknownCodeTest, NumericUnknownWithVcallCandidates)
         .candidate_id = "CS0",
         .include_candidates = true,
         .candidate_methods = {"_Z3barv"},
+        .points_to_ptr = std::nullopt,
+        .points_to_targets = {},
     };
     auto nir = make_nir_with_ops({"vcall"}, vcall_config);
     auto po_list = make_po_list("UB.DivZero");
+    auto specdb_snapshot = make_contract_snapshot(false, {"_Z3barv"});
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "DomainTooWeak.Numeric", "refine-numeric");
+}
+
+TEST(AnalyzerUnknownCodeTest, NumericUnknownWithPointsToResolvedVcall)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_vcall_points_to_resolved");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    VCallTestConfig vcall_config{
+        .candidate_id = "CS0",
+        .include_candidates = true,
+        .candidate_methods = {"_Z3barv", "_Z3bazv"},
+        .points_to_ptr = "receiver",
+        .points_to_targets = {"_Z3barv"},
+    };
+    auto nir = make_nir_with_ops({"assign", "vcall"}, vcall_config);
+    auto po_list = make_po_list("UB.DivZero", "I1");
     auto specdb_snapshot = make_contract_snapshot(false, {"_Z3barv"});
 
     auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
