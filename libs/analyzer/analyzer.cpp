@@ -1525,6 +1525,17 @@ struct InitState
     return result;
 }
 
+[[nodiscard]] InitState widen_init_states(const InitState& old_state, const InitState& new_state)
+{
+    return merge_init_states(old_state, new_state);
+}
+
+[[nodiscard]] InitState narrow_init_states(const InitState& /*old_state*/,
+                                           const InitState& new_state)
+{
+    return new_state;
+}
+
 // NOLINTNEXTLINE(readability-function-size) - Op-driven init state updates.
 void apply_init_effect(const nlohmann::json& inst, InitState& state)
 {
@@ -1653,6 +1664,42 @@ struct InitTransferResult
     bool has_exception_op = false;
 };
 
+[[nodiscard]] std::set<std::string>
+detect_loop_headers(const std::vector<std::string>& block_order,
+                    const std::map<std::string, FlowPredecessors>& predecessors)
+{
+    std::map<std::string, std::size_t> index;
+    for (const auto [idx, block_id] : std::views::enumerate(block_order)) {
+        index.emplace(block_id, idx);
+    }
+
+    std::set<std::string> headers;
+    for (const auto& [to, preds] : predecessors) {
+        auto to_it = index.find(to);
+        if (to_it == index.end()) {
+            continue;
+        }
+        const auto to_index = to_it->second;
+        auto check_pred = [&](const std::string& pred) {
+            auto pred_it = index.find(pred);
+            if (pred_it == index.end()) {
+                return;
+            }
+            if (pred_it->second >= to_index) {
+                headers.insert(to);
+            }
+        };
+        for (const auto& pred : preds.normal) {
+            check_pred(pred);
+        }
+        for (const auto& pred : preds.exception) {
+            check_pred(pred);
+        }
+    }
+
+    return headers;
+}
+
 [[nodiscard]] InitTransferResult
 apply_init_block_transfer_with_exception(const InitState& in_state, const nlohmann::json& block)
 {
@@ -1701,6 +1748,7 @@ apply_init_block_transfer_with_exception(const InitState& in_state, const nlohma
 // NOLINTNEXTLINE(readability-function-size) - Fixpoint loop is clearer in one block.
 void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget)
 {
+    const auto loop_headers = detect_loop_headers(analysis.block_order, analysis.predecessors);
     bool changed = true;
     while (changed) {
         if (budget != nullptr && budget->exceeded()) {
@@ -1712,6 +1760,12 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
                 return;
             }
             InitState in_state = merge_init_predecessor_states(analysis, block_id);
+            if (loop_headers.contains(block_id)) {
+                auto in_it = analysis.in_states.find(block_id);
+                if (in_it != analysis.in_states.end()) {
+                    in_state = widen_init_states(in_it->second, in_state);
+                }
+            }
             auto in_it = analysis.in_states.find(block_id);
             if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
                 analysis.in_states[block_id] = in_state;
@@ -1758,6 +1812,71 @@ void compute_init_fixpoint(FunctionInitAnalysis& analysis, BudgetTracker* budget
                     return;
                 }
             }
+        }
+    }
+
+    for (int pass = 0; pass < 2; ++pass) {
+        bool narrowed = false;
+        for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return;
+            }
+            InitState in_state = merge_init_predecessor_states(analysis, block_id);
+            if (loop_headers.contains(block_id)) {
+                auto in_it = analysis.in_states.find(block_id);
+                if (in_it != analysis.in_states.end()) {
+                    in_state = narrow_init_states(in_it->second, in_state);
+                }
+            }
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second.values != in_state.values) {
+                analysis.in_states[block_id] = in_state;
+                narrowed = true;
+                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                    return;
+                }
+            }
+
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            auto transfer = apply_init_block_transfer_with_exception(in_state, *block_it->second);
+            InitState out_state = std::move(transfer.normal_out);
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second.values != out_state.values) {
+                analysis.out_states[block_id] = out_state;
+                narrowed = true;
+                if (budget != nullptr && !budget->consume_state(out_state.values.size())) {
+                    return;
+                }
+            }
+
+            InitState exception_out = in_state;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                if (transfer.exception_out.has_value()) {
+                    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guarded above.
+                    exception_out = std::move(*transfer.exception_out);
+                } else {
+                    exception_out = merge_init_states(in_state, out_state);
+                }
+            }
+            auto exception_out_it = analysis.exception_out_states.find(block_id);
+            if (exception_out_it == analysis.exception_out_states.end()
+                || exception_out_it->second.values != exception_out.values) {
+                analysis.exception_out_states[block_id] = std::move(exception_out);
+                narrowed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(
+                        analysis.exception_out_states.at(block_id).values.size())) {
+                    return;
+                }
+            }
+        }
+        if (!narrowed) {
+            break;
         }
     }
 }
@@ -1986,6 +2105,18 @@ struct PointsToEffect
     return result;
 }
 
+[[nodiscard]] PointsToState widen_points_to_states(const PointsToState& old_state,
+                                                   const PointsToState& new_state)
+{
+    return merge_points_to_states(old_state, new_state);
+}
+
+[[nodiscard]] PointsToState narrow_points_to_states(const PointsToState& /*old_state*/,
+                                                    const PointsToState& new_state)
+{
+    return new_state;
+}
+
 [[nodiscard]] sappp::Result<std::vector<PointsToEffect>>
 extract_points_to_effects(const nlohmann::json& inst)
 {
@@ -2190,6 +2321,7 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
 [[nodiscard]] sappp::VoidResult compute_points_to_fixpoint(FunctionPointsToAnalysis& analysis,
                                                            BudgetTracker* budget)
 {
+    const auto loop_headers = detect_loop_headers(analysis.block_order, analysis.predecessors);
     bool changed = true;
     while (changed) {
         if (budget != nullptr && budget->exceeded()) {
@@ -2201,6 +2333,12 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                 return {};
             }
             PointsToState in_state = merge_predecessor_points_to_states(analysis, block_id);
+            if (loop_headers.contains(block_id)) {
+                auto in_it = analysis.in_states.find(block_id);
+                if (in_it != analysis.in_states.end()) {
+                    in_state = widen_points_to_states(in_it->second, in_state);
+                }
+            }
             auto in_it = analysis.in_states.find(block_id);
             if (in_it == analysis.in_states.end() || in_it->second != in_state) {
                 analysis.in_states[block_id] = in_state;
@@ -2251,6 +2389,75 @@ apply_points_to_block_transfer_with_exception(const PointsToState& in_state,
                     return {};
                 }
             }
+        }
+    }
+
+    for (int pass = 0; pass < 2; ++pass) {
+        bool narrowed = false;
+        for (const auto& block_id : analysis.block_order) {
+            if (budget != nullptr && !budget->consume_iteration()) {
+                return {};
+            }
+            PointsToState in_state = merge_predecessor_points_to_states(analysis, block_id);
+            if (loop_headers.contains(block_id)) {
+                auto in_it = analysis.in_states.find(block_id);
+                if (in_it != analysis.in_states.end()) {
+                    in_state = narrow_points_to_states(in_it->second, in_state);
+                }
+            }
+            auto in_it = analysis.in_states.find(block_id);
+            if (in_it == analysis.in_states.end() || in_it->second != in_state) {
+                analysis.in_states[block_id] = in_state;
+                narrowed = true;
+                if (budget != nullptr && !budget->consume_state(in_state.values.size())) {
+                    return {};
+                }
+            }
+
+            auto block_it = analysis.blocks.find(block_id);
+            if (block_it == analysis.blocks.end()) {
+                continue;
+            }
+            auto transfer =
+                apply_points_to_block_transfer_with_exception(in_state, *block_it->second);
+            if (!transfer) {
+                return std::unexpected(transfer.error());
+            }
+            auto out_it = analysis.out_states.find(block_id);
+            if (out_it == analysis.out_states.end() || out_it->second != transfer->normal_out) {
+                analysis.out_states[block_id] = transfer->normal_out;
+                narrowed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(transfer->normal_out.values.size())) {
+                    return {};
+                }
+            }
+
+            PointsToState exception_out = in_state;
+            if (auto exception_succ_it = analysis.has_exception_successor.find(block_id);
+                exception_succ_it != analysis.has_exception_successor.end()
+                && exception_succ_it->second) {
+                if (transfer->exception_out.has_value()) {
+                    // NOLINTNEXTLINE(bugprone-unchecked-optional-access) - guarded above.
+                    exception_out = std::move(*transfer->exception_out);
+                } else {
+                    exception_out = merge_points_to_states(in_state, transfer->normal_out);
+                }
+            }
+            auto exception_out_it = analysis.exception_out_states.find(block_id);
+            if (exception_out_it == analysis.exception_out_states.end()
+                || exception_out_it->second != exception_out) {
+                analysis.exception_out_states[block_id] = std::move(exception_out);
+                narrowed = true;
+                if (budget != nullptr
+                    && !budget->consume_state(
+                        analysis.exception_out_states.at(block_id).values.size())) {
+                    return {};
+                }
+            }
+        }
+        if (!narrowed) {
+            break;
         }
     }
     return {};
@@ -4574,10 +4781,11 @@ find_vcall_points_to_set(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& optional_state = state.value();
+    if (!optional_state.has_value()) {
         return std::optional<PointsToSet>();
     }
-    const auto& points_state = **state;
+    const auto& points_state = *optional_state;
     if (info.candidate_id.has_value()) {
         auto set_it = points_state.values.find(*info.candidate_id);
         if (set_it != points_state.values.end()) {
@@ -4623,11 +4831,12 @@ collect_points_to_targets_at_anchor(const PoProcessingContext& context,
     if (!state) {
         return std::unexpected(state.error());
     }
-    if (!state->has_value()) {
+    const auto& optional_state = state.value();
+    if (!optional_state.has_value()) {
         return std::vector<std::string>{};
     }
     std::vector<std::string> merged_targets;
-    for (const auto& [ptr, set] : state->value().values) {
+    for (const auto& [ptr, set] : optional_state->values) {
         (void)ptr;
         if (set.is_unknown) {
             continue;
@@ -4701,8 +4910,9 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
         if (!points_to_set) {
             return std::unexpected(points_to_set.error());
         }
-        if (points_to_set->has_value()) {
-            candidates = filter_vcall_candidates_by_points_to(candidates, **points_to_set);
+        const auto& optional_points_to_set = points_to_set.value();
+        if (optional_points_to_set.has_value()) {
+            candidates = filter_vcall_candidates_by_points_to(candidates, *optional_points_to_set);
         }
     }
     auto merged_targets = collect_points_to_targets_at_anchor(context, *function_uid, *anchor);
