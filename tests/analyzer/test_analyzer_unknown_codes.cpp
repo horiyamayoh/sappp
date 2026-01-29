@@ -372,4 +372,80 @@ TEST(AnalyzerUnknownCodeTest, SyncContractMissingForSyncEvent)
     expect_unknown_code(unknowns, "SyncContractMissing", "add-contract");
 }
 
+TEST(AnalyzerUnknownCodeTest, MissingContractPostForUninitRead)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_missing_post");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    auto nir = make_nir_with_ops({"custom.op"});
+    auto po_list = make_po_list("UninitRead");
+    auto specdb_snapshot = make_contract_snapshot();
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "MissingContract.Post", "add-contract");
+}
+
+TEST(AnalyzerUnknownCodeTest, MissingContractOwnershipForDoubleFree)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_missing_ownership");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    auto nir = make_nir_with_ops({"custom.op"});
+
+    nlohmann::json po = {
+        {               "po_id",            make_sha256('b')                                },
+        {             "po_kind",                                                "DoubleFree"},
+        {     "profile_version",                                            "safety.core.v1"},
+        {   "semantics_version",                                                    "sem.v1"},
+        {"proof_system_version",                                                  "proof.v1"},
+        {       "repo_identity",
+         nlohmann::json{{"path", "src/main.cpp"}, {"content_sha256", make_sha256('c')}}     },
+        {            "function", nlohmann::json{{"usr", "usr::foo"}, {"mangled", "_Z3foov"}}},
+        {              "anchor",       nlohmann::json{{"block_id", "B1"}, {"inst_id", "I0"}}},
+        {           "predicate",
+         nlohmann::json{{"expr",
+         nlohmann::json{{"op", "sink.marker"},
+         {"args", nlohmann::json::array({"DoubleFree", "ptr"})}}},
+         {"pretty", "double_free"}}                                                         }
+    };
+
+    nlohmann::json po_list = {
+        {"schema_version",                                                 "po.v1"},
+        {          "tool", nlohmann::json{{"name", "sappp"}, {"version", "0.1.0"}}},
+        {  "generated_at",                                  "1970-01-01T00:00:00Z"},
+        {         "tu_id",                                        make_sha256('a')},
+        {           "pos",                             nlohmann::json::array({po})}
+    };
+
+    auto specdb_snapshot = make_contract_snapshot();
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "MissingContract.Ownership", "add-contract");
+}
+
+TEST(AnalyzerUnknownCodeTest, MissingContractFrameForOutOfBounds)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_missing_frame");
+    auto cert_dir = temp_dir / "certstore";
+
+    auto analyzer = make_analyzer(cert_dir);
+    auto nir = make_nir_with_ops({"custom.op"});
+    auto po_list = make_po_list("UB.OutOfBounds");
+    auto specdb_snapshot = make_contract_snapshot();
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    const auto& unknowns = output->unknown_ledger.at("unknowns");
+    expect_unknown_code(unknowns, "MissingContract.Frame", "add-contract");
+}
+
 }  // namespace sappp::analyzer::test

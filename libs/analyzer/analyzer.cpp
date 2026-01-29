@@ -60,11 +60,48 @@ struct VersionScopeInfo
 };
 // NOLINTEND(cppcoreguidelines-use-default-member-init,modernize-use-default-member-init)
 
+enum class ContractTier {
+    kTier0,
+    kTier1,
+    kTier2,
+    kDisabled,
+};
+
+[[nodiscard]] std::optional<ContractTier> parse_contract_tier(std::string_view tier)
+{
+    if (tier == "Tier0") {
+        return ContractTier::kTier0;
+    }
+    if (tier == "Tier1") {
+        return ContractTier::kTier1;
+    }
+    if (tier == "Tier2") {
+        return ContractTier::kTier2;
+    }
+    if (tier == "Disabled") {
+        return ContractTier::kDisabled;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] bool is_trusted_tier(ContractTier tier)
+{
+    return tier == ContractTier::kTier0 || tier == ContractTier::kTier1;
+}
+
+[[nodiscard]] bool is_enabled_tier(ContractTier tier)
+{
+    return tier != ContractTier::kDisabled;
+}
+
 struct ContractInfo
 {
     std::string contract_id;
     std::string tier;
+    ContractTier tier_kind = ContractTier::kTier2;
     std::string target_usr;
+    std::string target_mangled;
+    std::string target_display_name;
     nlohmann::json version_scope;
     VersionScopeInfo scope;
     bool has_pre = false;
@@ -74,7 +111,21 @@ struct ContractInfo
     bool has_concurrency = false;
 };
 
-using ContractIndex = std::map<std::string, std::vector<ContractInfo>>;
+struct ContractIndex
+{
+    std::map<std::string, std::vector<ContractInfo>> by_usr;
+    std::map<std::string, std::vector<ContractInfo>> by_mangled;
+    std::map<std::string, std::vector<ContractInfo>> by_display_name;
+
+    ContractIndex()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : by_usr()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , by_mangled()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , by_display_name()
+    {}
+};
 
 using VCallCandidateSetMap = std::map<std::string, std::vector<std::string>>;
 
@@ -109,6 +160,13 @@ struct VCallAnchorInfo
 {
     std::optional<std::string> candidate_id;
     std::optional<std::string> receiver_key;
+
+    VCallAnchorInfo()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : candidate_id()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , receiver_key()
+    {}
 };
 
 struct VCallResolvedCandidates
@@ -116,6 +174,15 @@ struct VCallResolvedCandidates
     std::vector<std::string> methods;
     std::vector<const ContractInfo*> contracts;
     std::vector<std::string> missing_contract_targets;
+
+    VCallResolvedCandidates()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : methods()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , contracts()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , missing_contract_targets()
+    {}
 };
 
 struct JsonFieldContext
@@ -335,6 +402,7 @@ struct BudgetTracker
     return scope;
 }
 
+// NOLINTNEXTLINE(readability-function-size) - Keep contract validation explicit for diagnostics.
 [[nodiscard]] sappp::Result<ContractInfo> parse_contract_entry(const nlohmann::json& contract)
 {
     if (!contract.is_object()) {
@@ -351,6 +419,11 @@ struct BudgetTracker
     if (!tier) {
         return std::unexpected(tier.error());
     }
+    auto tier_kind = parse_contract_tier(*tier);
+    if (!tier_kind) {
+        return std::unexpected(
+            sappp::Error::make("InvalidFieldType", "Unsupported contract tier value"));
+    }
     auto target_obj =
         require_object(JsonFieldContext{.obj = &contract, .key = "target", .context = "contract"});
     if (!target_obj) {
@@ -360,6 +433,23 @@ struct BudgetTracker
         JsonFieldContext{.obj = &(*target_obj), .key = "usr", .context = "contract.target"});
     if (!target_usr) {
         return std::unexpected(target_usr.error());
+    }
+    std::string target_mangled;
+    if (target_obj->contains("mangled")) {
+        if (!target_obj->at("mangled").is_string()) {
+            return std::unexpected(
+                sappp::Error::make("InvalidFieldType", "contract.target.mangled must be a string"));
+        }
+        target_mangled = target_obj->at("mangled").get<std::string>();
+    }
+    std::string target_display_name;
+    if (target_obj->contains("display_name")) {
+        if (!target_obj->at("display_name").is_string()) {
+            return std::unexpected(sappp::Error::make("InvalidFieldType",
+                                                      "contract.target.display_name must be a "
+                                                      "string"));
+        }
+        target_display_name = target_obj->at("display_name").get<std::string>();
     }
 
     nlohmann::json version_scope;
@@ -385,7 +475,10 @@ struct BudgetTracker
     return ContractInfo{
         .contract_id = std::move(*contract_id),
         .tier = std::move(*tier),
+        .tier_kind = *tier_kind,
         .target_usr = std::move(*target_usr),
+        .target_mangled = std::move(target_mangled),
+        .target_display_name = std::move(target_display_name),
         .version_scope = std::move(version_scope),
         .scope = std::move(*scope_info),
         .has_pre = has_pre,
@@ -414,16 +507,28 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
         if (!contract_info) {
             return std::unexpected(contract_info.error());
         }
-        index[contract_info->target_usr].push_back(std::move(*contract_info));
+        index.by_usr[contract_info->target_usr].push_back(*contract_info);
+        if (!contract_info->target_mangled.empty()) {
+            index.by_mangled[contract_info->target_mangled].push_back(*contract_info);
+        }
+        if (!contract_info->target_display_name.empty()) {
+            index.by_display_name[contract_info->target_display_name].push_back(*contract_info);
+        }
     }
 
-    for (auto& [usr, contracts] : index) {
-        (void)usr;
-        std::ranges::stable_sort(contracts,
-                                 [](const ContractInfo& a, const ContractInfo& b) noexcept {
-                                     return a.contract_id < b.contract_id;
-                                 });
-    }
+    auto sort_bucket = [](auto& bucket) {
+        for (auto& [key, contracts] : bucket) {
+            (void)key;
+            std::ranges::stable_sort(contracts,
+                                     [](const ContractInfo& a, const ContractInfo& b) noexcept {
+                                         return a.contract_id < b.contract_id;
+                                     });
+        }
+    };
+
+    sort_bucket(index.by_usr);
+    sort_bucket(index.by_mangled);
+    sort_bucket(index.by_display_name);
 
     return index;
 }
@@ -452,10 +557,12 @@ build_contract_index(const nlohmann::json* specdb_snapshot)
     return args.at(0).get<std::string>();
 }
 
-[[nodiscard]] std::vector<const ContractInfo*>
-select_contracts_for_target(std::string_view usr,
-                            const ContractIndex& contract_index,
-                            const ContractMatchContext& context);
+struct ContractSelection;
+struct ContractLookup;
+
+[[nodiscard]] ContractSelection select_contracts_for_target(const ContractLookup& lookup,
+                                                            const ContractIndex& contract_index,
+                                                            const ContractMatchContext& context);
 
 // NOLINTNEXTLINE(readability-function-size) - Parse vcall candidate tables.
 [[nodiscard]] VCallCandidateSetMap collect_vcall_candidate_sets(const nlohmann::json& func)
@@ -624,12 +731,39 @@ struct ContractMatchSummary
 {
     std::vector<const ContractInfo*> contracts;
     bool has_pre = false;
+    bool has_post = false;
+    bool has_frame = false;
+    bool has_ownership = false;
     bool has_concurrency = false;
+    bool has_pre_trusted = false;
+    bool has_post_trusted = false;
+    bool has_frame_trusted = false;
+    bool has_ownership_trusted = false;
+    bool has_concurrency_trusted = false;
+    bool conflict = false;
 
     ContractMatchSummary()
         // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
         : contracts()
     {}
+};
+
+struct ContractSelection
+{
+    std::vector<const ContractInfo*> contracts;
+    bool conflict = false;
+
+    ContractSelection()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : contracts()
+    {}
+};
+
+struct ContractLookup
+{
+    std::string_view usr;
+    std::string_view mangled;
+    std::string_view display_name;
 };
 
 [[nodiscard]] ContractMatchContext normalize_match_context(ContractMatchContext context)
@@ -660,6 +794,10 @@ evaluate_contract_candidate(const ContractInfo& contract, const ContractMatchCon
     ContractMatchCandidate candidate;
     candidate.contract = &contract;
 
+    if (!is_enabled_tier(contract.tier_kind)) {
+        return std::nullopt;
+    }
+
     if (!contract.scope.abi.empty()) {
         if (context.abi.empty() || contract.scope.abi != context.abi) {
             return std::nullopt;
@@ -684,13 +822,13 @@ evaluate_contract_candidate(const ContractInfo& contract, const ContractMatchCon
 }
 
 // NOLINTBEGIN(readability-function-size) - Matching rules are explicitly staged.
-[[nodiscard]] std::vector<const ContractInfo*>
-select_contracts_for_target(std::string_view usr,
-                            const ContractIndex& contract_index,
-                            const ContractMatchContext& context)
+[[nodiscard]] ContractSelection
+select_contracts_for_key(std::string_view key,
+                         const std::map<std::string, std::vector<ContractInfo>>& bucket,
+                         const ContractMatchContext& context)
 {
-    auto it = contract_index.find(std::string(usr));
-    if (it == contract_index.end()) {
+    auto it = bucket.find(std::string(key));
+    if (it == bucket.end()) {
         return {};
     }
 
@@ -747,20 +885,50 @@ select_contracts_for_target(std::string_view usr,
     });
     candidates.erase(priority_end.begin(), priority_end.end());
 
-    std::vector<const ContractInfo*> matched;
-    matched.reserve(candidates.size());
+    ContractSelection selection;
+    selection.contracts.reserve(candidates.size());
     for (const auto& candidate : candidates) {
-        matched.push_back(candidate.contract);
+        selection.contracts.push_back(candidate.contract);
     }
-    std::ranges::stable_sort(matched, [](const ContractInfo* a, const ContractInfo* b) noexcept {
-        return a->contract_id < b->contract_id;
-    });
+    std::ranges::stable_sort(selection.contracts,
+                             [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                 return a->contract_id < b->contract_id;
+                             });
     auto unique_end =
-        std::ranges::unique(matched, [](const ContractInfo* a, const ContractInfo* b) noexcept {
-            return a->contract_id == b->contract_id;
-        });
-    matched.erase(unique_end.begin(), matched.end());
-    return matched;
+        std::ranges::unique(selection.contracts,
+                            [](const ContractInfo* a, const ContractInfo* b) noexcept {
+                                return a->contract_id == b->contract_id;
+                            });
+    selection.contracts.erase(unique_end.begin(), selection.contracts.end());
+    selection.conflict = selection.contracts.size() > 1U;
+    return selection;
+}
+
+[[nodiscard]] ContractSelection select_contracts_for_target(const ContractLookup& lookup,
+                                                            const ContractIndex& contract_index,
+                                                            const ContractMatchContext& context)
+{
+    if (!lookup.usr.empty()) {
+        auto selection = select_contracts_for_key(lookup.usr, contract_index.by_usr, context);
+        if (!selection.contracts.empty() || selection.conflict) {
+            return selection;
+        }
+    }
+    if (!lookup.mangled.empty()) {
+        auto selection =
+            select_contracts_for_key(lookup.mangled, contract_index.by_mangled, context);
+        if (!selection.contracts.empty() || selection.conflict) {
+            return selection;
+        }
+    }
+    if (!lookup.display_name.empty()) {
+        auto selection =
+            select_contracts_for_key(lookup.display_name, contract_index.by_display_name, context);
+        if (!selection.contracts.empty() || selection.conflict) {
+            return selection;
+        }
+    }
+    return {};
 }
 // NOLINTEND(readability-function-size)
 
@@ -779,17 +947,40 @@ match_contracts_for_po(const nlohmann::json& po,
     if (!usr) {
         return std::unexpected(usr.error());
     }
+    auto mangled = require_string(
+        JsonFieldContext{.obj = &(*function_obj), .key = "mangled", .context = "po.function"});
+    if (!mangled) {
+        return std::unexpected(mangled.error());
+    }
 
     ContractMatchSummary summary;
-    auto matched = select_contracts_for_target(*usr, contract_index, context);
-    if (matched.empty()) {
+    ContractLookup lookup{
+        .usr = *usr,
+        .mangled = *mangled,
+        .display_name = std::string_view{},
+    };
+    auto selection = select_contracts_for_target(lookup, contract_index, context);
+    summary.conflict = selection.conflict;
+    if (selection.contracts.empty()) {
         return summary;
     }
-    summary.contracts.reserve(matched.size());
-    for (const auto* contract : matched) {
+    summary.contracts.reserve(selection.contracts.size());
+    for (const auto* contract : selection.contracts) {
         summary.contracts.push_back(contract);
         summary.has_pre = summary.has_pre || contract->has_pre;
+        summary.has_post = summary.has_post || contract->has_post;
+        summary.has_frame = summary.has_frame || contract->has_frame;
+        summary.has_ownership = summary.has_ownership || contract->has_ownership;
         summary.has_concurrency = summary.has_concurrency || contract->has_concurrency;
+        if (is_trusted_tier(contract->tier_kind)) {
+            summary.has_pre_trusted = summary.has_pre_trusted || contract->has_pre;
+            summary.has_post_trusted = summary.has_post_trusted || contract->has_post;
+            summary.has_frame_trusted = summary.has_frame_trusted || contract->has_frame;
+            summary.has_ownership_trusted =
+                summary.has_ownership_trusted || contract->has_ownership;
+            summary.has_concurrency_trusted =
+                summary.has_concurrency_trusted || contract->has_concurrency;
+        }
     }
     return summary;
 }
@@ -839,6 +1030,19 @@ merge_contracts(const ContractMatchSummary& summary,
         });
     merged.erase(unique_end.begin(), unique_end.end());
     return merged;
+}
+
+[[nodiscard]] std::vector<const ContractInfo*>
+filter_trusted_contracts(const std::vector<const ContractInfo*>& contracts)
+{
+    std::vector<const ContractInfo*> filtered;
+    filtered.reserve(contracts.size());
+    for (const auto* contract : contracts) {
+        if (is_trusted_tier(contract->tier_kind)) {
+            filtered.push_back(contract);
+        }
+    }
+    return filtered;
 }
 
 struct IrAnchor
@@ -1116,6 +1320,13 @@ struct MoveArgTargets
 {
     std::optional<std::string> destination;
     std::optional<std::string> source;
+
+    MoveArgTargets()
+        // NOLINTNEXTLINE(readability-redundant-member-init) - required for -Weffc++.
+        : destination()
+        // NOLINTNEXTLINE(readability-redundant-member-init)
+        , source()
+    {}
 };
 
 [[nodiscard]] MoveArgTargets extract_move_targets(const nlohmann::json& inst)
@@ -3918,6 +4129,75 @@ struct UnknownDetails
                           .refinement_domain = "contract"};
 }
 
+enum class ContractClause {
+    kPre,
+    kPost,
+    kFrame,
+    kOwnership,
+    kConcurrency,
+};
+
+[[nodiscard]] std::string_view contract_clause_label(ContractClause clause)
+{
+    switch (clause) {
+        case ContractClause::kPre:
+            return "Pre";
+        case ContractClause::kPost:
+            return "Post";
+        case ContractClause::kFrame:
+            return "Frame";
+        case ContractClause::kOwnership:
+            return "Ownership";
+        case ContractClause::kConcurrency:
+            return "Concurrency";
+        default:
+            return "Pre";
+    }
+}
+
+[[nodiscard]] bool contract_clause_present(const ContractMatchSummary& summary,
+                                           ContractClause clause,
+                                           bool trusted_only)
+{
+    switch (clause) {
+        case ContractClause::kPre:
+            return trusted_only ? summary.has_pre_trusted : summary.has_pre;
+        case ContractClause::kPost:
+            return trusted_only ? summary.has_post_trusted : summary.has_post;
+        case ContractClause::kFrame:
+            return trusted_only ? summary.has_frame_trusted : summary.has_frame;
+        case ContractClause::kOwnership:
+            return trusted_only ? summary.has_ownership_trusted : summary.has_ownership;
+        case ContractClause::kConcurrency:
+            return trusted_only ? summary.has_concurrency_trusted : summary.has_concurrency;
+        default:
+            return trusted_only ? summary.has_pre_trusted : summary.has_pre;
+    }
+}
+
+[[nodiscard]] ContractClause required_clause_for_po_kind(std::string_view po_kind)
+{
+    if (po_kind == "UninitRead") {
+        return ContractClause::kPost;
+    }
+    if (po_kind == "DoubleFree" || po_kind == "InvalidFree") {
+        return ContractClause::kOwnership;
+    }
+    if (po_kind == "UB.OutOfBounds") {
+        return ContractClause::kFrame;
+    }
+    return ContractClause::kPre;
+}
+
+[[nodiscard]] UnknownDetails build_contract_conflict_details()
+{
+    return make_unknown_details("ContractResolutionConflict",
+                                "Multiple contracts match the same target and scope.",
+                                "Resolve conflicting contracts by refining version_scope/priority.",
+                                "resolve-contract",
+                                "contract");
+}
+
 [[nodiscard]] UnknownDetails build_exception_flow_unknown_details()
 {
     return make_unknown_details("ExceptionFlowConservative",
@@ -4109,7 +4389,7 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
                               const VCallSummary* vcall_summary,
                               const VCallResolvedCandidates* resolved_candidates)
 {
-    if (features.has_sync && !contract_match.has_concurrency) {
+    if (features.has_sync && !contract_match.has_concurrency_trusted) {
         return build_sync_contract_missing_unknown_details();
     }
     if (features.has_atomic) {
@@ -4134,7 +4414,8 @@ build_feature_unknown_details(const FunctionFeatureFlags& features,
 {
     return !unknown_code.starts_with("Lifetime") && unknown_code != "BudgetExceeded"
            && !unknown_code.starts_with("MissingContract.")
-           && !unknown_code.starts_with("VirtualCall.");
+           && !unknown_code.starts_with("VirtualCall.")
+           && unknown_code != "ContractResolutionConflict";
 }
 
 [[nodiscard]] UnknownDetails build_use_after_lifetime_unknown_details(std::string_view notes)
@@ -5181,11 +5462,22 @@ resolve_vcall_candidates_for_po(const nlohmann::json& po,
             context.match_context == nullptr ? fallback : *context.match_context;
         for (const auto& method : candidates) {
             bool has_pre = false;
-            auto matched_contracts =
-                select_contracts_for_target(method, *context.contract_index, match_context);
-            for (const auto* contract : matched_contracts) {
+            ContractLookup lookup{
+                .usr = method,
+                .mangled = method,
+                .display_name = std::string_view{},
+            };
+            auto selection =
+                select_contracts_for_target(lookup, *context.contract_index, match_context);
+            if (selection.conflict) {
+                resolved.missing_contract_targets.push_back(method);
+                continue;
+            }
+            for (const auto* contract : selection.contracts) {
                 resolved.contracts.push_back(contract);
-                has_pre = has_pre || contract->has_pre;
+                if (is_trusted_tier(contract->tier_kind) && contract->has_pre) {
+                    has_pre = true;
+                }
             }
             if (!has_pre) {
                 resolved.missing_contract_targets.push_back(method);
@@ -5394,6 +5686,15 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     if (!contract_match) {
         return std::unexpected(contract_match.error());
     }
+    PoDecision& decision_value = *decision;
+    if (contract_match->conflict) {
+        decision_value.is_bug = false;
+        decision_value.is_safe = false;
+        decision_value.is_unknown = true;
+        decision_value.unknown_details = build_contract_conflict_details();
+        decision_value.points_to.reset();
+        decision_value.safety_domain = std::string(kBaseSafetyDomain);
+    }
 
     std::vector<const ContractInfo*> vcall_contracts;
     const VCallSummary* vcall_summary_ptr = nullptr;
@@ -5415,10 +5716,12 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
     }
 
     auto merged_contracts = merge_contracts(*contract_match, vcall_contracts);
+    auto contracts_for_proof =
+        decision_value.is_safe ? filter_trusted_contracts(merged_contracts) : merged_contracts;
     std::vector<std::string> contract_hashes;
     if (context.contract_ref_cache != nullptr && context.contract_index != nullptr) {
-        contract_hashes.reserve(merged_contracts.size());
-        for (const auto* contract : merged_contracts) {
+        contract_hashes.reserve(contracts_for_proof.size());
+        for (const auto* contract : contracts_for_proof) {
             auto hash = ensure_contract_ref(*contract, context);
             if (!hash) {
                 return std::unexpected(hash.error());
@@ -5430,7 +5733,7 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
         contract_hashes.erase(unique_hashes.begin(), unique_hashes.end());
     }
 
-    auto base = build_po_base(po, context, decision->is_bug, decision->is_safe);
+    auto base = build_po_base(po, context, decision_value.is_bug, decision_value.is_safe);
     if (!base) {
         return std::unexpected(base.error());
     }
@@ -5439,15 +5742,15 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
                                      *base,
                                      context,
                                      contract_hashes,
-                                     decision->points_to,
-                                     decision->safety_domain);
+                                     decision_value.points_to,
+                                     decision_value.safety_domain);
         !stored) {
         return std::unexpected(stored.error());
     }
 
     PoProcessingOutput output{.po_id = base->po_id};
-    if (decision->is_unknown || (!base->is_bug && !base->is_safe)) {
-        UnknownDetails details = decision->unknown_details;
+    if (decision_value.is_unknown || (!base->is_bug && !base->is_safe)) {
+        UnknownDetails details = decision_value.unknown_details;
         if (context.feature_cache != nullptr && allow_feature_override(details.code)) {
             auto it = context.feature_cache->find(base->function_uid);
             if (it != context.feature_cache->end()) {
@@ -5459,10 +5762,17 @@ resolve_contracts(const nlohmann::json& po, const PoProcessingContext& context)
                 }
             }
         }
-        if (details.code != "BudgetExceeded"
-            && (contract_match->contracts.empty() || !contract_match->has_pre)
+        if (details.code != "BudgetExceeded" && details.code != "ContractResolutionConflict"
             && !details.code.starts_with("VirtualCall.")) {
-            details = build_missing_contract_details("Pre");
+            auto po_kind =
+                require_string(JsonFieldContext{.obj = &po, .key = "po_kind", .context = "po"});
+            if (!po_kind) {
+                return std::unexpected(po_kind.error());
+            }
+            ContractClause required_clause = required_clause_for_po_kind(*po_kind);
+            if (!contract_clause_present(*contract_match, required_clause, true)) {
+                details = build_missing_contract_details(contract_clause_label(required_clause));
+            }
         }
         auto contract_ids = collect_contract_ids(*contract_match, vcall_contracts);
         auto unknown_entry = build_unknown_entry(po, base->po_id, details, contract_ids);
@@ -5495,8 +5805,8 @@ ensure_unknowns(std::vector<nlohmann::json>& unknowns,
         return std::unexpected(contract_match.error());
     }
     UnknownDetails details = build_unknown_details("UB.Unknown");
-    if (contract_match->contracts.empty() || !contract_match->has_pre) {
-        details = build_missing_contract_details("Pre");
+    if (!contract_clause_present(*contract_match, ContractClause::kPre, true)) {
+        details = build_missing_contract_details(contract_clause_label(ContractClause::kPre));
     }
     auto contract_ids = collect_contract_ids(*contract_match);
     auto unknown_entry = build_unknown_entry(po, *po_id, details, contract_ids);

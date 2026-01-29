@@ -286,6 +286,7 @@ SRS 付録例をベースに、以下を初期セットとして採用（拡張�
 
 - `MissingInvariant`
 - `MissingContract.Pre|Post|Frame|Ownership|Concurrency`
+- `ContractResolutionConflict`
 - `AliasTooWide|PointsToUnknown`
 - `DomainTooWeak.Numeric|DomainTooWeak.Memory|DomainTooWeak.Concurrency`
 - `VirtualDispatchUnknown`
@@ -661,7 +662,9 @@ pack/
 3. `conditions`（フラグ、マクロ、OS等）評価
 
 同率の場合は `priority`（数値）で決定、未指定は 0。
-それでも複数残る場合は `contract_id` で安定ソートし、全てを適用候補として扱う。
+それでも複数残る場合は `contract_id` で安定ソートして順序を固定する。
+v1 Analyzer は複数候補が残った場合、解決不能として UNKNOWN
+（`ContractResolutionConflict`）へ降格する。
 
 #### 5.5.5 Tier 運用
 

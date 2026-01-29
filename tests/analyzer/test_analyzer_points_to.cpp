@@ -132,14 +132,15 @@ nlohmann::json make_po_list_with_points_to()
     };
 }
 
-nlohmann::json make_contract_snapshot_for_target(std::string_view target_usr)
+nlohmann::json make_contract_snapshot_for_target(std::string_view target_usr,
+                                                 std::string_view tier = "Tier1")
 {
     nlohmann::json contracts = nlohmann::json::array();
     contracts.push_back(nlohmann::json{
         {"schema_version",                        "contract_ir.v1"                          },
         {   "contract_id",                                                  make_sha256('d')},
         {        "target",                  nlohmann::json{{"usr", std::string(target_usr)}}},
-        {          "tier",                                                           "Tier1"},
+        {          "tier",                                                 std::string(tier)},
         { "version_scope",
          nlohmann::json{{"abi", "x86_64"},
          {"library_version", "1.0.0"},
@@ -291,6 +292,41 @@ TEST(AnalyzerPointsToTest, PointsToSimpleResolvesNullDeref)
     const auto& targets = points_to.at(0).at("targets");
     ASSERT_EQ(targets.size(), 1U);
     EXPECT_EQ(targets.at(0), "alloc1");
+}
+
+TEST(AnalyzerPointsToTest, Tier2ContractsNotUsedForSafe)
+{
+    auto temp_dir = ensure_temp_dir("sappp_analyzer_points_to_tier2_safe");
+    auto cert_dir = temp_dir / "certstore";
+
+    Analyzer analyzer({
+        .schema_dir = SAPPP_SCHEMA_DIR,
+        .certstore_dir = cert_dir.string(),
+        .versions = {.semantics = "sem.v1",
+                     .proof_system = "proof.v1",
+                     .profile = "safety.core.v1"},
+        .budget = AnalyzerConfig::AnalysisBudget{},
+        .memory_domain = ""
+    });
+
+    auto nir = make_nir_with_points_to();
+    auto po_list = make_po_list_with_points_to();
+    auto specdb_snapshot = make_contract_snapshot_for_target("usr::safe", "Tier2");
+
+    auto output = analyzer.analyze(nir, po_list, &specdb_snapshot, make_match_context());
+    ASSERT_TRUE(output);
+
+    sappp::certstore::CertStore cert_store(cert_dir.string(), SAPPP_SCHEMA_DIR);
+    std::ifstream index_file(cert_dir / "index" / (make_sha256('b') + ".json"));
+    ASSERT_TRUE(index_file.is_open());
+    nlohmann::json index_json = nlohmann::json::parse(index_file);
+    std::string root_hash = index_json.at("root").get<std::string>();
+
+    auto root_cert = cert_store.get(root_hash);
+    ASSERT_TRUE(root_cert);
+    EXPECT_EQ(root_cert->at("result"), "SAFE");
+    ASSERT_TRUE(root_cert->contains("depends"));
+    EXPECT_FALSE(root_cert->at("depends").contains("contracts"));
 }
 
 TEST(AnalyzerPointsToTest, PointsToExceptionPathPropagatesState)
